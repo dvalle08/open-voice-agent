@@ -1,14 +1,15 @@
 ---
-title: Streamlit Template Space
+title: Open Voice Agent
 emoji: 🚀
 colorFrom: red
 colorTo: red
 sdk: docker
 app_port: 8501
 tags:
-  - streamlit
+- streamlit
 pinned: false
-short_description: Streamlit template space
+short_description: A voice agent powered by state-of-the-art open-source models
+license: apache-2.0
 ---
 
 # Welcome to Streamlit!
