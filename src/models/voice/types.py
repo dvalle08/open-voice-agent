@@ -1,13 +1,9 @@
-"""Common types and data structures for voice processing."""
-
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
 
 class AudioFormat(str, Enum):
-    """Supported audio formats."""
-
     PCM = "pcm"
     WAV = "wav"
     OPUS = "opus"
@@ -19,9 +15,7 @@ class AudioFormat(str, Enum):
 
 @dataclass
 class VoiceMessage:
-    """Container for voice-related messages (text or audio)."""
-
-    type: str  # "text", "audio", "transcript", etc.
+    type: str
     content: str | bytes
     timestamp: Optional[float] = None
     metadata: Optional[dict] = None
@@ -29,8 +23,6 @@ class VoiceMessage:
 
 @dataclass
 class VADInfo:
-    """Voice Activity Detection information."""
-
     inactivity_prob: float
     horizon_s: float
     step_idx: int
@@ -38,14 +30,11 @@ class VADInfo:
 
     @property
     def is_turn_complete(self, threshold: float = 0.5) -> bool:
-        """Check if the turn is likely complete based on inactivity probability."""
         return self.inactivity_prob > threshold
 
 
 @dataclass
 class TranscriptionResult:
-    """Result from speech-to-text transcription."""
-
     text: str
     start_s: float
     stop_s: Optional[float] = None

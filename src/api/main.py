@@ -1,5 +1,3 @@
-"""FastAPI application with WebSocket endpoints."""
-
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -7,14 +5,12 @@ from src.api.websocket import VoiceWebSocketHandler
 from src.core.logger import logger
 from src.core.settings import settings
 
-# Initialize FastAPI app
 app = FastAPI(
     title="Open Voice Agent API",
     description="Real-time voice conversation agent with WebSocket support",
     version="0.1.0",
 )
 
-# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.api.API_CORS_ORIGINS,
@@ -26,11 +22,6 @@ app.add_middleware(
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint.
-    
-    Returns:
-        Status information
-    """
     return {
         "status": "healthy",
         "service": "open-voice-agent",
@@ -40,23 +31,6 @@ async def health_check():
 
 @app.websocket("/ws/voice")
 async def websocket_voice_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for bidirectional voice streaming.
-    
-    Protocol:
-        Client -> Server:
-            {"type": "audio", "data": "<base64 audio>"}
-            {"type": "end_turn"}
-            
-        Server -> Client:
-            {"type": "transcript", "text": "..."}
-            {"type": "audio", "data": "<base64 audio>"}
-            {"type": "vad", "inactivity_prob": 0.8}
-            {"type": "response_complete"}
-            {"type": "error", "message": "..."}
-    
-    Args:
-        websocket: WebSocket connection
-    """
     handler = VoiceWebSocketHandler(websocket)
     
     try:
@@ -73,7 +47,6 @@ async def websocket_voice_endpoint(websocket: WebSocket):
 
 @app.on_event("startup")
 async def startup_event():
-    """Run on application startup."""
     logger.info("Starting Open Voice Agent API...")
     logger.info(f"Voice provider: {settings.voice.VOICE_PROVIDER}")
     logger.info(f"LLM provider: {settings.llm.LLM_PROVIDER}")
@@ -81,7 +54,6 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Run on application shutdown."""
     logger.info("Shutting down Open Voice Agent API...")
 
 

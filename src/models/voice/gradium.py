@@ -1,12 +1,6 @@
-"""Gradium voice provider implementation."""
-
-import asyncio
-import base64
-import json
 from typing import AsyncIterator, Optional
 
 import gradium
-from pydantic import Field
 
 from src.core.logger import logger
 from src.models.voice.base import BaseVoiceProvider, VoiceProviderConfig
@@ -14,36 +8,21 @@ from src.models.voice.types import AudioFormat, TranscriptionResult, VADInfo
 
 
 class GradiumConfig(VoiceProviderConfig):
-    """Configuration for Gradium voice provider."""
-
     provider_name: str = "gradium"
     api_key: str
-    voice_id: str = "YTpq7expH9539ERJ"  # Emma voice
+    voice_id: str = "YTpq7expH9539ERJ"
     model_name: str = "default"
-    region: str = "eu"  # "eu" or "us"
+    region: str = "eu"
     output_format: AudioFormat = AudioFormat.WAV
     input_format: AudioFormat = AudioFormat.PCM
-    sample_rate_input: int = 24000  # Gradium STT requires 24kHz
-    sample_rate_output: int = 48000  # Gradium TTS outputs 48kHz
+    sample_rate_input: int = 24000
+    sample_rate_output: int = 48000
     vad_threshold: float = 0.5
-    vad_horizon_index: int = 2  # Use 2.0s horizon for turn detection
+    vad_horizon_index: int = 2
 
 
 class GradiumProvider(BaseVoiceProvider):
-    """Gradium implementation of the voice provider interface.
-    
-    Provides Speech-to-Text and Text-to-Speech using Gradium's API with:
-    - Low-latency streaming for both STT and TTS
-    - Voice Activity Detection for turn-taking
-    - Support for multiple voices and languages
-    """
-
     def __init__(self, config: GradiumConfig):
-        """Initialize Gradium provider.
-        
-        Args:
-            config: Gradium-specific configuration
-        """
         super().__init__(config)
         self.config: GradiumConfig = config
         self.client: Optional[gradium.client.GradiumClient] = None
@@ -52,7 +31,6 @@ class GradiumProvider(BaseVoiceProvider):
         self._stt_stream = None
 
     async def connect(self) -> None:
-        """Establish connection to Gradium service."""
         try:
             logger.info(f"Connecting to Gradium ({self.config.region} region)...")
             self.client = gradium.client.GradiumClient(api_key=self.config.api_key)
@@ -63,7 +41,6 @@ class GradiumProvider(BaseVoiceProvider):
             raise
 
     async def disconnect(self) -> None:
-        """Close connection and cleanup resources."""
         try:
             if self._tts_stream:
                 await self._tts_stream.close()
@@ -82,15 +59,6 @@ class GradiumProvider(BaseVoiceProvider):
     async def text_to_speech(
         self, text: str, stream: bool = True
     ) -> AsyncIterator[bytes]:
-        """Convert text to speech using Gradium TTS.
-        
-        Args:
-            text: Text to convert to speech
-            stream: Whether to stream audio chunks (always True for Gradium)
-            
-        Yields:
-            Audio data chunks in the configured format
-        """
         if not self.is_connected or not self.client:
             raise RuntimeError("Gradium provider not connected")
 
@@ -103,7 +71,6 @@ class GradiumProvider(BaseVoiceProvider):
                 "output_format": self.config.output_format.value,
             }
 
-            # Use Gradium's streaming TTS
             self._tts_stream = await self.client.tts_stream(setup=setup, text=text)
             
             async for audio_chunk in self._tts_stream.iter_bytes():
@@ -119,14 +86,6 @@ class GradiumProvider(BaseVoiceProvider):
     async def speech_to_text(
         self, audio_stream: AsyncIterator[bytes]
     ) -> AsyncIterator[TranscriptionResult]:
-        """Convert speech to text using Gradium STT.
-        
-        Args:
-            audio_stream: Async iterator of audio data chunks (24kHz PCM)
-            
-        Yields:
-            Transcription results with timestamps
-        """
         if not self.is_connected or not self.client:
             raise RuntimeError("Gradium provider not connected")
 
@@ -138,18 +97,15 @@ class GradiumProvider(BaseVoiceProvider):
                 "input_format": self.config.input_format.value,
             }
 
-            # Create STT stream
             self._stt_stream = await self.client.stt_stream(
                 setup=setup,
                 audio_generator=audio_stream
             )
 
-            # Process messages from STT stream
             async for message in self._stt_stream._stream:
                 msg_type = message.get("type")
                 
                 if msg_type == "text":
-                    # Text transcription result
                     result = TranscriptionResult(
                         text=message.get("text", ""),
                         start_s=message.get("start_s", 0.0),
@@ -161,7 +117,6 @@ class GradiumProvider(BaseVoiceProvider):
                     logger.debug(f"Transcribed: {result.text}")
                 
                 elif msg_type == "step":
-                    # VAD information
                     vad_data = message.get("vad", [])
                     if vad_data and len(vad_data) > self.config.vad_horizon_index:
                         horizon_data = vad_data[self.config.vad_horizon_index]
@@ -176,11 +131,9 @@ class GradiumProvider(BaseVoiceProvider):
                         )
                 
                 elif msg_type == "end_text":
-                    # End of text segment
                     logger.debug("End of text segment")
                 
                 elif msg_type == "end_of_stream":
-                    # End of transcription stream
                     logger.debug("STT stream ended")
                     break
                     
@@ -189,19 +142,9 @@ class GradiumProvider(BaseVoiceProvider):
             raise
 
     async def get_vad_info(self) -> Optional[VADInfo]:
-        """Get the most recent Voice Activity Detection information.
-        
-        Returns:
-            Latest VAD info or None if not available
-        """
         return self._current_vad
 
     def is_turn_complete(self) -> bool:
-        """Check if the current turn is complete based on VAD.
-        
-        Returns:
-            True if user has likely finished speaking
-        """
         if not self._current_vad:
             return False
         return self._current_vad.inactivity_prob > self.config.vad_threshold

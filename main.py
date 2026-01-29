@@ -1,11 +1,3 @@
-"""Main entry point for Open Voice Agent.
-
-Supports running:
-- FastAPI WebSocket server
-- Streamlit UI
-- Both simultaneously
-"""
-
 import argparse
 import multiprocessing
 import subprocess
@@ -15,7 +7,6 @@ from src.core.logger import logger
 
 
 def run_api():
-    """Run the FastAPI WebSocket server."""
     logger.info("Starting FastAPI server...")
     import uvicorn
     from src.core.settings import settings
@@ -31,7 +22,6 @@ def run_api():
 
 
 def run_streamlit():
-    """Run the Streamlit UI."""
     logger.info("Starting Streamlit UI...")
     subprocess.run([
         sys.executable,
@@ -45,19 +35,15 @@ def run_streamlit():
 
 
 def run_both():
-    """Run both FastAPI and Streamlit in parallel."""
     logger.info("Starting both FastAPI server and Streamlit UI...")
     
-    # Create processes
     api_process = multiprocessing.Process(target=run_api, name="FastAPI")
     streamlit_process = multiprocessing.Process(target=run_streamlit, name="Streamlit")
     
     try:
-        # Start both processes
         api_process.start()
         streamlit_process.start()
         
-        # Wait for both to complete
         api_process.join()
         streamlit_process.join()
         
@@ -71,7 +57,6 @@ def run_both():
 
 
 def main():
-    """Main entry point with CLI argument parsing."""
     parser = argparse.ArgumentParser(
         description="Open Voice Agent - Real-time AI voice conversations"
     )
@@ -91,7 +76,7 @@ def main():
         run_api()
     elif args.mode == "streamlit":
         run_streamlit()
-    else:  # both
+    else:
         run_both()
 
 
