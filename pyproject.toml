@@ -16,10 +16,10 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "python-multipart>=0.0.22",
     "streamlit>=1.53.1",
-    "transformers",
-    "torch",
     "uvicorn[standard]>=0.40.0",
     "websockets>=16.0",
+    "transformers>=4.32.0",
+    "torch>=2.1.1",
     "accelerate>=1.12.0",
 ]
 

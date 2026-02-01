@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 
@@ -61,28 +61,14 @@ class VoiceSettings(CoreSettings):
 
 
 class LLMSettings(CoreSettings):
-    LLM_PROVIDER: str = Field(default="nvidia")
-    
     NVIDIA_API_KEY: Optional[str] = Field(default=None)
     NVIDIA_MODEL: str = Field(default="meta/llama-3.1-8b-instruct")
     NVIDIA_BASE_URL: str = Field(default="https://integrate.api.nvidia.com/v1")
-    
+
     HF_TOKEN: Optional[str] = Field(default=None)
-    HF_MODEL: Optional[str] = Field(default="TheBloke/Llama-2-7B-Chat-GGUF")
-    HF_USE_INFERENCE_API: bool = Field(default=False)
-    HF_TRUST_REMOTE_CODE: bool = Field(default=False)
-    HF_USE_FAST_TOKENIZER: bool = Field(default=False)
-    
+
     LLM_TEMPERATURE: float = Field(default=0.7, ge=0.0, le=2.0)
     LLM_MAX_TOKENS: int = Field(default=1024, gt=0)
-    LLM_STREAMING: bool = Field(default=True)
-    
-    @field_validator("LLM_PROVIDER")
-    @classmethod
-    def validate_provider(cls, v: str) -> str:
-        if v.lower() not in ["nvidia", "huggingface"]:
-            raise ValueError("LLM_PROVIDER must be 'nvidia' or 'huggingface'")
-        return v.lower()
 
 
 class APISettings(CoreSettings):
