@@ -32,11 +32,10 @@ class BaseVoiceProvider(ABC):
     ) -> AsyncIterator[bytes]:
         pass
 
-    @abstractmethod
     async def speech_to_text(
         self, audio_stream: AsyncIterator[bytes]
     ) -> AsyncIterator[TranscriptionResult]:
-        pass
+        raise NotImplementedError("Speech-to-text not supported by this provider")
 
     @abstractmethod
     async def get_vad_info(self) -> Optional[VADInfo]:

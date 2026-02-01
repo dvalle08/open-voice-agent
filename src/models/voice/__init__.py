@@ -1,7 +1,6 @@
 """Voice provider interfaces and implementations."""
 
 from src.models.voice.base import BaseVoiceProvider, VoiceProviderConfig
-from src.models.voice.gradium import GradiumConfig, GradiumProvider
 from src.models.voice.types import (
     AudioFormat,
     VADInfo,
@@ -12,8 +11,6 @@ from src.models.voice.types import (
 __all__ = [
     "BaseVoiceProvider",
     "VoiceProviderConfig",
-    "GradiumConfig",
-    "GradiumProvider",
     "AudioFormat",
     "VADInfo",
     "VoiceMessage",

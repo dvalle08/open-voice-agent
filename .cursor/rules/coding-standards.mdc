@@ -10,23 +10,6 @@ alwaysApply: true
 ### Remove "What" Comments
 Code should be self-documenting. Only add comments that explain **why**, never **what**.
 
-```python
-# ❌ BAD - Explaining what
-def get_session(self, session_id: str) -> Optional[Session]:
-    """Get a session by ID."""
-    return self._sessions.get(session_id)
-
-# ✅ GOOD - No docstring, clear code
-def get_session(self, session_id: str) -> Optional[Session]:
-    return self._sessions.get(session_id)
-
-# ✅ GOOD - Comment explains why when needed
-def process_audio(self, chunks: List[bytes]) -> None:
-    # Buffer audio in memory instead of streaming to avoid
-    # race conditions with VAD detection
-    self._buffer.extend(chunks)
-```
-
 ### No Markdown Files Unless Requested
 **FORBIDDEN**: Creating .md files (README, CHANGELOG, docs, etc.) unless the user explicitly asks for them.
 
@@ -35,251 +18,26 @@ Only create documentation files when the user specifically requests:
 - "Add documentation"
 - "Write a guide for X"
 
-## Architecture Patterns
-
-### Factory Pattern for Providers
-Use factory pattern with registry for extensible providers:
-
-```python
-# ✅ GOOD - Factory with registry
-class ProviderFactory:
-    _registry: Dict[str, Type[BaseProvider]] = {}
-    
-    @classmethod
-    def register(cls, name: str, provider_class: Type[BaseProvider]) -> None:
-        cls._registry[name.lower()] = provider_class
-    
-    @classmethod
-    def create_provider(cls, name: str) -> BaseProvider:
-        if name not in cls._registry:
-            raise ValueError(f"Unknown provider: {name}")
-        return cls._registry[name](config)
-
-# Register providers
-ProviderFactory.register("gradium", GradiumProvider)
-```
-
-### Service Layer Pattern
-Extract business logic into services with single responsibility:
-
-```python
-# ✅ GOOD - Service with clear responsibility
-class TranscriptionService:
-    def __init__(self, voice_provider: BaseVoiceProvider):
-        self._voice_provider = voice_provider
-    
-    async def transcribe_audio(
-        self, audio_chunks: List[bytes]
-    ) -> AsyncIterator[TranscriptionResult]:
-        # Service logic here
-        pass
-```
-
-### Dependency Injection
-Pass dependencies via constructor, not global state:
-
-```python
-# ❌ BAD - Global dependency
-llm = initialize_llm()
-
-def generate_response(state):
-    return llm.invoke(state)
-
-# ✅ GOOD - Injected dependency
-class LLMFactory:
-    _instance = None
-    
-    @classmethod
-    def create_llm(cls, use_cache: bool = True):
-        if use_cache and cls._instance:
-            return cls._instance
-        # Create and return LLM
-```
-
-## Error Handling
-
-### Custom Exception Hierarchy
-Use custom exceptions for better error handling:
-
-```python
-# ✅ GOOD - Exception hierarchy
-class VoiceAgentError(Exception):
-    pass
-
-class VoiceProviderError(VoiceAgentError):
-    pass
-
-class TranscriptionError(VoiceProviderError):
-    pass
-
-# Usage
-try:
-    result = await service.transcribe(audio)
-except TranscriptionError as e:
-    logger.error(f"Transcription failed: {e}")
-    raise
-```
-
-### Wrap and Re-raise
-Catch provider exceptions and convert to domain exceptions:
-
-```python
-# ✅ GOOD - Wrap external exceptions
-try:
-    async for chunk in provider.text_to_speech(text):
-        yield chunk
-except Exception as e:
-    logger.error(f"TTS error: {e}")
-    raise TTSError(f"Failed to generate speech: {str(e)}") from e
-```
-
-## Configuration
-
-### Pydantic Validators
-Add runtime validation to settings:
-
-```python
-# ✅ GOOD - Validated settings
-class VoiceSettings(BaseSettings):
-    SAMPLE_RATE_OUTPUT: int = Field(default=48000, gt=0)
-    VAD_THRESHOLD: float = Field(default=0.5, ge=0.0, le=1.0)
-    
-    @field_validator("GRADIUM_REGION")
-    @classmethod
-    def validate_region(cls, v: str) -> str:
-        if v.lower() not in ["eu", "us"]:
-            raise ValueError("GRADIUM_REGION must be 'eu' or 'us'")
-        return v.lower()
-```
-
 ## Code Style
 
 ### Type Hints Always
-All function parameters and returns must have type hints:
-
-```python
-# ❌ BAD - No type hints
-def process_message(transcript, session_id):
-    return result
-
-# ✅ GOOD - Full type hints
-def process_message(
-    transcript: str,
-    session_id: str,
-    current_state: Optional[ConversationState] = None,
-) -> ConversationState:
-    return result
-```
+All function parameters and returns must have type hints.
 
 ### Modern Python Features
-Use modern Python features (Python 3.13):
-
-```python
-# ✅ GOOD - Modern datetime
-from datetime import datetime, UTC
-created_at = datetime.now(UTC)  # Not datetime.utcnow()
-
-# ✅ GOOD - Type unions
-def get_result() -> str | None:  # Not Optional[str]
-    pass
-```
+Use modern Python features (Python 3.13).
 
 ### No Unnecessary Complexity
-Prefer simple, readable code over clever solutions:
-
-```python
-# ❌ BAD - Overly complex
-result = [x for x in items if predicate(x)] if items else []
-
-# ✅ GOOD - Clear and simple
-if not items:
-    return []
-return [x for x in items if predicate(x)]
-```
-
-## Testing
-
-### Test Structure
-Follow Arrange-Act-Assert pattern:
-
-```python
-# ✅ GOOD - Clear test structure
-def test_session_creation(session_manager):
-    # Arrange
-    metadata = {"user_id": "123"}
-    
-    # Act
-    session = session_manager.create_session(metadata)
-    
-    # Assert
-    assert session.session_id is not None
-    assert session.metadata == metadata
-```
-
-### Mock External Dependencies
-Always mock external services in unit tests:
-
-```python
-# ✅ GOOD - Mocked provider
-@pytest.fixture
-def mock_voice_provider():
-    provider = AsyncMock(spec=BaseVoiceProvider)
-    provider.is_connected = True
-    return provider
-
-def test_transcription(mock_voice_provider):
-    service = TranscriptionService(mock_voice_provider)
-    # Test without calling real API
-```
-
-## File Organization
-
-### Service Layer Structure
-```
-src/
-├── services/          # Business logic
-│   ├── audio_service.py
-│   ├── transcription_service.py
-│   └── session_manager.py
-├── models/           # Data models and providers
-│   └── voice/
-│       ├── base.py
-│       ├── factory.py
-│       └── gradium.py
-├── core/            # Shared infrastructure
-│   ├── exceptions.py
-│   ├── settings.py
-│   └── dependencies.py
-└── api/             # API layer
-    ├── main.py
-    └── websocket.py
-```
+Prefer simple, readable code over clever solutions.
 
 ## Dependencies
 
 ### Use uv for Package Management
-Always use `uv` commands, never pip directly:
-
-```bash
-# ✅ GOOD
-uv sync
-uv add pytest
-uv run pytest
-
-# ❌ BAD
-pip install pytest
-python -m pytest
-```
+Always use `uv` commands, never pip directly.
 
 ## Summary
-
 **Key Principles:**
 1. Code is self-documenting - no "what" docstrings
 2. Only comments that explain "why"
-3. Factory pattern for extensibility
-4. Service layer for business logic
-5. Dependency injection for testability
-6. Custom exceptions for error handling
-7. Type hints everywhere
-8. Modern Python features
-9. **NO markdown files unless explicitly requested**
+3. Type hints everywhere
+4. Modern Python features
+5. **NO markdown files unless explicitly requested**

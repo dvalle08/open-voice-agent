@@ -32,21 +32,6 @@ if "response_queue" not in st.session_state:
     st.session_state.response_queue = Queue()
 
 
-# Available Gradium voices
-GRADIUM_VOICES = {
-    "Emma (US, Female)": "YTpq7expH9539ERJ",
-    "Kent (US, Male)": "LFZvm12tW_z0xfGo",
-    "Sydney (US, Female)": "jtEKaLYNn6iif5PR",
-    "John (US, Male)": "KWJiFWu2O9nMPYcR",
-    "Eva (GB, Female)": "ubuXFxVQwVYnZQhy",
-    "Jack (GB, Male)": "m86j6D7UZpGzHsNu",
-    "Elise (FR, Female)": "b35yykvVppLXyw_l",
-    "Leo (FR, Male)": "axlOaUiFyOZhy4nv",
-    "Mia (DE, Female)": "-uP9MuGtBqAvEyxI",
-    "Maximilian (DE, Male)": "0y1VZjPabOBU3rWy",
-}
-
-
 def send_audio_to_websocket(ws_url: str, audio_data: str, response_queue: Queue):
     """Send audio to WebSocket and receive responses in background thread.
     
@@ -101,7 +86,7 @@ def send_audio_to_websocket(ws_url: str, audio_data: str, response_queue: Queue)
 st.title("🎙️ Open Voice Agent")
 st.markdown(
     """
-    Real-time voice conversation with AI using Gradium for speech processing 
+    Voice conversation with AI using NVIDIA API for speech synthesis 
     and LangGraph for conversation management.
     """
 )
@@ -109,14 +94,6 @@ st.markdown(
 # Sidebar configuration
 with st.sidebar:
     st.header("⚙️ Settings")
-    
-    # Voice selection
-    selected_voice = st.selectbox(
-        "Voice",
-        options=list(GRADIUM_VOICES.keys()),
-        index=0,
-    )
-    voice_id = GRADIUM_VOICES[selected_voice]
     
     # WebSocket connection settings
     ws_url = st.text_input(
@@ -128,6 +105,7 @@ with st.sidebar:
     # Connection status
     status_color = "🟢" if st.session_state.ws_connected else "🔴"
     st.markdown(f"**Status:** {status_color} {'Connected' if st.session_state.ws_connected else 'Disconnected'}")
+    st.markdown("**Voice Provider:** NVIDIA API (configured on the server)")
     
     # Test connection button
     if st.button("🔍 Test Connection"):
@@ -293,8 +271,7 @@ with col2:
     # System info
     with st.expander("ℹ️ System Info"):
         st.markdown(f"""
-        **Voice:** {selected_voice}  
-        **Voice ID:** `{voice_id}`  
+        **Voice Provider:** NVIDIA API  
         **WebSocket:** `{ws_url}`  
         **Messages:** {len(st.session_state.messages)}
         """)
@@ -304,7 +281,7 @@ st.markdown("---")
 st.markdown(
     """
     <div style='text-align: center'>
-        <small>Powered by Gradium (Voice) + LangGraph (Conversations) + Streamlit (UI)</small>
+        <small>Powered by NVIDIA API (Voice) + LangGraph (Conversations) + Streamlit (UI)</small>
     </div>
     """,
     unsafe_allow_html=True,
