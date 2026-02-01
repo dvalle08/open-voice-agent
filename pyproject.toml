@@ -16,11 +16,14 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "python-multipart>=0.0.22",
     "streamlit>=1.53.1",
+    "transformers",
+    "torch",
     "uvicorn[standard]>=0.40.0",
     "websockets>=16.0",
+    "accelerate>=1.12.0",
 ]
 
-[project.optional-dependencies]
+[project.optional-dependencies] 
 dev = [
     "httpx>=0.28.1",
 ]

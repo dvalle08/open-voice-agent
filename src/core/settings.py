@@ -68,7 +68,10 @@ class LLMSettings(CoreSettings):
     NVIDIA_BASE_URL: str = Field(default="https://integrate.api.nvidia.com/v1")
     
     HF_TOKEN: Optional[str] = Field(default=None)
-    HF_MODEL: Optional[str] = Field(default="meta/llama-3.1-8b-instruct")
+    HF_MODEL: Optional[str] = Field(default="TheBloke/Llama-2-7B-Chat-GGUF")
+    HF_USE_INFERENCE_API: bool = Field(default=False)
+    HF_TRUST_REMOTE_CODE: bool = Field(default=False)
+    HF_USE_FAST_TOKENIZER: bool = Field(default=False)
     
     LLM_TEMPERATURE: float = Field(default=0.7, ge=0.0, le=2.0)
     LLM_MAX_TOKENS: int = Field(default=1024, gt=0)

@@ -119,6 +119,7 @@ venv.bak/
 dev/
 nvidia_services/cache/asr/
 nvidia_services/cache/tts/
+test/
 # Spyder project settings
 .spyderproject
 .spyproject
