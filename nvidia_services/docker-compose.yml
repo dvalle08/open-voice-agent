@@ -1,0 +1,66 @@
+name: riva-services
+
+services:
+  # Text-to-Speech service (Magpie TTS Multilingual)
+  riva-tts:
+    image: nvcr.io/nim/nvidia/magpie-tts-multilingual:latest
+    environment:
+      - NGC_API_KEY=${NVIDIA_API_KEY}
+      - NIM_HTTP_API_PORT=9000
+      - NIM_GRPC_API_PORT=50051
+      - NIM_CACHE_PATH=/opt/nim/.cache
+    ports:
+      - "9000:9000"
+      - "50051:50051"
+    volumes:
+      - ./cache/tts:/opt/nim/.cache
+    shm_size: 8GB
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+
+  # Automatic Speech Recognition service (Parakeet ASR)
+  riva-asr:
+    image: nvcr.io/nim/nvidia/parakeet-ctc-1.1b-asr:latest
+    environment:
+      - NGC_API_KEY=${NVIDIA_API_KEY}
+      - NIM_HTTP_API_PORT=9001
+      - NIM_GRPC_API_PORT=50052
+      - NIM_CACHE_PATH=/opt/nim/.cache
+    ports:
+      - "9001:9001"
+      - "50052:50052"
+    volumes:
+      - ./cache/asr:/opt/nim/.cache
+    shm_size: 8GB
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9001/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
