@@ -1,5 +1,12 @@
+
+from typing import Any, Union
+
 from huggingface_hub import InferenceClient
-from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+from transformers import pipeline
+from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint, HuggingFacePipeline
+
+from kokoro import KPipeline
+import torch
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
 from src.core.logger import logger
@@ -31,7 +38,20 @@ class LLMFactory:
         provider: str = "auto",
         temperature: float = settings.llm.LLM_TEMPERATURE,
         max_tokens: int = settings.llm.LLM_MAX_TOKENS,
+        run_local: bool = False,
     ) -> ChatHuggingFace:
+        if run_local:
+            logger.info(f"Initializing local HuggingFace LLM: {model_id}")
+            llm = HuggingFacePipeline.from_model_id(
+                model_id=model_id,
+                task="text-generation",
+                pipeline_kwargs={
+                    "temperature": temperature,
+                    "max_new_tokens": max_tokens,
+                },
+            )
+            return ChatHuggingFace(llm=llm)
+
         token = (settings.llm.HF_TOKEN or "").strip()
         if not token:
             raise ValueError("HF_TOKEN must be set to use the HuggingFace LLM provider.")
@@ -48,7 +68,13 @@ class LLMFactory:
         return ChatHuggingFace(llm=llm)
 
     @staticmethod
-    def create_huggingface_stt(model_id: str | None = None) -> InferenceClient:
+    def create_huggingface_stt(
+        model_id: str | None = None, run_local: bool = False
+    ) -> Union[InferenceClient, Any]:
+        if run_local:
+            logger.info(f"Initializing local HuggingFace STT: {model_id or 'default'}")
+            return pipeline("automatic-speech-recognition", model=model_id)
+
         token = (settings.llm.HF_TOKEN or "").strip()
         if not token:
             raise ValueError("HF_TOKEN must be set to use the HuggingFace STT provider.")
@@ -58,7 +84,13 @@ class LLMFactory:
         return InferenceClient(model=model_id, token=token)
 
     @staticmethod
-    def create_huggingface_tts(model_id: str | None = None) -> InferenceClient:
+    def create_huggingface_tts(
+        model_id: str | None = None, run_local: bool = False
+    ) -> Union[InferenceClient, Any]:
+        if run_local:
+            logger.info(f"Initializing local HuggingFace TTS: {model_id or 'default'}")
+            return pipeline("text-to-speech", model=model_id)
+
         token = (settings.llm.HF_TOKEN or "").strip()
         if not token:
             raise ValueError("HF_TOKEN must be set to use the HuggingFace TTS provider.")
@@ -66,3 +98,13 @@ class LLMFactory:
         logger.info(f"Initializing HuggingFace TTS: {model_id or 'default'}")
 
         return InferenceClient(model=model_id, token=token)
+
+    @staticmethod
+    def create_kokoro_tts(lang_code: str = "a") -> Any:
+        if KPipeline is None:
+            raise ImportError(
+                "kokoro library not found. Please install it (pip install kokoro>=0.9.4) to use Kokoro TTS."
+            )
+
+        logger.info(f"Initializing Kokoro TTS Pipeline with lang_code: {lang_code}")
+        return KPipeline(lang_code=lang_code, repo_id="hexgrad/Kokoro-82M")
