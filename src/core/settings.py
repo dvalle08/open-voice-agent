@@ -69,6 +69,23 @@ class VoiceSettings(CoreSettings):
         description="Moonshine model size: tiny, base, or small"
     )
 
+    # TTS (Text-to-Speech) Settings - Pocket TTS
+    POCKET_TTS_VOICE: str = Field(
+        default="alba",
+        description="Default voice (alba, marius, javert, jean, fantine, cosette, eponine, azelma) or path to audio file"
+    )
+    POCKET_TTS_TEMPERATURE: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=2.0,
+        description="Sampling temperature for generation"
+    )
+    POCKET_TTS_LSD_DECODE_STEPS: int = Field(
+        default=1,
+        ge=1,
+        description="LSD decoding steps (higher = better quality, slower)"
+    )
+
 
 class LLMSettings(CoreSettings):
     NVIDIA_API_KEY: Optional[str] = Field(default=None)

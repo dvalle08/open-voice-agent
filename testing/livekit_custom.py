@@ -24,6 +24,7 @@ from huggingface_hub import InferenceClient
 import io
 import wave
 from src.plugins.moonshine_stt import MoonshineSTT
+from src.agent.llm_factory import LLMFactory
 
 load_dotenv(".env")
 
@@ -76,7 +77,7 @@ async def my_agent(ctx: agents.JobContext):
     session = AgentSession(
         stt=MoonshineSTT(model_id="UsefulSensors/moonshine-streaming-medium"),
         llm=langchain.LLMAdapter(create_nvidia_workflow()),
-        tts="cartesia/sonic-3:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
+        tts=LLMFactory.create_pocket_tts(voice="alba"),
         vad=silero.VAD.load(),
         turn_detection=MultilingualModel(),
     )
