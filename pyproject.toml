@@ -3,18 +3,15 @@ name = "open-voice-agent"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.10,<3.11"
 dependencies = [
-    "livekit-agents[silero,turn-detector]~=1.3",
-    "livekit-plugins-noise-cancellation~=0.2",
-    "python-dotenv>=1.2.1",
-    "scipy>=1.17.0",
-    "soundfile>=0.13.1",
-    "onnxruntime>=1.21.0",
-    "useful-moonshine-onnx @ git+https://github.com/moonshine-ai/moonshine.git#subdirectory=moonshine-onnx",
-]
-
-[project.optional-dependencies]
-dev = [
-    "httpx>=0.28.1",
+  "torch==2.10.0",
+  "torchvision==0.25.0",
+  "torchaudio==2.10.0",
+  "nemo_toolkit[asr]",
+  "lhotse>=1.24,<1.31",
+  "python-dotenv>=1.2.1",
+  "livekit-agents[silero,turn-detector]~=1.3",
+  "livekit-plugins-noise-cancellation~=0.2",
+  "langgraph>=1.0.8",
 ]

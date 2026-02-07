@@ -111,13 +111,13 @@ class LLMFactory:
 
     @staticmethod
     def create_moonshine_stt(
-        model_size: str = "small",
+        model_size: str = "base",
         language: str = "en",
     ) -> "MoonshineSTT":
         """Initialize Moonshine ONNX STT plugin.
 
         Args:
-            model_size: "tiny" (26MB), "base" (57MB), or "small"
+            model_size: "tiny" (26MB) or "base" (57MB), or language variants (e.g., "base-es", "tiny-ar")
             language: Currently only "en" supported
 
         Returns:
