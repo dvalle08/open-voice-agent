@@ -59,6 +59,16 @@ class VoiceSettings(CoreSettings):
     VAD_THRESHOLD: float = Field(default=0.5, ge=0.0, le=1.0)
     VAD_HORIZON_INDEX: int = Field(default=2, ge=0)
 
+    # STT (Speech-to-Text) Settings
+    STT_PROVIDER: str = Field(
+        default="moonshine",
+        description="STT provider (moonshine, assemblyai, etc)"
+    )
+    MOONSHINE_MODEL_SIZE: str = Field(
+        default="small",
+        description="Moonshine model size: tiny, base, or small"
+    )
+
 
 class LLMSettings(CoreSettings):
     NVIDIA_API_KEY: Optional[str] = Field(default=None)

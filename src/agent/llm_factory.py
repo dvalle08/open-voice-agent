@@ -108,3 +108,21 @@ class LLMFactory:
 
         logger.info(f"Initializing Kokoro TTS Pipeline with lang_code: {lang_code}")
         return KPipeline(lang_code=lang_code, repo_id="hexgrad/Kokoro-82M")
+
+    @staticmethod
+    def create_moonshine_stt(
+        model_size: str = "small",
+        language: str = "en",
+    ) -> "MoonshineSTT":
+        """Initialize Moonshine ONNX STT plugin.
+
+        Args:
+            model_size: "tiny" (26MB), "base" (57MB), or "small"
+            language: Currently only "en" supported
+
+        Returns:
+            MoonshineSTT plugin instance
+        """
+        logger.info(f"Initializing Moonshine ONNX STT: {model_size}")
+        from src.plugins.moonshine_stt import MoonshineSTT
+        return MoonshineSTT(model_size=model_size, language=language)
