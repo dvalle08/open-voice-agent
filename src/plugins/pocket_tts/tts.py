@@ -199,7 +199,6 @@ class PocketSynthesizeStream(tts.SynthesizeStream):
                 ):
                     audio_bytes = self._tensor_to_pcm_bytes(audio_chunk)
                     chunks.append(audio_bytes)
-                    logger.debug(f"Generated chunk: {len(audio_bytes)} bytes")
                 logger.info(f"Total chunks generated: {len(chunks)}")
                 return chunks
 
@@ -210,10 +209,6 @@ class PocketSynthesizeStream(tts.SynthesizeStream):
 
             # Push raw PCM bytes to the emitter
             for i, chunk in enumerate(audio_chunks):
-                num_samples = len(chunk) // 2  # int16 = 2 bytes per sample
-                logger.debug(
-                    f"Pushing chunk {i+1}/{len(audio_chunks)}: {len(chunk)} bytes ({num_samples} samples @ {self._tts._output_sample_rate}Hz)"
-                )
                 output_emitter.push(chunk)
 
             logger.info(f"Successfully pushed all {len(audio_chunks)} chunks")

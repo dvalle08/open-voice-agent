@@ -119,7 +119,9 @@ venv.bak/
 dev/
 nvidia_services/cache/asr/
 nvidia_services/cache/tts/
-test/
+.claude/
+.cursor/
+.pytest_cache/
 # Spyder project settings
 .spyderproject
 .spyproject
