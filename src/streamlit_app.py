@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import streamlit as st
 
-from src.api.livekit_tokens import create_room_token
+from src.api.livekit_tokens import create_room_token, dispatch_agent_sync
 from src.core.settings import settings
 
 UI_DIR = Path(__file__).parent / "ui"
@@ -47,6 +47,18 @@ def main() -> None:
     if start or "token" not in st.session_state:
         token_data = create_room_token(room_name=room_name)
         st.session_state["token"] = token_data.token
+        st.session_state["agent_dispatched"] = False
+
+    if not st.session_state.get("agent_dispatched"):
+        try:
+            dispatch_agent_sync(
+                room_name=room_name,
+                agent_name=settings.livekit.LIVEKIT_AGENT_NAME,
+            )
+            st.session_state["agent_dispatched"] = True
+        except Exception as exc:
+            st.error(f"Failed to dispatch agent: {exc}")
+            return
 
     token = st.session_state.get("token")
     if not token:

@@ -80,6 +80,8 @@ class LiveKitSettings(CoreSettings):
     LIVEKIT_URL: Optional[str] = Field(default=None)
     LIVEKIT_API_KEY: Optional[str] = Field(default=None)
     LIVEKIT_API_SECRET: Optional[str] = Field(default=None)
+    LIVEKIT_AGENT_NAME: str = Field(default="open-voice-agent")
+    LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=2, ge=0)
 
 
 class Settings(CoreSettings):

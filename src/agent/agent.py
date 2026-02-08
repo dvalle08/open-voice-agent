@@ -21,10 +21,10 @@ class Assistant(Agent):
         )
 
 
-server = AgentServer()
+server = AgentServer(num_idle_processes=settings.livekit.LIVEKIT_NUM_IDLE_PROCESSES)
 
 
-@server.rtc_session()
+@server.rtc_session(agent_name=settings.livekit.LIVEKIT_AGENT_NAME)
 async def session_handler(ctx: agents.JobContext) -> None:
     session = AgentSession(
         stt=MoonshineSTT(model_id=settings.voice.MOONSHINE_MODEL_ID),
