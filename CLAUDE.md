@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Open Voice Agent is a real-time AI voice conversation application that integrates speech-to-text (STT), large language models (LLMs), and text-to-speech (TTS) capabilities. The project supports multiple providers including NVIDIA, HuggingFace, and custom implementations.
+Open Voice Agent is a real-time AI voice conversation application built on LiveKit Agents. It integrates Moonshine STT (streaming speech-to-text), NVIDIA LLM (via LangGraph), and Pocket TTS (local text-to-speech) for low-latency voice conversations.
 
 ## Core Commands
 
@@ -18,52 +18,25 @@ source .venv/bin/activate
 
 # Copy environment template and configure
 cp .env.example .env
-# Edit .env to add your API keys (NVIDIA_API_KEY, HF_TOKEN, etc.)
+# Edit .env to add your API keys
 ```
 
 ### Running the Application
 ```bash
-# Run both FastAPI server and Streamlit UI (default)
-python main.py
-
-# Run only the FastAPI server
-python main.py api
-
-# Run only the Streamlit UI
-python main.py streamlit
+# Run the LiveKit voice agent
+python src/agent/agent.py start
 ```
-
-The application will start:
-- FastAPI server on http://localhost:8000
-- Streamlit UI on http://localhost:8501
 
 ### Testing
 ```bash
 # Run all tests
 pytest
 
-# Run specific test file
-pytest test/test_models.py
-
 # Run with verbose output
 pytest -v
 
 # Run LiveKit integration tests
-python test/livekit_langgraph_moonshine.py
-```
-
-### NVIDIA TTS Docker Setup
-```bash
-# Login to NVIDIA Container Registry
-source .env
-echo "$NVIDIA_API_KEY" | docker login nvcr.io --username '$oauthtoken' --password-stdin
-
-# Run Riva TTS NIM container
-docker run -it --rm --name=magpie-tts-multilingual \
-  --runtime=nvidia --gpus '"device=0"' --shm-size=8GB \
-  -e NGC_API_KEY=$NGC_API_KEY \
-  -p 9000:9000 -p 50051:50051 \
-  nvcr.io/nim/nvidia/magpie-tts-multilingual:latest
+python dev/test/livekit_langgraph_moonshine.py
 ```
 
 ## Architecture
@@ -72,59 +45,42 @@ docker run -it --rm --name=magpie-tts-multilingual \
 
 The codebase follows a modular architecture with clear separation of concerns:
 
-**src/agent/** - LangGraph-based conversation orchestration
-- `graph.py`: StateGraph implementation with nodes for processing user input and generating responses
-- `state.py`: ConversationState TypedDict defines the state structure (messages, current_transcript, context, turn_active)
-- `llm_factory.py`: Factory pattern for creating LLM, STT, and TTS providers
-- `prompts.py`: System prompts for the conversation agent
+**src/agent/** - LangGraph-based conversation orchestration and LiveKit agent entry point
+- `agent.py`: LiveKit `AgentServer` and `AgentSession` setup; wires together STT, LLM, TTS, VAD, and turn detection
+- `graph.py`: Single-node `StateGraph` using `ChatNVIDIA` as the LLM backend
 
-**src/models/voice/** - Voice provider abstractions
-- `base.py`: BaseVoiceProvider abstract class defining the interface for STT/TTS providers
-- `types.py`: Shared types (TranscriptionResult, VADInfo, etc.)
-
-**src/plugins/** - Provider-specific implementations
-- `moonshine_stt/`: ONNX-based Moonshine STT plugin for LiveKit agents
+**src/plugins/** - Provider-specific LiveKit plugin implementations
+- `moonshine_stt/`: Streaming STT using `MoonshineStreamingForConditionalGeneration` (HuggingFace transformers)
+- `pocket_tts/`: Local TTS using Kyutai's `pocket_tts` library
 
 **src/core/** - Application configuration and utilities
-- `settings.py`: Pydantic-based settings with VoiceSettings, LLMSettings, and APISettings
+- `settings.py`: Pydantic-based settings with `VoiceSettings` and `LLMSettings`
 - `logger.py`: Centralized logging configuration
-
-**src/api/** - FastAPI REST API implementation
 
 ### Key Architectural Patterns
 
-**Provider Factory Pattern**: LLMFactory centralizes creation of all AI providers (NVIDIA, HuggingFace, Moonshine, Kokoro). Each provider has specific initialization parameters and supports both cloud and local execution modes.
+**LangGraph StateGraph**: The LLM workflow is a simple single-node graph:
+- Uses `MessagesState` for conversation history
+- Wraps `ChatNVIDIA` and is passed to LiveKit via `langchain.LLMAdapter`
 
-**LangGraph StateGraph**: The conversation flow is managed by a StateGraph with conditional edges:
-- `process_input` node: Adds user transcripts to message history
-- `should_respond` conditional: Decides whether to generate response or wait based on turn_active and transcript presence
-- `generate_response` node: Invokes LLM with conversation history
+**LiveKit AgentSession**: All voice components are composed via `AgentSession`:
+- `MoonshineSTT` for streaming speech recognition
+- `langchain.LLMAdapter(create_graph())` for LLM responses
+- `PocketTTS` for local speech synthesis
+- `silero.VAD` for voice activity detection
+- `MultilingualModel` for turn detection
 
-**Settings Management**: Pydantic BaseSettings with nested configuration groups (voice, llm, api). Environment variables are loaded from .env file with automatic masking of sensitive data in logs.
+**Settings Management**: Pydantic `BaseSettings` with two nested groups (`voice`, `llm`). Environment variables are loaded from `.env` with automatic masking of sensitive data in logs.
 
-**Plugin System**: Voice providers inherit from BaseVoiceProvider abstract class, implementing connect/disconnect, text_to_speech, speech_to_text, and get_vad_info methods. This allows easy swapping of STT/TTS backends.
+**Plugin System**: Plugins implement LiveKit's `stt.STT` and `tts.TTS` abstract classes, allowing easy swapping of STT/TTS backends.
 
-### Multi-Provider Support
+### Provider Details
 
-**LLM Providers**:
-- NVIDIA: ChatNVIDIA via `langchain_nvidia_ai_endpoints`
-- HuggingFace: ChatHuggingFace with HuggingFaceEndpoint (cloud) or HuggingFacePipeline (local)
+**LLM**: NVIDIA via `langchain_nvidia_ai_endpoints.ChatNVIDIA`
 
-**STT Providers**:
-- Moonshine: ONNX-based streaming STT (configurable: tiny, base, small, medium models)
-- HuggingFace: InferenceClient for cloud STT or pipeline for local
+**STT**: Moonshine (`usefulsensors/moonshine-streaming-*`) using HuggingFace transformers with automatic CUDA/CPU detection
 
-**TTS Providers**:
-- NVIDIA: Magpie-TTS-Multilingual via Riva endpoint
-- HuggingFace: InferenceClient for cloud TTS or pipeline for local
-- Kokoro: Local TTS using KPipeline (hexgrad/Kokoro-82M)
-
-### LiveKit Integration
-
-The project uses LiveKit agents for real-time voice conversations:
-- `AgentSession` manages STT, LLM, TTS, VAD, and turn detection
-- Supports noise cancellation via BVC/BVCTelephony
-- Integrates LangGraph workflows through `langchain.LLMAdapter`
+**TTS**: Pocket TTS (Kyutai) — local inference with configurable voice, temperature, and LSD decode steps. Native sample rate 24000 Hz, resampled to configured output rate.
 
 ## Coding Standards
 
@@ -135,79 +91,54 @@ All function parameters and return types MUST have type hints. This is enforced 
 Code should be self-documenting. Only add comments that explain **why**, never **what**. Do not create markdown documentation files unless explicitly requested by the user.
 
 ### Dependencies
-Always use `uv` for package management. Never use `pip` directly. The project requires Python 3.10 (specified in pyproject.toml).
+Always use `uv` for package management. Never use `pip` directly. The project requires Python >=3.10,<3.11 (see pyproject.toml).
 
 ### Modern Python
 Use modern Python features appropriate for Python 3.10+.
 
 ## Environment Configuration
 
-Required environment variables (see .env.example):
-- `NVIDIA_API_KEY`: For NVIDIA LLM and TTS services
-- `HF_TOKEN`: For HuggingFace models and inference
-- `NVIDIA_TTS_ENDPOINT`: NVIDIA TTS service endpoint (from build.nvidia.com)
+Required environment variables (see `.env.example`):
+- `NVIDIA_API_KEY`: For NVIDIA LLM via `langchain_nvidia_ai_endpoints`
 
 Optional configuration:
-- `VOICE_PROVIDER`: Default voice provider (nvidia, huggingface, etc.)
-- `STT_PROVIDER`: Speech-to-text provider (moonshine, assemblyai, etc.)
-- `MOONSHINE_MODEL_SIZE`: Moonshine model size (tiny, base, small, medium)
+- `NVIDIA_MODEL`: NVIDIA model ID (default: `meta/llama-3.1-8b-instruct`)
 - `LLM_TEMPERATURE`: LLM temperature (0.0-2.0, default 0.7)
 - `LLM_MAX_TOKENS`: Maximum tokens in LLM response (default 1024)
+- `MOONSHINE_MODEL_ID`: Moonshine model ID (default: `usefulsensors/moonshine-streaming-medium`)
+- `POCKET_TTS_VOICE`: Voice name or path to audio file (default: `alba`)
+- `POCKET_TTS_TEMPERATURE`: TTS sampling temperature (default 0.7)
+- `POCKET_TTS_LSD_DECODE_STEPS`: LSD decoding steps; higher = better quality, slower (default 1)
+- `SAMPLE_RATE_OUTPUT`: Output audio sample rate in Hz (default 48000)
 
 ## Common Patterns
 
-### Creating LLM Instances
+### Running the Agent
 ```python
-from src.agent.llm_factory import LLMFactory
-
-# NVIDIA LLM
-llm = LLMFactory.create_nvidia_llm(
-    model="meta/llama-3.1-8b-instruct",
-    temperature=0.7,
-    max_tokens=1024
-)
-
-# HuggingFace LLM (cloud)
-llm = LLMFactory.create_huggingface_llm(
-    model_id="meta-llama/Meta-Llama-3-8B-Instruct",
-    provider="auto"
-)
-
-# HuggingFace LLM (local)
-llm = LLMFactory.create_huggingface_llm(
-    model_id="microsoft/Phi-3-mini-4k-instruct",
-    run_local=True
-)
+# src/agent/agent.py is the entry point
+# The agent uses AgentServer and is started via the LiveKit CLI:
+# python src/agent/agent.py start
 ```
 
-### Creating STT/TTS Instances
+### Creating the LangGraph Workflow
 ```python
-# Moonshine STT (ONNX-based, efficient)
-stt = LLMFactory.create_moonshine_stt(model_size="base")
+from src.agent.graph import create_graph
 
-# Kokoro TTS (local)
-tts = LLMFactory.create_kokoro_tts(lang_code="a")
-
-# HuggingFace STT (cloud)
-stt = LLMFactory.create_huggingface_stt(model_id="openai/whisper-large-v3")
+graph = create_graph()
+# Returns a compiled StateGraph with a single ChatNVIDIA node
 ```
 
-### Using LangGraph Conversation Graph
+### Using Settings
 ```python
-from src.agent.graph import create_conversation_graph
+from src.core.settings import settings
 
-graph = create_conversation_graph()
-result = graph.invoke({
-    "messages": [],
-    "current_transcript": "Hello, how are you?",
-    "context": {},
-    "turn_active": False
-})
+model_id = settings.voice.MOONSHINE_MODEL_ID
+api_key = settings.llm.NVIDIA_API_KEY
 ```
 
 ## Important Notes
 
 - Python version constraint: Requires Python >=3.10,<3.11 (see pyproject.toml)
-- GPU acceleration: Models automatically detect CUDA availability and use fp16 on GPU, fp32 on CPU
-- LiveKit agent scripts are in test/ directory (not production code)
-- The test/ directory contains integration test scripts, not unit tests with assertions
+- GPU acceleration: Moonshine STT automatically uses CUDA with fp16 when available, falls back to CPU with fp32
+- The `dev/` directory contains development scripts and integration tests (not production code)
+- LiveKit environment variables (`LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`) are required at runtime for the agent to connect to a LiveKit server

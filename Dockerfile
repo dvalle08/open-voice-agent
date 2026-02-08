@@ -1,4 +1,4 @@
-FROM python:3.13.5-slim
+FROM python:3.10-slim
 
 WORKDIR /app
 
@@ -8,10 +8,14 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
+RUN pip3 install uv
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
 COPY src/ ./src/
 
-RUN pip3 install -r requirements.txt
+ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8501
 

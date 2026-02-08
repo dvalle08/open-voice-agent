@@ -76,9 +76,16 @@ class LLMSettings(CoreSettings):
     LLM_MAX_TOKENS: int = Field(default=1024, gt=0)
 
 
+class LiveKitSettings(CoreSettings):
+    LIVEKIT_URL: Optional[str] = Field(default=None)
+    LIVEKIT_API_KEY: Optional[str] = Field(default=None)
+    LIVEKIT_API_SECRET: Optional[str] = Field(default=None)
+
+
 class Settings(CoreSettings):
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    livekit: LiveKitSettings = Field(default_factory=LiveKitSettings)
 
 
 try:
