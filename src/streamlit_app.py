@@ -34,21 +34,28 @@ def main() -> None:
 
     if not settings.livekit.LIVEKIT_URL:
         st.error("LIVEKIT_URL is not set in the environment.")
-        return
+        st.stop()
     if not settings.livekit.LIVEKIT_API_KEY or not settings.livekit.LIVEKIT_API_SECRET:
         st.error("LIVEKIT_API_KEY or LIVEKIT_API_SECRET is not set.")
-        return
+        st.stop()
 
-    default_room = f"voice-{uuid4().hex[:8]}"
-    room_name = st.text_input("Room name", value=st.session_state.get("room_name", default_room))
-    st.session_state["room_name"] = room_name
+    # Auto-generate room name once
+    if "room_name" not in st.session_state:
+        st.session_state["room_name"] = f"voice-{uuid4().hex[:8]}"
 
-    start = st.button("Start session", type="primary")
-    if start or "token" not in st.session_state:
-        token_data = create_room_token(room_name=room_name)
-        st.session_state["token"] = token_data.token
-        st.session_state["agent_dispatched"] = False
+    room_name = st.session_state["room_name"]
 
+    # Auto-create token once
+    if "token" not in st.session_state:
+        try:
+            token_data = create_room_token(room_name=room_name)
+            st.session_state["token"] = token_data.token
+            st.session_state["agent_dispatched"] = False
+        except Exception as exc:
+            st.error(f"Failed to create room token: {exc}")
+            st.stop()
+
+    # Auto-dispatch agent once
     if not st.session_state.get("agent_dispatched"):
         try:
             dispatch_agent_sync(
@@ -58,14 +65,9 @@ def main() -> None:
             st.session_state["agent_dispatched"] = True
         except Exception as exc:
             st.error(f"Failed to dispatch agent: {exc}")
-            return
+            st.stop()
 
-    token = st.session_state.get("token")
-    if not token:
-        st.info("Click Start session to generate a LiveKit token.")
-        return
-
-    render_client(token=token, livekit_url=settings.livekit.LIVEKIT_URL)
+    render_client(token=st.session_state["token"], livekit_url=settings.livekit.LIVEKIT_URL)
 
 
 if __name__ == "__main__":

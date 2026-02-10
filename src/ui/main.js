@@ -43,8 +43,10 @@ function drawWave() {
     const value = dataArray[i * step] || 0;
     const normalized = value / 255;
     const barHeight = Math.max(6, normalized * canvas.height);
+    const halfHeight = barHeight / 2;
+    const centerY = canvas.height / 2;
+    const y = centerY - halfHeight;
     const x = i * barWidth;
-    const y = canvas.height - barHeight;
     ctx.fillStyle = "#5b8cff";
     ctx.fillRect(x + 2, y, barWidth - 4, barHeight);
   }

@@ -67,10 +67,56 @@ class VoiceSettings(CoreSettings):
         description="LSD decoding steps (higher = better quality, slower)",
     )
 
+    # LiveKit Audio Input Settings
+    LIVEKIT_SAMPLE_RATE: int = Field(
+        default=24000,
+        description="Audio input sample rate (Hz)",
+    )
+    LIVEKIT_NUM_CHANNELS: int = Field(
+        default=1,
+        description="Number of audio input channels (1=mono)",
+    )
+    LIVEKIT_FRAME_SIZE_MS: int = Field(
+        default=20,
+        ge=10,
+        le=100,
+        description="Audio frame size in milliseconds (smaller = faster VAD response)",
+    )
+    LIVEKIT_PRE_CONNECT_AUDIO: bool = Field(
+        default=True,
+        description="Pre-connect audio before room join",
+    )
+    LIVEKIT_PRE_CONNECT_TIMEOUT: float = Field(
+        default=3.0,
+        ge=1.0,
+        le=10.0,
+        description="Timeout for pre-connect audio (seconds)",
+    )
+
+    # Voice Activity Detection Settings
+    VAD_MIN_SPEECH_DURATION: float = Field(
+        default=0.25,
+        ge=0.1,
+        le=1.0,
+        description="Minimum speech duration (seconds) before VAD activation",
+    )
+    VAD_MIN_SILENCE_DURATION: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=2.0,
+        description="Minimum silence duration (seconds) before VAD deactivation",
+    )
+    VAD_THRESHOLD: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="VAD activation threshold (higher = less sensitive, 0.5 is Silero default)",
+    )
+
 
 class LLMSettings(CoreSettings):
     NVIDIA_API_KEY: Optional[str] = Field(default=None)
-    NVIDIA_MODEL: str = Field(default="meta/llama-3.1-8b-instruct")
+    NVIDIA_MODEL: str = Field(default="openai/gpt-oss-20b") # "meta/llama-3.1-8b-instruct"
 
     LLM_TEMPERATURE: float = Field(default=0.7, ge=0.0, le=2.0)
     LLM_MAX_TOKENS: int = Field(default=1024, gt=0)
@@ -81,7 +127,7 @@ class LiveKitSettings(CoreSettings):
     LIVEKIT_API_KEY: Optional[str] = Field(default=None)
     LIVEKIT_API_SECRET: Optional[str] = Field(default=None)
     LIVEKIT_AGENT_NAME: str = Field(default="open-voice-agent")
-    LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=2, ge=0)
+    LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=3, ge=0)
 
 
 class Settings(CoreSettings):

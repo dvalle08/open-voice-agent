@@ -34,7 +34,11 @@ async def session_handler(ctx: agents.JobContext) -> None:
             temperature=settings.voice.POCKET_TTS_TEMPERATURE,
             lsd_decode_steps=settings.voice.POCKET_TTS_LSD_DECODE_STEPS,
         ),
-        vad=silero.VAD.load(),
+        vad=silero.VAD.load(
+            min_speech_duration=settings.voice.VAD_MIN_SPEECH_DURATION,
+            min_silence_duration=settings.voice.VAD_MIN_SILENCE_DURATION,
+            activation_threshold=settings.voice.VAD_THRESHOLD,
+        ),
         turn_detection=MultilingualModel(),
     )
     await session.start(
@@ -42,6 +46,11 @@ async def session_handler(ctx: agents.JobContext) -> None:
         agent=Assistant(),
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
+                sample_rate=settings.voice.LIVEKIT_SAMPLE_RATE,
+                num_channels=settings.voice.LIVEKIT_NUM_CHANNELS,
+                frame_size_ms=settings.voice.LIVEKIT_FRAME_SIZE_MS,
+                pre_connect_audio=settings.voice.LIVEKIT_PRE_CONNECT_AUDIO,
+                pre_connect_audio_timeout=settings.voice.LIVEKIT_PRE_CONNECT_TIMEOUT,
                 noise_cancellation=lambda params: noise_cancellation.BVCTelephony()
                 if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
                 else noise_cancellation.BVC(),

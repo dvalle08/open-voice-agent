@@ -1,0 +1,9 @@
+[theme]
+primaryColor="#5b8cff"              # Blue accent (matches visualizer bars)
+backgroundColor="#0f1115"            # Dark background
+secondaryBackgroundColor="#151923"   # Panel background
+textColor="#f2f2f2"                 # Light text
+font="sans serif"
+
+[server]
+headless=true 
