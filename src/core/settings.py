@@ -115,9 +115,27 @@ class VoiceSettings(CoreSettings):
 
 
 class LLMSettings(CoreSettings):
-    NVIDIA_API_KEY: Optional[str] = Field(default=None)
-    NVIDIA_MODEL: str = Field(default="openai/gpt-oss-20b") # "meta/llama-3.1-8b-instruct"
+    # Provider selection
+    LLM_PROVIDER: str = Field(
+        default="nvidia", #"huggingface",
+        description="LLM provider: 'nvidia' or 'huggingface'"
+    )
 
+    # NVIDIA settings (existing)
+    NVIDIA_API_KEY: Optional[str] = Field(default=None)
+    NVIDIA_MODEL: str = Field(default="openai/gpt-oss-20b")
+
+    # HuggingFace settings (new)
+    HUGGINGFACE_MODEL_ID: str = Field(
+        default="Qwen/Qwen2.5-3B-Instruct",
+        description="HuggingFace model repository ID"
+    )
+    HUGGINGFACE_DEVICE: Optional[str] = Field(
+        default=None,
+        description="Device for inference: 'cuda', 'cpu', or None for auto-detect"
+    )
+
+    # Common LLM parameters
     LLM_TEMPERATURE: float = Field(default=0.7, ge=0.0, le=2.0)
     LLM_MAX_TOKENS: int = Field(default=1024, gt=0)
 
@@ -127,7 +145,7 @@ class LiveKitSettings(CoreSettings):
     LIVEKIT_API_KEY: Optional[str] = Field(default=None)
     LIVEKIT_API_SECRET: Optional[str] = Field(default=None)
     LIVEKIT_AGENT_NAME: str = Field(default="open-voice-agent")
-    LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=3, ge=0)
+    LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=1, ge=0)
 
 
 class Settings(CoreSettings):

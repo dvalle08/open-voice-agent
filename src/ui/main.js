@@ -189,15 +189,6 @@ function resetMetrics() {
   document.getElementById("live-stt-bar").style.width = "0%";
   document.getElementById("live-vad-bar").style.width = "0%";
 
-  // Clear average metrics
-  document.getElementById("avg-total-turns").textContent = "0";
-  document.getElementById("avg-total-latency").textContent = "--";
-  document.getElementById("avg-vad-delay").textContent = "--";
-  document.getElementById("avg-llm-ttft").textContent = "--";
-  document.getElementById("avg-tts-ttfb").textContent = "--";
-  document.getElementById("avg-stt-duration").textContent = "--";
-  document.getElementById("avg-tokens-sec").textContent = "--";
-
   // Clear conversation history
   metricsLog.innerHTML = "";
 }
@@ -297,35 +288,6 @@ function getLatencyClass(value, warningThreshold, criticalThreshold) {
   return "";
 }
 
-function updateAverageMetrics() {
-  const totalTurns = metricsHistory.length;
-  document.getElementById("avg-total-turns").textContent = totalTurns;
-
-  if (totalTurns === 0) return;
-
-  const avg = (arr) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
-
-  const avgTotalLatency = avg(averages.totalLatency);
-  const avgVadDelay = avg(averages.vadDetectionDelay);
-  const avgLlmTtft = avg(averages.llmTtft);
-  const avgTtsTtfb = avg(averages.ttsTtfb);
-  const avgSttDuration = avg(averages.sttDuration);
-  const avgTokensSec = avg(averages.tokensPerSecond);
-
-  document.getElementById("avg-total-latency").textContent =
-    avgTotalLatency > 0 ? `${avgTotalLatency.toFixed(2)}s` : "--";
-  document.getElementById("avg-vad-delay").textContent =
-    avgVadDelay > 0 ? `${avgVadDelay.toFixed(2)}s` : "--";
-  document.getElementById("avg-llm-ttft").textContent =
-    avgLlmTtft > 0 ? `${avgLlmTtft.toFixed(2)}s` : "--";
-  document.getElementById("avg-tts-ttfb").textContent =
-    avgTtsTtfb > 0 ? `${avgTtsTtfb.toFixed(2)}s` : "--";
-  document.getElementById("avg-stt-duration").textContent =
-    avgSttDuration > 0 ? `${avgSttDuration.toFixed(2)}s` : "--";
-  document.getElementById("avg-tokens-sec").textContent =
-    avgTokensSec > 0 ? `${avgTokensSec.toFixed(1)}` : "--";
-}
-
 function renderMetrics(turn) {
   // Track for averages
   metricsHistory.push(turn);
@@ -349,9 +311,6 @@ function renderMetrics(turn) {
   if (turn.metrics?.llm?.tokens_per_second > 0) {
     averages.tokensPerSecond.push(turn.metrics.llm.tokens_per_second);
   }
-
-  // Update average metrics
-  updateAverageMetrics();
 
   // Add to conversation history
   const card = document.createElement("div");
