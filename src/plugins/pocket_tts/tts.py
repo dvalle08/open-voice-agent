@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
-from typing import Any
+from typing import Callable
 
 import numpy as np
 import torch
@@ -23,6 +24,8 @@ logging.getLogger("pocket_tts.models.tts_model").setLevel(logging.WARNING)
 logging.getLogger("pocket_tts.utils.utils").setLevel(logging.WARNING)
 logging.getLogger("pocket_tts.conditioners.text").setLevel(logging.WARNING)
 
+type OptionalTTSMetricsCallback = Callable[..., None] | None
+
 
 class PocketTTS(tts.TTS):
     def __init__(
@@ -31,6 +34,7 @@ class PocketTTS(tts.TTS):
         voice: str = "alba",
         temperature: float = 0.7,
         lsd_decode_steps: int = 1,
+        metrics_callback: OptionalTTSMetricsCallback = None,
     ) -> None:
         """Initialize Pocket TTS plugin.
 
@@ -53,6 +57,7 @@ class PocketTTS(tts.TTS):
         self._voice = voice
         self._temperature = temperature
         self._lsd_decode_steps = lsd_decode_steps
+        self._metrics_callback = metrics_callback
 
         try:
             logger.info(f"Loading Pocket TTS model: temp={temperature}, lsd_steps={lsd_decode_steps}")
@@ -100,11 +105,8 @@ class PocketTTS(tts.TTS):
         Returns:
             ChunkedStream containing synthesized audio
         """
-        # Create a stream and push the text to it
-        stream = self.stream(conn_options=conn_options)
-        stream.push_text(text)
-        stream.flush()
-        return tts.ChunkedStream(stream=stream, text=text)
+        # Use the base class helper to create ChunkedStream from SynthesizeStream
+        return self._synthesize_with_stream(text, conn_options=conn_options)
 
     def stream(
         self,
@@ -148,7 +150,6 @@ class PocketSynthesizeStream(tts.SynthesizeStream):
             output_emitter: Audio emitter for pushing generated audio
         """
         request_id = str(uuid.uuid4())
-        segment_id = str(uuid.uuid4())
 
         output_emitter.initialize(
             request_id=request_id,
@@ -157,64 +158,83 @@ class PocketSynthesizeStream(tts.SynthesizeStream):
             mime_type="audio/pcm",
             stream=True,
         )
-        output_emitter.start_segment(segment_id=segment_id)
 
         text_buffer = ""
 
         async for data in self._input_ch:
             if isinstance(data, self._FlushSentinel):
                 if text_buffer.strip():
-                    await self._synthesize_segment(text_buffer, output_emitter)
-                    text_buffer = ""
+                    # Create a new segment for each text chunk
+                    segment_id = str(uuid.uuid4())
+                    output_emitter.start_segment(segment_id=segment_id)
+                    await self._synthesize_segment(text_buffer, output_emitter, segment_id)
+                    output_emitter.end_segment()
                     output_emitter.flush()
+                    text_buffer = ""
                 continue
 
             text_buffer += data
 
+        # Process any remaining text
         if text_buffer.strip():
-            await self._synthesize_segment(text_buffer, output_emitter)
+            segment_id = str(uuid.uuid4())
+            output_emitter.start_segment(segment_id=segment_id)
+            await self._synthesize_segment(text_buffer, output_emitter, segment_id)
+            output_emitter.end_segment()
             output_emitter.flush()
 
     async def _synthesize_segment(
         self,
         text: str,
         output_emitter: tts.AudioEmitter,
+        segment_id: str,
     ) -> None:
         """Synthesize a text segment and push audio chunks to emitter.
 
         Args:
             text: Text segment to synthesize
             output_emitter: Audio emitter for pushing generated audio
+            segment_id: Segment ID for this synthesis
         """
         try:
-            logger.info(f"Starting synthesis for text: {text[:50]}...")
+            logger.info(f"Starting synthesis for segment_id={segment_id}, text: {text[:50]}...")
+            start_time = time.perf_counter()
 
             # Generate all audio chunks in thread pool (synchronous pocket_tts call)
-            def _generate() -> list[bytes]:
+            def _generate() -> tuple[list[bytes], float]:
                 chunks = []
+                first_chunk_ttfb = -1.0
                 for audio_chunk in self._tts._model.generate_audio_stream(
                     self._tts._voice_state,
                     text,
                     copy_state=True,
                 ):
+                    if first_chunk_ttfb < 0:
+                        first_chunk_ttfb = time.perf_counter() - start_time
                     audio_bytes = self._tensor_to_pcm_bytes(audio_chunk)
                     chunks.append(audio_bytes)
-                logger.info(f"Total chunks generated: {len(chunks)}")
-                return chunks
+                return chunks, first_chunk_ttfb
 
             # Run generation in background thread
-            audio_chunks = await asyncio.to_thread(_generate)
+            audio_chunks, first_chunk_ttfb = await asyncio.to_thread(_generate)
+            generation_duration = time.perf_counter() - start_time
 
-            logger.info(f"Received {len(audio_chunks)} chunks from generation, pushing to emitter...")
+            logger.info(f"Generated {len(audio_chunks)} chunks for segment_id={segment_id}, pushing to emitter...")
 
             # Push raw PCM bytes to the emitter
-            for i, chunk in enumerate(audio_chunks):
+            for chunk in audio_chunks:
                 output_emitter.push(chunk)
 
-            logger.info(f"Successfully pushed all {len(audio_chunks)} chunks")
+            logger.info(f"Successfully pushed {len(audio_chunks)} chunks for segment_id={segment_id}")
+            if self._tts._metrics_callback:
+                self._tts._metrics_callback(
+                    ttfb=first_chunk_ttfb,
+                    duration=generation_duration,
+                    audio_duration=self._bytes_to_duration(audio_chunks),
+                )
 
         except Exception as e:
-            logger.error(f"Error synthesizing segment: {e}", exc_info=True)
+            logger.error(f"Error synthesizing segment {segment_id}: {e}", exc_info=True)
             raise
 
     def _tensor_to_pcm_bytes(self, audio_tensor: torch.Tensor) -> bytes:
@@ -243,3 +263,10 @@ class PocketSynthesizeStream(tts.SynthesizeStream):
         audio_int16 = (audio_np * 32767.0).astype(np.int16)
 
         return audio_int16.tobytes()
+
+    def _bytes_to_duration(self, chunks: list[bytes]) -> float:
+        total_bytes = sum(len(chunk) for chunk in chunks)
+        samples = total_bytes / 2  # int16 mono samples
+        if self._tts._output_sample_rate <= 0:
+            return 0.0
+        return float(samples / self._tts._output_sample_rate)

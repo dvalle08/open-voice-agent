@@ -147,20 +147,20 @@ class MoonshineSTTStream(stt.SpeechStream):
                 await self._finalize_segment()
 
     async def _finalize_segment(self) -> None:
+        # Generate a unique request ID for this segment
+        import uuid
+        request_id = str(uuid.uuid4())
+
         if len(self._buffer) == 0:
+            # Don't emit metrics for empty segments - just return
             self._event_ch.send_nowait(
                 stt.SpeechEvent(
                     type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+                    request_id=request_id,
                     alternatives=[stt.SpeechData(language=self._language, text="")],
                 )
             )
-            self._event_ch.send_nowait(
-                stt.SpeechEvent(
-                    type=stt.SpeechEventType.RECOGNITION_USAGE,
-                    alternatives=[],
-                    recognition_usage=stt.RecognitionUsage(audio_duration=0.0),
-                )
-            )
+            # Don't send RECOGNITION_USAGE for empty buffers - no metrics needed
             return
 
         audio_np, sample_rate = _merge_frames(self._buffer)
@@ -180,9 +180,12 @@ class MoonshineSTTStream(stt.SpeechStream):
         )
 
         audio_duration = float(len(audio_np)) / 16000 if len(audio_np) else 0.0
+
+        # Send transcript event
         self._event_ch.send_nowait(
             stt.SpeechEvent(
                 type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+                request_id=request_id,
                 alternatives=[
                     stt.SpeechData(
                         language=self._language,
@@ -191,13 +194,17 @@ class MoonshineSTTStream(stt.SpeechStream):
                 ],
             )
         )
-        self._event_ch.send_nowait(
-            stt.SpeechEvent(
-                type=stt.SpeechEventType.RECOGNITION_USAGE,
-                alternatives=[],
-                recognition_usage=stt.RecognitionUsage(audio_duration=audio_duration),
+
+        # Only emit metrics for non-empty transcriptions (ignore silence/empty segments)
+        if transcription.strip() and audio_duration > 0.0:
+            self._event_ch.send_nowait(
+                stt.SpeechEvent(
+                    type=stt.SpeechEventType.RECOGNITION_USAGE,
+                    request_id=request_id,
+                    alternatives=[],
+                    recognition_usage=stt.RecognitionUsage(audio_duration=audio_duration),
+                )
             )
-        )
 
         self._buffer = []
         self._buffer_duration = 0.0

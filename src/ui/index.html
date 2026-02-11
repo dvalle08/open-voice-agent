@@ -60,6 +60,118 @@
         color: #8b93a7;
         margin-top: 8px;
       }
+      .metrics-section {
+        margin-top: 16px;
+        padding: 12px;
+        background: #1c2230;
+        border-radius: 8px;
+      }
+      .metrics-section h3 {
+        margin: 0 0 12px 0;
+        font-size: 16px;
+        color: #f2f2f2;
+      }
+      #live-metrics {
+        margin-bottom: 12px;
+      }
+      .metric-bar {
+        margin-bottom: 10px;
+      }
+      .metric-bar-label {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: #b9c0d4;
+        margin-bottom: 4px;
+      }
+      .metric-bar-label .value {
+        color: #5b8cff;
+        font-weight: 600;
+      }
+      .metric-bar-track {
+        height: 20px;
+        background: #0f1115;
+        border-radius: 4px;
+        overflow: hidden;
+        position: relative;
+      }
+      .metric-bar-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #5b8cff 0%, #7ba3ff 100%);
+        transition: width 0.3s ease-out;
+        border-radius: 4px;
+      }
+      .metric-bar-fill.warning {
+        background: linear-gradient(90deg, #ffa500 0%, #ffb733 100%);
+      }
+      .metric-bar-fill.critical {
+        background: linear-gradient(90deg, #ff5b5b 0%, #ff7b7b 100%);
+      }
+      #average-metrics {
+        margin-bottom: 12px;
+      }
+      .avg-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 10px;
+        font-size: 12px;
+      }
+      .avg-item {
+        background: #0f1115;
+        border: 1px solid #3a4152;
+        border-radius: 6px;
+        padding: 8px;
+      }
+      .avg-item-label {
+        color: #8b93a7;
+        margin-bottom: 4px;
+      }
+      .avg-item-value {
+        color: #5b8cff;
+        font-size: 18px;
+        font-weight: 600;
+      }
+      #metrics-panel {
+        max-height: 400px;
+        overflow-y: auto;
+      }
+      .turn-card {
+        background: #0f1115;
+        border: 1px solid #3a4152;
+        border-radius: 6px;
+        padding: 10px;
+        margin-bottom: 8px;
+      }
+      .turn-header {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 6px;
+        font-size: 12px;
+      }
+      .turn-header strong {
+        color: #5b8cff;
+      }
+      .turn-header span {
+        color: #8b93a7;
+      }
+      .turn-transcript {
+        font-size: 14px;
+        margin-bottom: 8px;
+        color: #e0e0e0;
+      }
+      .metric-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 8px;
+        font-size: 12px;
+      }
+      .metric {
+        color: #b9c0d4;
+      }
+      .metric-value {
+        color: #5b8cff;
+        font-weight: 600;
+      }
     </style>
   </head>
   <body>
@@ -75,6 +187,101 @@
         Powered by open source models (Moonshine STT, NVIDIA LLM, Pocket TTS) running on LiveKit infrastructure.
       </div>
       <audio id="remote-audio" autoplay></audio>
+
+      <!-- Live Metrics -->
+      <div id="live-metrics" class="metrics-section">
+        <h3>⚡ Live Metrics</h3>
+        <div id="live-metrics-content">
+          <div class="metric-bar">
+            <div class="metric-bar-label">
+              <span>Total Latency</span>
+              <span class="value" id="live-total">--</span>
+            </div>
+            <div class="metric-bar-track">
+              <div class="metric-bar-fill" id="live-total-bar" style="width: 0%"></div>
+            </div>
+          </div>
+          <div class="metric-bar">
+            <div class="metric-bar-label">
+              <span>LLM TTFT</span>
+              <span class="value" id="live-llm">--</span>
+            </div>
+            <div class="metric-bar-track">
+              <div class="metric-bar-fill" id="live-llm-bar" style="width: 0%"></div>
+            </div>
+          </div>
+          <div class="metric-bar">
+            <div class="metric-bar-label">
+              <span>TTS TTFB</span>
+              <span class="value" id="live-tts">--</span>
+            </div>
+            <div class="metric-bar-track">
+              <div class="metric-bar-fill" id="live-tts-bar" style="width: 0%"></div>
+            </div>
+          </div>
+          <div class="metric-bar">
+            <div class="metric-bar-label">
+              <span>STT Duration</span>
+              <span class="value" id="live-stt">--</span>
+            </div>
+            <div class="metric-bar-track">
+              <div class="metric-bar-fill" id="live-stt-bar" style="width: 0%"></div>
+            </div>
+          </div>
+          <div class="metric-bar">
+            <div class="metric-bar-label">
+              <span>VAD Detection Delay</span>
+              <span class="value" id="live-vad">--</span>
+            </div>
+            <div class="metric-bar-track">
+              <div class="metric-bar-fill" id="live-vad-bar" style="width: 0%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Average Metrics -->
+      <div id="average-metrics" class="metrics-section">
+        <h3>📈 Average Metrics</h3>
+        <div class="avg-grid">
+          <div class="avg-item">
+            <div class="avg-item-label">Total Turns</div>
+            <div class="avg-item-value" id="avg-total-turns">0</div>
+          </div>
+          <div class="avg-item">
+            <div class="avg-item-label">Avg Total Latency</div>
+            <div class="avg-item-value" id="avg-total-latency">--</div>
+          </div>
+          <div class="avg-item">
+            <div class="avg-item-label">Avg VAD Detection Delay</div>
+            <div class="avg-item-value" id="avg-vad-delay">--</div>
+          </div>
+          <div class="avg-item">
+            <div class="avg-item-label">Avg LLM TTFT</div>
+            <div class="avg-item-value" id="avg-llm-ttft">--</div>
+          </div>
+          <div class="avg-item">
+            <div class="avg-item-label">Avg TTS TTFB</div>
+            <div class="avg-item-value" id="avg-tts-ttfb">--</div>
+          </div>
+          <div class="avg-item">
+            <div class="avg-item-label">Avg STT Duration</div>
+            <div class="avg-item-value" id="avg-stt-duration">--</div>
+          </div>
+          <div class="avg-item">
+            <div class="avg-item-label">Avg Tokens/sec</div>
+            <div class="avg-item-value" id="avg-tokens-sec">--</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Conversation History -->
+      <div class="metrics-section">
+        <h3>📊 Conversation History</h3>
+        <div id="metrics-panel">
+          <div id="metrics-log"></div>
+        </div>
+      </div>
     </div>
 
     <script src="https://unpkg.com/livekit-client/dist/livekit-client.umd.js"></script>

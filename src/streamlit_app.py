@@ -24,7 +24,7 @@ def render_client(token: str, livekit_url: str) -> None:
         .replace("{{TOKEN_JSON}}", json.dumps(token))
     )
 
-    st.components.v1.html(html, height=360)
+    st.components.v1.html(html, height=900, scrolling=True)
 
 
 def main() -> None:
