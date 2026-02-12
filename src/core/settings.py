@@ -117,13 +117,13 @@ class VoiceSettings(CoreSettings):
 class LLMSettings(CoreSettings):
     # Provider selection
     LLM_PROVIDER: str = Field(
-        default="nvidia", #"huggingface",
+        default="huggingface",
         description="LLM provider: 'nvidia' or 'huggingface'"
     )
 
     # NVIDIA settings (existing)
     NVIDIA_API_KEY: Optional[str] = Field(default=None)
-    NVIDIA_MODEL: str = Field(default="openai/gpt-oss-20b")
+    NVIDIA_MODEL: str = Field(default="qwen/qwen2.5-7b-instruct")
 
     # HuggingFace settings (new)
     HUGGINGFACE_MODEL_ID: str = Field(

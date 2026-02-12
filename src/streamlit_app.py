@@ -24,13 +24,19 @@ def render_client(token: str, livekit_url: str) -> None:
         .replace("{{TOKEN_JSON}}", json.dumps(token))
     )
 
-    st.components.v1.html(html, height=900, scrolling=True)
+    st.components.v1.html(html, height=900, scrolling=False)
 
 
 def main() -> None:
-    st.set_page_config(page_title="Open Voice Agent", layout="centered")
-    st.title("Open Voice Agent")
-    st.write("Connect to the LiveKit agent and talk using your microphone.")
+    st.set_page_config(page_title="Open Voice Agent", layout="wide")
+    st.markdown(
+        "<style>"
+        "header {visibility: hidden;} "
+        ".stMainBlockContainer {padding-top: 1rem; padding-bottom: 0;} "
+        "iframe {border: 1px solid #252d3f; border-radius: 12px;}"
+        "</style>",
+        unsafe_allow_html=True,
+    )
 
     if not settings.livekit.LIVEKIT_URL:
         st.error("LIVEKIT_URL is not set in the environment.")

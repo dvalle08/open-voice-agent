@@ -45,3 +45,8 @@ def create_graph():
     workflow.add_edge(START, "agent")
     workflow.add_edge("agent", END)
     return workflow.compile()
+
+graph = create_graph()
+
+for msg in graph.stream({"messages": [{"role": "user", "content": "Hello, how are you?"}]}, stream_mode="messages"):
+    print(msg)
