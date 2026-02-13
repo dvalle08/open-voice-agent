@@ -46,10 +46,6 @@ class CoreSettings(BaseSettings):
 
 
 class VoiceSettings(CoreSettings):
-    MOONSHINE_MODEL_ID: str = Field(
-        default="usefulsensors/moonshine-streaming-medium",
-        description="Moonshine model size: tiny, base, or small",
-    )
     POCKET_TTS_VOICE: str = Field(
         default="alba",
         description="Default voice (alba, marius, javert, jean, fantine, cosette, eponine, azelma) or path to audio file",
@@ -114,6 +110,38 @@ class VoiceSettings(CoreSettings):
     )
 
 
+class STTSettings(CoreSettings):
+    # Provider selection
+    STT_PROVIDER: str = Field(
+        default="moonshine",
+        description="STT provider: 'nvidia' or 'moonshine'"
+    )
+
+    # Moonshine STT settings
+    MOONSHINE_MODEL_ID: str = Field(
+        default="usefulsensors/moonshine-streaming-medium",
+        description="Moonshine model size: tiny, base, small, or medium"
+    )
+    MOONSHINE_LANGUAGE: str = Field(
+        default="en",
+        description="Language code for Moonshine STT"
+    )
+
+    # NVIDIA STT settings
+    NVIDIA_STT_API_KEY: Optional[str] = Field(
+        default=None,
+        description="NVIDIA API key for STT (falls back to NVIDIA_API_KEY if not set)"
+    )
+    NVIDIA_STT_MODEL: str = Field(
+        default="parakeet-1.1b-en-US-asr-streaming-silero-vad-sortformer",
+        description="NVIDIA STT model ID"
+    )
+    NVIDIA_STT_LANGUAGE_CODE: str = Field(
+        default="en-US",
+        description="Language code for NVIDIA STT"
+    )
+
+
 class LLMSettings(CoreSettings):
     # Provider selection
     LLM_PROVIDER: str = Field(
@@ -150,6 +178,7 @@ class LiveKitSettings(CoreSettings):
 
 class Settings(CoreSettings):
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
+    stt: STTSettings = Field(default_factory=STTSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     livekit: LiveKitSettings = Field(default_factory=LiveKitSettings)
 

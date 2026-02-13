@@ -11,13 +11,11 @@ from livekit.plugins import noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit.plugins import langchain
 
-from src.agent.graph import create_graph
+from src.agent.graph import create_graph, create_stt
 from src.agent.metrics_collector import MetricsCollector
-from src.plugins.moonshine_stt import MoonshineSTT
 from src.plugins.pocket_tts import PocketTTS
 from src.core.settings import settings
 from src.core.logger import logger
-
 
 class Assistant(Agent):
     def __init__(self, metrics_collector: MetricsCollector) -> None:
@@ -68,7 +66,11 @@ async def session_handler(ctx: agents.JobContext) -> None:
     # Create metrics collector
     metrics_collector = MetricsCollector(
         room=ctx.room,
-        model_name=settings.voice.MOONSHINE_MODEL_ID,
+        model_name=(
+            settings.stt.MOONSHINE_MODEL_ID
+            if settings.stt.STT_PROVIDER == "moonshine"
+            else settings.stt.NVIDIA_STT_MODEL
+        ),
     )
 
     def tts_metrics_callback(
@@ -93,7 +95,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
     )
 
     session = AgentSession(
-        stt=MoonshineSTT(model_id=settings.voice.MOONSHINE_MODEL_ID),
+        stt=create_stt(),
         llm=langchain.LLMAdapter(create_graph()),
         tts=tts_engine,
         vad=silero.VAD.load(
