@@ -152,13 +152,5 @@ open-voice-agent/
 ├── .env.example                  # Template with all env vars
 └── start.sh                      # Container entrypoint
 ```
-
-## Deployment
-
-This project runs as a HuggingFace Docker Space:
-**[dvalle08/open-voice-agent](https://huggingface.co/spaces/dvalle08/open-voice-agent)**
-
-The `Dockerfile` handles both the LiveKit agent process and the Streamlit UI, managed by `start.sh`.
-
 ## License
 Apache 2.0
