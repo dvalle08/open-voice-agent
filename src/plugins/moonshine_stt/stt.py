@@ -10,8 +10,8 @@ import torch
 from transformers import AutoProcessor, MoonshineStreamingForConditionalGeneration
 from livekit import rtc
 from livekit.agents import stt
-from livekit.agents.types import APIConnectOptions, DEFAULT_API_CONNECT_OPTIONS
-from livekit.agents.utils import AudioBuffer
+from livekit.agents.types import APIConnectOptions, DEFAULT_API_CONNECT_OPTIONS, NOT_GIVEN, NotGivenOr
+from livekit.agents.utils import AudioBuffer, shortuuid
 
 
 @dataclass
@@ -49,7 +49,7 @@ class MoonshineSTT(stt.STT):
         self,
         buffer: AudioBuffer,
         *,
-        language: str | None = None,
+        language: NotGivenOr[str] = NOT_GIVEN,
         conn_options: APIConnectOptions,
     ) -> stt.SpeechEvent:
         config = self._sanitize_options(language=language)
@@ -85,7 +85,7 @@ class MoonshineSTT(stt.STT):
         *,
         language: str | None = None,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
-    ) -> stt.SpeechStream:
+    ) -> stt.RecognizeStream:
         config = self._sanitize_options(language=language)
         return MoonshineSTTStream(
             stt=self,
@@ -98,7 +98,7 @@ class MoonshineSTT(stt.STT):
         )
 
 
-class MoonshineSTTStream(stt.SpeechStream):
+class MoonshineSTTStream(stt.RecognizeStream):
     def __init__(
         self,
         *,
@@ -148,8 +148,7 @@ class MoonshineSTTStream(stt.SpeechStream):
 
     async def _finalize_segment(self) -> None:
         # Generate a unique request ID for this segment
-        import uuid
-        request_id = str(uuid.uuid4())
+        request_id = shortuuid("STT_")
 
         if len(self._buffer) == 0:
             # Don't emit metrics for empty segments - just return

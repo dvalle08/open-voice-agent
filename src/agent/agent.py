@@ -91,6 +91,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         voice=settings.voice.POCKET_TTS_VOICE,
         temperature=settings.voice.POCKET_TTS_TEMPERATURE,
         lsd_decode_steps=settings.voice.POCKET_TTS_LSD_DECODE_STEPS,
+        sample_rate=settings.voice.SAMPLE_RATE_OUTPUT,
         metrics_callback=tts_metrics_callback,
     )
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
 from typing import Callable
 
 import numpy as np
@@ -14,9 +13,9 @@ from scipy import signal
 
 from livekit.agents import tts
 from livekit.agents.types import APIConnectOptions, DEFAULT_API_CONNECT_OPTIONS
+from livekit.agents.utils import shortuuid
 
-from src.core.logger import logger
-from src.core.settings import settings
+logger = logging.getLogger(__name__)
 
 # Reduce verbosity of pocket_tts library to avoid console spam
 logging.getLogger("pocket_tts").setLevel(logging.WARNING)
@@ -34,6 +33,7 @@ class PocketTTS(tts.TTS):
         voice: str = "alba",
         temperature: float = 0.7,
         lsd_decode_steps: int = 1,
+        sample_rate: int = 48000,
         metrics_callback: OptionalTTSMetricsCallback = None,
     ) -> None:
         """Initialize Pocket TTS plugin.
@@ -43,9 +43,10 @@ class PocketTTS(tts.TTS):
                    or path to audio file for custom voice
             temperature: Sampling temperature (0.0-2.0)
             lsd_decode_steps: LSD decoding steps (higher = better quality, slower)
+            sample_rate: Output sample rate in Hz (default 48000)
         """
         # Use the configured output sample rate (default 48000 Hz)
-        self._output_sample_rate = settings.voice.SAMPLE_RATE_OUTPUT
+        self._output_sample_rate = sample_rate
         self._native_sample_rate = 24000  # Pocket TTS native rate
 
         super().__init__(
@@ -149,7 +150,7 @@ class PocketSynthesizeStream(tts.SynthesizeStream):
         Args:
             output_emitter: Audio emitter for pushing generated audio
         """
-        request_id = str(uuid.uuid4())
+        request_id = shortuuid("TTS_")
 
         output_emitter.initialize(
             request_id=request_id,
@@ -165,7 +166,7 @@ class PocketSynthesizeStream(tts.SynthesizeStream):
             if isinstance(data, self._FlushSentinel):
                 if text_buffer.strip():
                     # Create a new segment for each text chunk
-                    segment_id = str(uuid.uuid4())
+                    segment_id = shortuuid("SEG_")
                     output_emitter.start_segment(segment_id=segment_id)
                     await self._synthesize_segment(text_buffer, output_emitter, segment_id)
                     output_emitter.end_segment()
@@ -177,7 +178,7 @@ class PocketSynthesizeStream(tts.SynthesizeStream):
 
         # Process any remaining text
         if text_buffer.strip():
-            segment_id = str(uuid.uuid4())
+            segment_id = shortuuid("SEG_")
             output_emitter.start_segment(segment_id=segment_id)
             await self._synthesize_segment(text_buffer, output_emitter, segment_id)
             output_emitter.end_segment()
