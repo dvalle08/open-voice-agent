@@ -8,41 +8,97 @@ app_port: 8501
 pinned: false
 ---
 
-# Open Voice Agent
+# 🎤 Open Voice Agent
 
-Real-time AI voice conversation application powered by LiveKit Agents, Moonshine STT, and Pocket TTS.
+> A real-time voice AI agent powered by open-source components.
 
-## Features
+**[Live Demo on HuggingFace Spaces](https://huggingface.co/spaces/dvalle08/open-voice-agent)**
 
-- **Streaming Speech-to-Text**: Moonshine (HuggingFace transformers)
-- **LLM Integration**: HuggingFace models or NVIDIA API via LangGraph
-- **Text-to-Speech**: Pocket TTS (Kyutai) with local inference
-- **Voice Activity Detection**: Silero VAD
-- **Web Interface**: Streamlit-based UI
+<!-- Replace with your actual GIF after recording -->
+![Open Voice Agent Demo](demo.gif)
 
-## Setup
+---
 
-### Local Development
+## Description
+A real-time conversational voice agent built with open-source components, deployable on consumer hardware (8GB VRAM)
 
-1. Install dependencies:
+The core value is in the **custom LiveKit plugins** — reusable integrations that let you plug any HuggingFace model into LiveKit's agent framework.
+
+## Architecture
+
+```
+User Audio → Moonshine STT → Qwen2.5-3B / NVIDIA LLM → Pocket TTS → Audio Response
+                          ↕ LiveKit (WebRTC) ↕
+```
+
+| Component | Model | Why this one |
+|-----------|-------|-------------|
+| **STT** | [Moonshine](https://huggingface.co/usefulsensors/moonshine-streaming-medium) (61M params) | Edge-optimized, streaming, open-source |
+| **LLM** | [Qwen2.5-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct) or [NVIDIA NIM](https://build.nvidia.com/) | Fits 8GB VRAM / flexible fallback |
+| **TTS** | [Pocket TTS](https://huggingface.co/kyutai/pocket-tts) (Kyutai) | Local inference, streaming, no API needed |
+| **VAD** | Silero VAD | Industry standard voice activity detection |
+| **Transport** | [LiveKit](https://livekit.io) | WebRTC, open-source, low-latency |
+| **UI** | Streamlit | Simple, functional browser interface |
+
+## Custom LiveKit Plugins
+
+**This is the most reusable part of the project.** The `src/plugins/` directory contains custom LiveKit agent plugins that integrate HuggingFace models into LiveKit's streaming pipeline:
+
+```
+src/plugins/
+├── moonshine_stt/     # Moonshine streaming STT as a LiveKit plugin
+│   └── stt.py         # MoonshineSTT class + MoonshineSTTStream
+└── pocket_tts/        # Pocket TTS as a LiveKit plugin
+    └── tts.py         # PocketTTS class + PocketSynthesizeStream
+```
+
+Each plugin follows LiveKit's official plugin pattern (extending `stt.STT`, `tts.TTS`), so you can drop them into any LiveKit agent project.
+
+### [Moonshine STT Plugin](src/plugins/moonshine_stt/stt.py)
+
+Built on [usefulsensors/moonshine-streaming-medium](https://huggingface.co/usefulsensors/moonshine-streaming-medium).
+
+- Extends `stt.STT` with both batch (`_recognize_impl`) and streaming (`stream()`) support
+- Automatic silence detection and segment management
+- Audio resampling to 16kHz using polyphase filtering
+- Proper metrics emission for LiveKit's monitoring
+
+### [Pocket TTS Plugin](src/plugins/pocket_tts/tts.py)
+
+Built on [kyutai/pocket-tts](https://huggingface.co/kyutai/pocket-tts).
+
+- Extends `tts.TTS` with streaming synthesis via `AudioEmitter` API
+- Sentence-level streaming: audio starts playing before full generation completes
+- Automatic resampling from 24kHz native to configurable output rate
+- Multiple voice support with fallback handling
+- Runs generation in background thread to keep the async loop responsive
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.10+
+- [UV](https://github.com/astral-sh/uv) (package manager)
+- [LiveKit server](https://docs.livekit.io) (cloud or self-hosted)
+
+### Install & Run
+
 ```bash
+git clone https://github.com/dvalle08/open-voice-agent.git
+cd open-voice-agent
+
+# Install dependencies
 uv sync
-source .venv/bin/activate
-```
 
-2. Configure environment:
-```bash
+# Configure environment
 cp .env.example .env
-# Edit .env with your API keys
-```
+# Edit .env with your LiveKit credentials and LLM provider choice
 
-3. Run the application:
-```bash
-# Terminal 1: Start LiveKit agent
+# Terminal 1: Start the LiveKit agent
 uv run src/agent/agent.py start
 
-# Terminal 2: Start Streamlit UI
-streamlit run src/streamlit_app.py
+# Terminal 2: Start the Streamlit UI
+uv run streamlit run src/streamlit_app.py
 ```
 
 ### Docker
@@ -52,41 +108,57 @@ docker build -t open-voice-agent .
 docker run -p 8501:8501 --env-file .env open-voice-agent
 ```
 
-## Environment Variables
-
-### Required
-
-- `LIVEKIT_URL`: WebSocket URL for LiveKit server (wss://...)
-- `LIVEKIT_API_KEY`: LiveKit API key
-- `LIVEKIT_API_SECRET`: LiveKit API secret
+## Configuration
 
 ### LLM Provider (choose one)
 
-**HuggingFace** (local inference):
+**Local (HuggingFace):**
 ```bash
 LLM_PROVIDER=huggingface
 HUGGINGFACE_MODEL_ID=Qwen/Qwen2.5-3B-Instruct
-HUGGINGFACE_DEVICE=cuda  # or 'cpu' or leave empty for auto
-HF_TOKEN=hf_xxx  # optional, for private models
+HUGGINGFACE_DEVICE=cuda
+HF_TOKEN=hf_xxx  # optional, for gated models
 ```
 
-**NVIDIA** (API-based):
+**API (NVIDIA NIM):**
 ```bash
 LLM_PROVIDER=nvidia
 NVIDIA_API_KEY=nvapi-xxx
 NVIDIA_MODEL=meta/llama-3.1-8b-instruct
 ```
 
-### Optional
+See `.env.example` for all available options.
 
-See `.env.example` for all available configuration options.
+## Project Structure
 
-## Requirements
+```
+open-voice-agent/
+├── src/
+│   ├── agent/
+│   │   ├── agent.py              # LiveKit agent entry point
+│   │   └── graph.py              # LangGraph conversation graph
+│   ├── plugins/                  # ← Custom LiveKit plugins
+│   │   ├── moonshine_stt/        # Moonshine streaming STT
+│   │   └── pocket_tts/           # Pocket TTS streaming synthesis
+│   ├── api/
+│   │   └── livekit_tokens.py     # Token generation for WebRTC
+│   ├── core/
+│   │   ├── settings.py           # Configuration management
+│   │   └── logger.py             # Logging setup
+│   └── streamlit_app.py          # Browser UI
+├── Dockerfile                    # For HF Spaces / local Docker
+├── pyproject.toml                # UV dependencies
+├── uv.lock
+├── .env.example                  # Template with all env vars
+└── start.sh                      # Container entrypoint
+```
 
-- Python >= 3.12, < 3.13
-- LiveKit server (cloud or self-hosted)
-- NVIDIA API key OR sufficient compute for local LLM inference
+## Deployment
+
+This project runs as a HuggingFace Docker Space:
+**[dvalle08/open-voice-agent](https://huggingface.co/spaces/dvalle08/open-voice-agent)**
+
+The `Dockerfile` handles both the LiveKit agent process and the Streamlit UI, managed by `start.sh`.
 
 ## License
-
 Apache 2.0
