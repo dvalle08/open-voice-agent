@@ -15,7 +15,7 @@ pinned: false
 **[Live Demo on HuggingFace Spaces](https://huggingface.co/spaces/dvalle08/open-voice-agent)**
 
 <!-- Replace with your actual GIF after recording -->
-![Open Voice Agent Demo](https://raw.githubusercontent.com/dvalle08/open-voice-agent/main/demo.gif)
+![Open Voice Agent Demo](assets/demo.gif)
 
 ---
 

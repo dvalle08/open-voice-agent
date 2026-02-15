@@ -1,7 +1,6 @@
 # Environment
 .env
 .venv/
-.streamlit/
 
 # Python
 __pycache__/
@@ -16,7 +15,7 @@ build/
 .cursorignore
 .claude/
 CLAUDE.md
-
+AGENTS.md
 # Dev files
 dev/
 .pytest_cache/
