@@ -1,17 +1,19 @@
-# tts.py - Pocket TTS Plugin for LiveKit Agents
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import queue
 import time
-from typing import Callable
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from typing import Any, Protocol, cast
 
 import numpy as np
-import torch
 from pocket_tts import TTSModel
 from scipy import signal
 
-from livekit.agents import tts
+from livekit.agents import APIConnectionError, APITimeoutError, tts
 from livekit.agents.types import APIConnectOptions, DEFAULT_API_CONNECT_OPTIONS
 from livekit.agents.utils import shortuuid
 
@@ -23,31 +25,47 @@ logging.getLogger("pocket_tts.models.tts_model").setLevel(logging.WARNING)
 logging.getLogger("pocket_tts.utils.utils").setLevel(logging.WARNING)
 logging.getLogger("pocket_tts.conditioners.text").setLevel(logging.WARNING)
 
-type OptionalTTSMetricsCallback = Callable[..., None] | None
+DEFAULT_VOICE = "alba"
+NATIVE_SAMPLE_RATE = 24000
+
+
+class TTSMetricsCallback(Protocol):
+    def __call__(self, *, ttfb: float, duration: float, audio_duration: float) -> None: ...
+
+
+OptionalTTSMetricsCallback = TTSMetricsCallback | None
+
+
+@dataclass
+class _GenerationError:
+    error: Exception
+
+
+class _GenerationDone:
+    pass
 
 
 class PocketTTS(tts.TTS):
     def __init__(
         self,
         *,
-        voice: str = "alba",
+        voice: str = DEFAULT_VOICE,
         temperature: float = 0.7,
         lsd_decode_steps: int = 1,
         sample_rate: int = 48000,
         metrics_callback: OptionalTTSMetricsCallback = None,
     ) -> None:
-        """Initialize Pocket TTS plugin.
+        """Create a new instance of Pocket TTS.
 
         Args:
-            voice: Voice name (alba, marius, javert, jean, fantine, cosette, eponine, azelma)
-                   or path to audio file for custom voice
-            temperature: Sampling temperature (0.0-2.0)
-            lsd_decode_steps: LSD decoding steps (higher = better quality, slower)
-            sample_rate: Output sample rate in Hz (default 48000)
+            voice: Built-in voice name or path to an audio prompt file.
+            temperature: Sampling temperature used by Pocket TTS.
+            lsd_decode_steps: Number of LSD decode steps.
+            sample_rate: Requested output sample rate.
+            metrics_callback: Optional callback for per-segment generation metrics.
         """
-        # Use the configured output sample rate (default 48000 Hz)
         self._output_sample_rate = sample_rate
-        self._native_sample_rate = 24000  # Pocket TTS native rate
+        self._native_sample_rate = NATIVE_SAMPLE_RATE
 
         super().__init__(
             capabilities=tts.TTSCapabilities(streaming=True, aligned_transcript=False),
@@ -60,28 +78,9 @@ class PocketTTS(tts.TTS):
         self._lsd_decode_steps = lsd_decode_steps
         self._metrics_callback = metrics_callback
 
-        try:
-            logger.info(f"Loading Pocket TTS model: temp={temperature}, lsd_steps={lsd_decode_steps}")
-            self._model = TTSModel.load_model(
-                temp=temperature,
-                lsd_decode_steps=lsd_decode_steps,
-            )
-            logger.info("Pocket TTS model loaded successfully")
-
-            logger.info(f"Loading voice state: {voice}")
-            self._voice_state = self._model.get_state_for_audio_prompt(voice, truncate=True)
-            logger.info(f"Voice state loaded for: {voice}")
-
-        except FileNotFoundError as e:
-            raise ValueError(f"Failed to load voice '{voice}': {e}") from e
-        except Exception as e:
-            logger.warning(f"Failed to load voice '{voice}': {e}, falling back to 'alba'")
-            try:
-                self._voice = "alba"
-                self._voice_state = self._model.get_state_for_audio_prompt("alba", truncate=True)
-                logger.info("Fallback to 'alba' voice successful")
-            except Exception as fallback_error:
-                raise ValueError(f"Failed to load Pocket TTS model: {fallback_error}") from fallback_error
+        self._model: Any = TTSModel.load_model(temp=temperature, lsd_decode_steps=lsd_decode_steps)
+        self._voice_state: Any = self._load_voice_state(voice)
+        self._generation_lock = asyncio.Lock()
 
     @property
     def model(self) -> str:
@@ -89,7 +88,7 @@ class PocketTTS(tts.TTS):
 
     @property
     def provider(self) -> str:
-        return "kyutai"
+        return "Kyutai"
 
     def synthesize(
         self,
@@ -97,177 +96,278 @@ class PocketTTS(tts.TTS):
         *,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
     ) -> tts.ChunkedStream:
-        """Synthesize text to speech.
-
-        Args:
-            text: Text to synthesize
-            conn_options: API connection options
-
-        Returns:
-            ChunkedStream containing synthesized audio
-        """
-        # Use the base class helper to create ChunkedStream from SynthesizeStream
-        return self._synthesize_with_stream(text, conn_options=conn_options)
+        return PocketChunkedStream(tts=self, input_text=text, conn_options=conn_options)
 
     def stream(
         self,
         *,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
     ) -> tts.SynthesizeStream:
-        """Create a streaming synthesis stream.
+        return PocketSynthesizeStream(tts=self, conn_options=conn_options)
 
-        Args:
-            conn_options: API connection options
+    def _load_voice_state(self, voice: str) -> Any:
+        try:
+            return self._model.get_state_for_audio_prompt(voice, truncate=True)
+        except FileNotFoundError as e:
+            raise ValueError(f"Failed to load voice '{voice}': {e}") from e
+        except Exception as e:
+            if voice == DEFAULT_VOICE:
+                raise ValueError(f"Failed to initialize Pocket TTS voice '{voice}': {e}") from e
 
-        Returns:
-            PocketSynthesizeStream for progressive synthesis
-        """
-        return PocketSynthesizeStream(
-            tts=self,
-            conn_options=conn_options,
+            logger.warning(
+                "Failed to load voice '%s' (%s). Falling back to '%s'.",
+                voice,
+                e,
+                DEFAULT_VOICE,
+            )
+            try:
+                self._voice = DEFAULT_VOICE
+                return self._model.get_state_for_audio_prompt(DEFAULT_VOICE, truncate=True)
+            except Exception as fallback_error:
+                raise ValueError(
+                    f"Failed to initialize Pocket TTS fallback voice '{DEFAULT_VOICE}': {fallback_error}"
+                ) from fallback_error
+
+    async def _generate_audio_stream(
+        self,
+        *,
+        text: str,
+        conn_options: APIConnectOptions,
+    ) -> AsyncIterator[bytes]:
+        items: queue.Queue[bytes | _GenerationError | _GenerationDone] = queue.Queue()
+
+        def _producer() -> None:
+            try:
+                for audio_chunk in self._model.generate_audio_stream(
+                    self._voice_state,
+                    text,
+                    copy_state=True,
+                ):
+                    chunk = _tensor_to_pcm_bytes(
+                        audio_chunk=audio_chunk,
+                        output_sample_rate=self.sample_rate,
+                        native_sample_rate=self._native_sample_rate,
+                    )
+                    if chunk:
+                        items.put(chunk)
+            except Exception as e:
+                items.put(_GenerationError(error=e))
+            finally:
+                items.put(_GenerationDone())
+
+        producer_task = asyncio.create_task(
+            asyncio.to_thread(_producer),
+            name="PocketTTS._producer",
         )
 
+        timeout = _timeout_value(conn_options.timeout)
+        deadline = time.perf_counter() + timeout if timeout is not None else None
 
-class PocketSynthesizeStream(tts.SynthesizeStream):
+        try:
+            while True:
+                item: bytes | _GenerationError | _GenerationDone
+                if deadline is None:
+                    item = await asyncio.to_thread(items.get)
+                else:
+                    remaining = deadline - time.perf_counter()
+                    if remaining <= 0:
+                        raise APITimeoutError(
+                            f"Pocket TTS synthesis timed out after {conn_options.timeout}s"
+                        )
+                    try:
+                        item = await asyncio.wait_for(
+                            asyncio.to_thread(items.get), timeout=remaining
+                        )
+                    except asyncio.TimeoutError as e:
+                        raise APITimeoutError(
+                            f"Pocket TTS synthesis timed out after {conn_options.timeout}s"
+                        ) from e
+
+                if isinstance(item, _GenerationDone):
+                    return
+
+                if isinstance(item, _GenerationError):
+                    raise APIConnectionError("Pocket TTS synthesis failed") from item.error
+
+                yield item
+        finally:
+            if not producer_task.done():
+                producer_task.cancel()
+            with contextlib.suppress(BaseException):
+                await producer_task
+
+    async def _push_generated_audio(
+        self,
+        *,
+        text: str,
+        conn_options: APIConnectOptions,
+        output_emitter: tts.AudioEmitter,
+    ) -> tuple[float, float, float]:
+        start_time = time.perf_counter()
+        first_chunk_ttfb = -1.0
+        total_bytes = 0
+
+        async with self._generation_lock:
+            async for chunk in self._generate_audio_stream(text=text, conn_options=conn_options):
+                if first_chunk_ttfb < 0:
+                    first_chunk_ttfb = time.perf_counter() - start_time
+                total_bytes += len(chunk)
+                output_emitter.push(chunk)
+
+        generation_duration = time.perf_counter() - start_time
+        audio_duration = _bytes_to_duration(total_bytes=total_bytes, sample_rate=self.sample_rate)
+        return first_chunk_ttfb, generation_duration, audio_duration
+
+
+class PocketChunkedStream(tts.ChunkedStream):
     def __init__(
         self,
         *,
         tts: PocketTTS,
+        input_text: str,
         conn_options: APIConnectOptions,
     ) -> None:
-        """Initialize streaming synthesis stream.
+        super().__init__(tts=tts, input_text=input_text, conn_options=conn_options)
+        self._tts = tts
 
-        Args:
-            tts: PocketTTS instance
-            conn_options: API connection options
-        """
+    async def _run(self, output_emitter: tts.AudioEmitter) -> None:
+        pocket_tts = cast(PocketTTS, self._tts)
+        output_emitter.initialize(
+            request_id=shortuuid("TTS_"),
+            sample_rate=pocket_tts.sample_rate,
+            num_channels=1,
+            mime_type="audio/pcm",
+            stream=False,
+        )
+
+        (
+            first_chunk_ttfb,
+            generation_duration,
+            audio_duration,
+        ) = await pocket_tts._push_generated_audio(
+            text=self._input_text,
+            conn_options=self._conn_options,
+            output_emitter=output_emitter,
+        )
+
+        output_emitter.flush()
+
+        if pocket_tts._metrics_callback:
+            pocket_tts._metrics_callback(
+                ttfb=first_chunk_ttfb,
+                duration=generation_duration,
+                audio_duration=audio_duration,
+            )
+
+
+class PocketSynthesizeStream(tts.SynthesizeStream):
+    def __init__(self, *, tts: PocketTTS, conn_options: APIConnectOptions) -> None:
         super().__init__(tts=tts, conn_options=conn_options)
         self._tts = tts
 
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
-        """Process input stream and generate audio progressively.
-
-        Args:
-            output_emitter: Audio emitter for pushing generated audio
-        """
-        request_id = shortuuid("TTS_")
-
         output_emitter.initialize(
-            request_id=request_id,
-            sample_rate=self._tts._output_sample_rate,
+            request_id=shortuuid("TTS_"),
+            sample_rate=self._tts.sample_rate,
             num_channels=1,
             mime_type="audio/pcm",
             stream=True,
         )
 
         text_buffer = ""
-
         async for data in self._input_ch:
             if isinstance(data, self._FlushSentinel):
-                if text_buffer.strip():
-                    # Create a new segment for each text chunk
-                    segment_id = shortuuid("SEG_")
-                    output_emitter.start_segment(segment_id=segment_id)
-                    await self._synthesize_segment(text_buffer, output_emitter, segment_id)
-                    output_emitter.end_segment()
-                    output_emitter.flush()
-                    text_buffer = ""
+                await self._flush_text_buffer(
+                    text_buffer=text_buffer, output_emitter=output_emitter
+                )
+                text_buffer = ""
                 continue
 
             text_buffer += data
 
-        # Process any remaining text
-        if text_buffer.strip():
-            segment_id = shortuuid("SEG_")
-            output_emitter.start_segment(segment_id=segment_id)
-            await self._synthesize_segment(text_buffer, output_emitter, segment_id)
-            output_emitter.end_segment()
-            output_emitter.flush()
+        await self._flush_text_buffer(text_buffer=text_buffer, output_emitter=output_emitter)
 
-    async def _synthesize_segment(
-        self,
-        text: str,
-        output_emitter: tts.AudioEmitter,
-        segment_id: str,
+    async def _flush_text_buffer(
+        self, *, text_buffer: str, output_emitter: tts.AudioEmitter
     ) -> None:
-        """Synthesize a text segment and push audio chunks to emitter.
+        if not text_buffer.strip():
+            return
 
-        Args:
-            text: Text segment to synthesize
-            output_emitter: Audio emitter for pushing generated audio
-            segment_id: Segment ID for this synthesis
-        """
-        try:
-            logger.info(f"Starting synthesis for segment_id={segment_id}, text: {text[:50]}...")
-            start_time = time.perf_counter()
+        segment_id = shortuuid("SEG_")
+        output_emitter.start_segment(segment_id=segment_id)
+        await self._synthesize_segment(text_buffer, output_emitter)
+        output_emitter.end_segment()
 
-            # Generate all audio chunks in thread pool (synchronous pocket_tts call)
-            def _generate() -> tuple[list[bytes], float]:
-                chunks = []
-                first_chunk_ttfb = -1.0
-                for audio_chunk in self._tts._model.generate_audio_stream(
-                    self._tts._voice_state,
-                    text,
-                    copy_state=True,
-                ):
-                    if first_chunk_ttfb < 0:
-                        first_chunk_ttfb = time.perf_counter() - start_time
-                    audio_bytes = self._tensor_to_pcm_bytes(audio_chunk)
-                    chunks.append(audio_bytes)
-                return chunks, first_chunk_ttfb
+    async def _synthesize_segment(self, text: str, output_emitter: tts.AudioEmitter) -> None:
+        self._mark_started()
+        pocket_tts = cast(PocketTTS, self._tts)
+        (
+            first_chunk_ttfb,
+            generation_duration,
+            audio_duration,
+        ) = await pocket_tts._push_generated_audio(
+            text=text,
+            conn_options=self._conn_options,
+            output_emitter=output_emitter,
+        )
 
-            # Run generation in background thread
-            audio_chunks, first_chunk_ttfb = await asyncio.to_thread(_generate)
-            generation_duration = time.perf_counter() - start_time
+        if pocket_tts._metrics_callback:
+            pocket_tts._metrics_callback(
+                ttfb=first_chunk_ttfb,
+                duration=generation_duration,
+                audio_duration=audio_duration,
+            )
 
-            logger.info(f"Generated {len(audio_chunks)} chunks for segment_id={segment_id}, pushing to emitter...")
 
-            # Push raw PCM bytes to the emitter
-            for chunk in audio_chunks:
-                output_emitter.push(chunk)
+def _tensor_to_pcm_bytes(
+    *,
+    audio_chunk: Any,
+    output_sample_rate: int,
+    native_sample_rate: int,
+) -> bytes:
+    audio = audio_chunk
+    if hasattr(audio, "detach"):
+        audio = audio.detach()
+    if hasattr(audio, "cpu"):
+        audio = audio.cpu()
+    if hasattr(audio, "numpy"):
+        audio = audio.numpy()
 
-            logger.info(f"Successfully pushed {len(audio_chunks)} chunks for segment_id={segment_id}")
-            if self._tts._metrics_callback:
-                self._tts._metrics_callback(
-                    ttfb=first_chunk_ttfb,
-                    duration=generation_duration,
-                    audio_duration=self._bytes_to_duration(audio_chunks),
-                )
+    audio_np = np.asarray(audio, dtype=np.float32)
+    if audio_np.size == 0:
+        return b""
 
-        except Exception as e:
-            logger.error(f"Error synthesizing segment {segment_id}: {e}", exc_info=True)
-            raise
+    if audio_np.ndim > 1:
+        if audio_np.ndim != 2:
+            raise ValueError(f"unsupported audio tensor shape: {audio_np.shape}")
+        # Common layouts are [channels, samples] or [samples, channels].
+        if audio_np.shape[0] <= audio_np.shape[1]:
+            audio_np = np.mean(audio_np, axis=0)
+        else:
+            audio_np = np.mean(audio_np, axis=1)
 
-    def _tensor_to_pcm_bytes(self, audio_tensor: torch.Tensor) -> bytes:
-        """Convert audio tensor to PCM bytes with resampling.
+    if output_sample_rate != native_sample_rate:
+        num_samples_output = int(round(len(audio_np) * output_sample_rate / native_sample_rate))
+        if num_samples_output <= 0:
+            return b""
+        audio_np = signal.resample(audio_np, num_samples_output)
 
-        Args:
-            audio_tensor: Audio tensor with shape [samples] or [channels, samples]
+    audio_np = np.clip(audio_np, -1.0, 1.0)
+    audio_int16 = (audio_np * 32767.0).astype(np.int16, copy=False)
+    return audio_int16.tobytes()
 
-        Returns:
-            PCM audio bytes (int16) resampled to output sample rate
-        """
-        # Convert to mono if needed
-        if audio_tensor.ndim > 1:
-            audio_tensor = audio_tensor.mean(dim=0)
 
-        # Convert to numpy float32 array
-        audio_np = audio_tensor.cpu().numpy().astype(np.float32)
+def _bytes_to_duration(*, total_bytes: int, sample_rate: int) -> float:
+    samples = total_bytes / 2.0
+    if sample_rate <= 0:
+        return 0.0
+    return samples / sample_rate
 
-        # Resample if needed (24000 Hz -> output sample rate)
-        if self._tts._output_sample_rate != self._tts._native_sample_rate:
-            num_samples_output = int(len(audio_np) * self._tts._output_sample_rate / self._tts._native_sample_rate)
-            audio_np = signal.resample(audio_np, num_samples_output)
 
-        # Clip to [-1, 1] and convert to int16
-        audio_np = np.clip(audio_np, -1.0, 1.0)
-        audio_int16 = (audio_np * 32767.0).astype(np.int16)
+def _timeout_value(timeout: float) -> float | None:
+    if timeout <= 0:
+        return None
+    return timeout
 
-        return audio_int16.tobytes()
 
-    def _bytes_to_duration(self, chunks: list[bytes]) -> float:
-        total_bytes = sum(len(chunk) for chunk in chunks)
-        samples = total_bytes / 2  # int16 mono samples
-        if self._tts._output_sample_rate <= 0:
-            return 0.0
-        return float(samples / self._tts._output_sample_rate)
+TTS = PocketTTS

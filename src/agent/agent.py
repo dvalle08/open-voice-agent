@@ -73,26 +73,11 @@ async def session_handler(ctx: agents.JobContext) -> None:
         ),
     )
 
-    def tts_metrics_callback(
-        *,
-        ttfb: float,
-        duration: float,
-        audio_duration: float,
-    ) -> None:
-        asyncio.create_task(
-            metrics_collector.on_tts_synthesized(
-                ttfb=ttfb,
-                duration=duration,
-                audio_duration=audio_duration,
-            )
-        )
-
     tts_engine = PocketTTS(
         voice=settings.voice.POCKET_TTS_VOICE,
         temperature=settings.voice.POCKET_TTS_TEMPERATURE,
         lsd_decode_steps=settings.voice.POCKET_TTS_LSD_DECODE_STEPS,
         sample_rate=settings.voice.SAMPLE_RATE_OUTPUT,
-        metrics_callback=tts_metrics_callback,
     )
 
     session = AgentSession(

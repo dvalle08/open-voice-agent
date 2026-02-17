@@ -67,11 +67,12 @@ Built on [usefulsensors/moonshine-streaming-medium](https://huggingface.co/usefu
 
 Built on [kyutai/pocket-tts](https://huggingface.co/kyutai/pocket-tts).
 
-- Extends `tts.TTS` with streaming synthesis via `AudioEmitter` API
-- Sentence-level streaming: audio starts playing before full generation completes
-- Automatic resampling from 24kHz native to configurable output rate
-- Multiple voice support with fallback handling
-- Runs generation in background thread to keep the async loop responsive
+- Extends `tts.TTS` with both `stream()` and `synthesize()` support (explicit `ChunkedStream`)
+- Chunk-progressive synthesis: audio is pushed while generation is still running
+- Timeout-aware generation pipeline with API error mapping (`APITimeoutError`, `APIConnectionError`)
+- Automatic resampling from Pocket native 24kHz to configurable `SAMPLE_RATE_OUTPUT`
+- Multiple voice support with fallback handling (`voice -> alba`)
+- Generation runs in background thread(s) to keep the async event loop responsive
 
 ## Quick Start
 
