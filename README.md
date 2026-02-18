@@ -130,6 +130,19 @@ NVIDIA_MODEL=meta/llama-3.1-8b-instruct
 
 See `.env.example` for all available options.
 
+### Langfuse tracing (one trace per turn)
+
+```bash
+LANGFUSE_ENABLED=true
+LANGFUSE_HOST=https://cloud.langfuse.com
+# LANGFUSE_BASE_URL=https://us.cloud.langfuse.com  # optional alternative
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+Each finalized user transcript creates a new trace with spans `stt`, `llm`, and `tts`.
+The Streamlit client generates a new `session_id` on each Connect click and sends it to the agent.
+
 ## Project Structure
 
 ```

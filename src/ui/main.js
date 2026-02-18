@@ -2,6 +2,8 @@ const { Room, RoomEvent, Track, createLocalAudioTrack } = LivekitClient;
 
 const statusEl = document.getElementById("status");
 const statusDot = document.getElementById("status-dot");
+const sessionIdEl = document.getElementById("session-id");
+const latestTraceIdEl = document.getElementById("latest-trace-id");
 const connectBtn = document.getElementById("connect");
 const disconnectBtn = document.getElementById("disconnect");
 const muteBtn = document.getElementById("mute");
@@ -16,6 +18,7 @@ let audioContext = null;
 let animationId = null;
 let muted = false;
 let resizeObserver = null;
+let currentSessionId = null;
 
 let metricsHistory = [];
 let turnCount = 0;
@@ -26,6 +29,9 @@ let averages = {
   ttsTtfb: [],
   sttDuration: []
 };
+
+setSessionId("--");
+setLatestTraceId("--");
 
 // Initialize canvas sizing on load
 window.addEventListener('DOMContentLoaded', () => {
@@ -43,6 +49,14 @@ function setStatus(text, state) {
   statusDot.className = "status-dot";
   if (state === "connected") statusDot.classList.add("connected");
   else if (state === "connecting") statusDot.classList.add("connecting");
+}
+
+function setSessionId(value) {
+  sessionIdEl.textContent = value || "--";
+}
+
+function setLatestTraceId(value) {
+  latestTraceIdEl.textContent = value || "--";
 }
 
 function clearWave() {
@@ -163,6 +177,10 @@ async function connectToRoom() {
     return;
   }
 
+  currentSessionId = crypto.randomUUID();
+  setSessionId(currentSessionId);
+  setLatestTraceId("--");
+
   setStatus("Connecting...", "connecting");
   connectBtn.disabled = true;
 
@@ -195,6 +213,11 @@ async function connectToRoom() {
         } else if (metricsData.type === "conversation_turn") {
           updateLiveMetrics(metricsData, false);
           renderTurn(metricsData);
+        } else if (metricsData.type === "trace_update") {
+          if (!metricsData.trace_id) return;
+          if (!metricsData.session_id || metricsData.session_id === currentSessionId) {
+            setLatestTraceId(metricsData.trace_id);
+          }
         }
       } catch (error) {
         console.error("Failed to parse metrics:", error);
@@ -203,6 +226,24 @@ async function connectToRoom() {
   });
 
   await room.connect(LIVEKIT_URL, TOKEN);
+
+  try {
+    await room.localParticipant.publishData(
+      new TextEncoder().encode(
+        JSON.stringify({
+          type: "session_meta",
+          session_id: currentSessionId,
+          participant_id: room.localParticipant.identity
+        })
+      ),
+      {
+        reliable: true,
+        topic: "session_meta"
+      }
+    );
+  } catch (error) {
+    console.warn("Failed to publish session metadata:", error);
+  }
 
   localTrack = await createLocalAudioTrack();
   await room.localParticipant.publishTrack(localTrack);

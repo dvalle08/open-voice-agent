@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import streamlit as st
 
-from src.api.livekit_tokens import create_room_token, dispatch_agent_sync
+from src.api.livekit_tokens import create_room_token, ensure_agent_dispatched_sync
 from src.core.settings import settings
 
 UI_DIR = Path(__file__).parent / "ui"
@@ -117,23 +117,40 @@ def main() -> None:
         try:
             token_data = create_room_token(room_name=room_name)
             st.session_state["token"] = token_data.token
-            st.session_state["agent_dispatched"] = False
+            st.session_state["participant_identity"] = token_data.identity
         except Exception as exc:
             st.error(f"Failed to create room token: {exc}")
             st.stop()
 
-    # Auto-dispatch agent once
-    if not st.session_state.get("agent_dispatched"):
-        try:
-            dispatch_agent_sync(
-                room_name=room_name,
-                agent_name=settings.livekit.LIVEKIT_AGENT_NAME,
-            )
-            st.session_state["agent_dispatched"] = True
-        except Exception as exc:
-            st.error(f"Failed to dispatch agent: {exc}")
-            st.stop()
+    # Ensure dispatch exists on each app run.
+    # This avoids stale session_state when agent worker restarts.
+    try:
+        dispatch = ensure_agent_dispatched_sync(
+            room_name=room_name,
+            agent_name=settings.livekit.LIVEKIT_AGENT_NAME,
+            reset_existing=True,
+        )
+        st.session_state["dispatch_id"] = dispatch.id
+        assigned_worker_id = None
+        for job in getattr(dispatch.state, "jobs", []):
+            state = getattr(job, "state", None)
+            if state and getattr(state, "worker_id", None):
+                assigned_worker_id = state.worker_id
+                break
+        st.session_state["dispatch_worker_id"] = assigned_worker_id
+    except Exception as exc:
+        st.error(f"Failed to ensure agent dispatch: {exc}")
+        st.stop()
 
+    st.caption(
+        " | ".join(
+            [
+                f"Room: `{room_name}`",
+                f"Dispatch: `{st.session_state.get('dispatch_id', '--')}`",
+                f"Worker: `{st.session_state.get('dispatch_worker_id') or '--'}`",
+            ]
+        )
+    )
     render_client(token=st.session_state["token"], livekit_url=settings.livekit.LIVEKIT_URL)
 
 

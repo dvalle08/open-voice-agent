@@ -176,11 +176,29 @@ class LiveKitSettings(CoreSettings):
     LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=1, ge=0)
 
 
+class LangfuseSettings(CoreSettings):
+    LANGFUSE_ENABLED: bool = Field(
+        default=False,
+        description="Enable Langfuse tracing via OTEL exporter",
+    )
+    LANGFUSE_PUBLIC_KEY: Optional[str] = Field(default=None)
+    LANGFUSE_SECRET_KEY: Optional[str] = Field(default=None)
+    LANGFUSE_HOST: Optional[str] = Field(
+        default=None,
+        description="Langfuse host URL, e.g. https://cloud.langfuse.com",
+    )
+    LANGFUSE_BASE_URL: Optional[str] = Field(
+        default=None,
+        description="Alternative to LANGFUSE_HOST",
+    )
+
+
 class Settings(CoreSettings):
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     stt: STTSettings = Field(default_factory=STTSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     livekit: LiveKitSettings = Field(default_factory=LiveKitSettings)
+    langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
 
 
 try:

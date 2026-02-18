@@ -1,7 +1,10 @@
 import asyncio
+import base64
+import json
 
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, Agent, room_io
+from livekit.agents.telemetry import set_tracer_provider
 from livekit.agents.voice.events import (
     ConversationItemAddedEvent,
     MetricsCollectedEvent,
@@ -10,12 +13,60 @@ from livekit.agents.voice.events import (
 from livekit.plugins import noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit.plugins import langchain
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from src.agent.graph import create_graph, create_stt
 from src.agent.metrics_collector import MetricsCollector
 from src.plugins.pocket_tts import PocketTTS
 from src.core.settings import settings
 from src.core.logger import logger
+
+_langfuse_tracer_provider: TracerProvider | None = None
+
+
+def _normalize_langfuse_host() -> str | None:
+    host = settings.langfuse.LANGFUSE_HOST or settings.langfuse.LANGFUSE_BASE_URL
+    if not host:
+        return None
+    return host.rstrip("/")
+
+
+def setup_langfuse_tracer() -> TracerProvider | None:
+    """Configure LiveKit telemetry tracer to export traces to Langfuse."""
+    global _langfuse_tracer_provider
+
+    if not settings.langfuse.LANGFUSE_ENABLED:
+        return None
+    if _langfuse_tracer_provider is not None:
+        return _langfuse_tracer_provider
+
+    host = _normalize_langfuse_host()
+    public_key = settings.langfuse.LANGFUSE_PUBLIC_KEY
+    secret_key = settings.langfuse.LANGFUSE_SECRET_KEY
+    if not host or not public_key or not secret_key:
+        logger.warning(
+            "Langfuse tracing enabled but LANGFUSE_HOST/LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY are missing"
+        )
+        return None
+
+    try:
+        auth = base64.b64encode(f"{public_key}:{secret_key}".encode("utf-8")).decode("utf-8")
+        span_exporter = OTLPSpanExporter(
+            endpoint=f"{host}/api/public/otel/v1/traces",
+            headers={"Authorization": f"Basic {auth}"},
+        )
+        tracer_provider = TracerProvider()
+        tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter))
+        set_tracer_provider(tracer_provider)
+        _langfuse_tracer_provider = tracer_provider
+        logger.info("Langfuse OTEL tracing configured")
+        return tracer_provider
+    except Exception as exc:
+        logger.warning(f"Failed to set up Langfuse tracing: {exc}")
+        return None
+
 
 class Assistant(Agent):
     def __init__(self, metrics_collector: MetricsCollector) -> None:
@@ -63,7 +114,26 @@ server = AgentServer(num_idle_processes=settings.livekit.LIVEKIT_NUM_IDLE_PROCES
 
 @server.rtc_session(agent_name=settings.livekit.LIVEKIT_AGENT_NAME)
 async def session_handler(ctx: agents.JobContext) -> None:
+    logger.info(
+        "Agent session started: room=%s job_id=%s",
+        ctx.room.name,
+        ctx.job.id,
+    )
+    trace_provider = setup_langfuse_tracer()
+    if trace_provider:
+        async def flush_trace(_: str) -> None:
+            try:
+                trace_provider.force_flush()
+            except Exception as exc:
+                logger.warning(f"Failed to flush Langfuse traces: {exc}")
+
+        ctx.add_shutdown_callback(flush_trace)
+
     # Create metrics collector
+    participant = getattr(ctx.job, "participant", None)
+    initial_participant_id = getattr(participant, "identity", None)
+    room_info = getattr(ctx.job, "room", None)
+    initial_room_id = getattr(room_info, "sid", None) or ctx.room.name
     metrics_collector = MetricsCollector(
         room=ctx.room,
         model_name=(
@@ -71,7 +141,45 @@ async def session_handler(ctx: agents.JobContext) -> None:
             if settings.stt.STT_PROVIDER == "moonshine"
             else settings.stt.NVIDIA_STT_MODEL
         ),
+        room_name=ctx.room.name,
+        room_id=initial_room_id,
+        participant_id=initial_participant_id,
+        langfuse_enabled=trace_provider is not None,
     )
+
+    @ctx.room.on("data_received")
+    def on_data_received(packet: rtc.DataPacket) -> None:
+        if packet.topic != "session_meta":
+            return
+        try:
+            payload = json.loads(packet.data.decode("utf-8"))
+        except Exception:
+            logger.debug("Ignoring invalid session_meta payload")
+            return
+        if payload.get("type") != "session_meta":
+            return
+
+        participant_id = payload.get("participant_id")
+        if not isinstance(participant_id, str) and packet.participant:
+            participant_id = packet.participant.identity
+        asyncio.create_task(
+            metrics_collector.on_session_metadata(
+                session_id=payload.get("session_id"),
+                participant_id=participant_id,
+            )
+        )
+
+    if isinstance(ctx.job.metadata, str) and ctx.job.metadata.strip():
+        try:
+            metadata = json.loads(ctx.job.metadata)
+        except Exception:
+            metadata = {}
+        asyncio.create_task(
+            metrics_collector.on_session_metadata(
+                session_id=metadata.get("session_id"),
+                participant_id=metadata.get("participant_id"),
+            )
+        )
 
     tts_engine = PocketTTS(
         voice=settings.voice.POCKET_TTS_VOICE,

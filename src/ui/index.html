@@ -80,6 +80,26 @@
         font-size: 12px;
         color: var(--text-secondary);
       }
+      .meta-badge {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        font-size: 11px;
+        color: var(--text-secondary);
+      }
+      .meta-label {
+        color: var(--text-muted);
+        font-weight: 600;
+      }
+      .meta-value {
+        color: var(--text-primary);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 10px;
+      }
       .status-dot {
         width: 7px;
         height: 7px;
@@ -284,6 +304,14 @@
         <div class="status-badge">
           <div class="status-dot" id="status-dot"></div>
           <span id="status">Idle</span>
+        </div>
+        <div class="meta-badge">
+          <span class="meta-label">Session</span>
+          <span class="meta-value" id="session-id">--</span>
+        </div>
+        <div class="meta-badge">
+          <span class="meta-label">Trace</span>
+          <span class="meta-value" id="latest-trace-id">--</span>
         </div>
       </div>
       <div class="controls">
