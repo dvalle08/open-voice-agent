@@ -20,6 +20,7 @@ from livekit.agents.telemetry import tracer
 from opentelemetry import trace
 
 from src.core.logger import logger
+from src.core.settings import settings
 
 
 @dataclass
@@ -145,6 +146,8 @@ class TraceTurn:
     prompt_text: str
     response_text: str = ""
     assistant_text: str = ""
+    assistant_text_missing: bool = False
+    stt_status: str = "missing"  # "measured" | "missing"
     vad_duration_ms: Optional[float] = None
     stt_duration_ms: Optional[float] = None
     llm_duration_ms: Optional[float] = None
@@ -158,6 +161,9 @@ class MetricsCollector:
     UNKNOWN_SESSION_ID = "unknown-session"
     UNKNOWN_PARTICIPANT_ID = "unknown-participant"
     UNKNOWN_ROOM_ID = "unknown-room"
+    DEFAULT_TRACE_FINALIZE_TIMEOUT_MS = 150.0
+    DEFAULT_MAX_PENDING_TRACE_TASKS = 200
+    DEFAULT_TRACE_FLUSH_TIMEOUT_SEC = 1.0
 
     def __init__(
         self,
@@ -194,6 +200,40 @@ class MetricsCollector:
         self._langfuse_enabled = langfuse_enabled
         self._pending_trace_turns: deque[TraceTurn] = deque()
         self._trace_lock = asyncio.Lock()
+        self._trace_finalize_timeout_sec = (
+            max(
+                getattr(
+                    settings.langfuse,
+                    "LANGFUSE_TRACE_FINALIZE_TIMEOUT_MS",
+                    self.DEFAULT_TRACE_FINALIZE_TIMEOUT_MS,
+                ),
+                0.0,
+            )
+            / 1000.0
+        )
+        self._trace_max_pending_tasks = max(
+            int(
+                getattr(
+                    settings.langfuse,
+                    "LANGFUSE_MAX_PENDING_TRACE_TASKS",
+                    self.DEFAULT_MAX_PENDING_TRACE_TASKS,
+                )
+            ),
+            1,
+        )
+        self._trace_flush_timeout_sec = (
+            max(
+                getattr(
+                    settings.langfuse,
+                    "LANGFUSE_TRACE_FLUSH_TIMEOUT_MS",
+                    self.DEFAULT_TRACE_FLUSH_TIMEOUT_SEC * 1000.0,
+                ),
+                0.0,
+            )
+            / 1000.0
+        )
+        self._trace_emit_tasks: set[asyncio.Task[None]] = set()
+        self._trace_finalize_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def on_session_metadata(
         self,
@@ -247,9 +287,6 @@ class MetricsCollector:
                     participant_id=self._participant_id,
                     user_transcript=normalized,
                     prompt_text=normalized,
-                    # Some STT providers emit final transcript events without STT metrics.
-                    # Keep one-trace-per-turn behavior by defaulting STT duration to 0ms.
-                    stt_duration_ms=0.0,
                 )
             )
 
@@ -624,7 +661,13 @@ class MetricsCollector:
             if transcript:
                 turn.user_transcript = transcript.strip()
             turn.prompt_text = turn.user_transcript
-            turn.stt_duration_ms = self._duration_to_ms(duration, fallback_duration)
+            measured_duration_ms = self._duration_to_ms_or_none(duration, fallback_duration)
+            if measured_duration_ms is None:
+                turn.stt_duration_ms = None
+                turn.stt_status = "missing"
+            else:
+                turn.stt_duration_ms = measured_duration_ms
+                turn.stt_status = "measured"
             return turn
 
     async def _attach_vad_stage(self, *, duration: float) -> Optional[TraceTurn]:
@@ -671,41 +714,38 @@ class MetricsCollector:
             return
 
         completed_turn: Optional[TraceTurn] = None
+        schedule_timeout_for_turn: Optional[str] = None
         async with self._trace_lock:
             if trace_turn not in self._pending_trace_turns:
                 return
             if not self._is_trace_turn_complete(trace_turn):
-                return
+                if self._should_schedule_finalize_timeout(trace_turn):
+                    schedule_timeout_for_turn = trace_turn.turn_id
+            else:
+                completed_turn = self._finalize_trace_turn_locked(trace_turn)
 
-            if not trace_turn.prompt_text:
-                trace_turn.prompt_text = trace_turn.user_transcript
-            if not trace_turn.response_text and trace_turn.assistant_text:
-                trace_turn.response_text = trace_turn.assistant_text
-            if not trace_turn.assistant_text and trace_turn.response_text:
-                trace_turn.assistant_text = trace_turn.response_text
-
-            self._pending_trace_turns.remove(trace_turn)
-            completed_turn = trace_turn
-
+        if schedule_timeout_for_turn:
+            self._schedule_finalize_timeout(schedule_timeout_for_turn)
+        if not completed_turn:
+            return
         if completed_turn:
-            await self._emit_turn_trace(completed_turn)
-            await self._publish_trace_update(completed_turn)
+            self._schedule_trace_emit(completed_turn)
 
     def _next_turn_for_stt(self) -> Optional[TraceTurn]:
         for turn in self._pending_trace_turns:
-            if turn.stt_duration_ms is None or turn.stt_duration_ms == 0.0:
+            if turn.stt_status != "measured":
                 return turn
         return None
 
     def _next_turn_for_vad(self) -> Optional[TraceTurn]:
         for turn in self._pending_trace_turns:
-            if turn.stt_duration_ms is not None and turn.vad_duration_ms is None:
+            if turn.vad_duration_ms is None:
                 return turn
         return None
 
     def _next_turn_for_llm(self) -> Optional[TraceTurn]:
         for turn in self._pending_trace_turns:
-            if turn.stt_duration_ms is not None and turn.llm_duration_ms is None:
+            if turn.llm_duration_ms is None:
                 return turn
         return None
 
@@ -724,21 +764,120 @@ class MetricsCollector:
     def _is_trace_turn_complete(self, turn: TraceTurn) -> bool:
         return bool(
             turn.user_transcript
-            and turn.stt_duration_ms is not None
+            and turn.assistant_text
             and turn.llm_duration_ms is not None
             and turn.tts_duration_ms is not None
         )
+
+    def _should_schedule_finalize_timeout(self, turn: TraceTurn) -> bool:
+        return bool(
+            turn.llm_duration_ms is not None
+            and turn.tts_duration_ms is not None
+            and not turn.assistant_text
+            and turn.turn_id not in self._trace_finalize_tasks
+            and self._trace_finalize_timeout_sec > 0.0
+        )
+
+    def _finalize_trace_turn_locked(
+        self,
+        turn: TraceTurn,
+        *,
+        missing_assistant_fallback: bool = False,
+    ) -> TraceTurn:
+        if not turn.prompt_text:
+            turn.prompt_text = turn.user_transcript
+        if not turn.response_text and turn.assistant_text:
+            turn.response_text = turn.assistant_text
+        if not turn.assistant_text and turn.response_text:
+            turn.assistant_text = turn.response_text
+
+        if missing_assistant_fallback and not turn.assistant_text:
+            turn.assistant_text_missing = True
+            fallback_text = "[assistant text unavailable]"
+            turn.assistant_text = fallback_text
+            if not turn.response_text:
+                turn.response_text = fallback_text
+
+        self._pending_trace_turns.remove(turn)
+        self._cancel_finalize_timeout(turn.turn_id)
+        return turn
+
+    def _schedule_finalize_timeout(self, turn_id: str) -> None:
+        if turn_id in self._trace_finalize_tasks:
+            return
+        task = asyncio.create_task(self._finalize_trace_turn_after_timeout(turn_id))
+        self._trace_finalize_tasks[turn_id] = task
+        task.add_done_callback(lambda _: self._trace_finalize_tasks.pop(turn_id, None))
+
+    def _cancel_finalize_timeout(self, turn_id: str) -> None:
+        task = self._trace_finalize_tasks.pop(turn_id, None)
+        current_task = asyncio.current_task()
+        if task and not task.done() and task is not current_task:
+            task.cancel()
+
+    async def _finalize_trace_turn_after_timeout(self, turn_id: str) -> None:
+        await asyncio.sleep(self._trace_finalize_timeout_sec)
+
+        completed_turn: Optional[TraceTurn] = None
+        async with self._trace_lock:
+            pending_turn = next(
+                (turn for turn in self._pending_trace_turns if turn.turn_id == turn_id),
+                None,
+            )
+            if not pending_turn:
+                return
+
+            if self._is_trace_turn_complete(pending_turn):
+                completed_turn = self._finalize_trace_turn_locked(pending_turn)
+            elif (
+                pending_turn.user_transcript
+                and pending_turn.llm_duration_ms is not None
+                and pending_turn.tts_duration_ms is not None
+            ):
+                completed_turn = self._finalize_trace_turn_locked(
+                    pending_turn,
+                    missing_assistant_fallback=True,
+                )
+
+        if completed_turn:
+            self._schedule_trace_emit(completed_turn)
+
+    def _schedule_trace_emit(self, turn: TraceTurn) -> None:
+        if len(self._trace_emit_tasks) >= self._trace_max_pending_tasks:
+            logger.warning(
+                "Dropping Langfuse trace for turn_id=%s due to pending trace backlog (%s)",
+                turn.turn_id,
+                len(self._trace_emit_tasks),
+            )
+            return
+
+        task = asyncio.create_task(self._emit_and_publish_trace_turn(turn))
+        self._trace_emit_tasks.add(task)
+        task.add_done_callback(lambda completed: self._trace_emit_tasks.discard(completed))
+
+    async def _emit_and_publish_trace_turn(self, turn: TraceTurn) -> None:
+        await self._emit_turn_trace(turn)
+        await self._publish_trace_update(turn)
+
+    async def wait_for_pending_trace_tasks(self) -> None:
+        tasks = list(self._trace_emit_tasks)
+        if not tasks:
+            return
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _emit_turn_trace(self, turn: TraceTurn) -> None:
         if not self._langfuse_enabled:
             return
 
         try:
-            user_input_duration_ms = 1.0 if turn.user_transcript else 0.0
+            user_input_duration_ms = 0.0 if turn.user_transcript else None
             vad_duration_ms = max(turn.vad_duration_ms or 0.0, 0.0)
-            stt_duration_ms = max(turn.stt_duration_ms or 0.0, 0.0)
+            stt_duration_ms = (
+                max(turn.stt_duration_ms, 0.0) if turn.stt_duration_ms is not None else None
+            )
             llm_duration_ms = max(turn.llm_duration_ms or 0.0, 0.0)
             tts_duration_ms = max(turn.tts_duration_ms or 0.0, 0.0)
+            trace_output = turn.assistant_text or turn.response_text
 
             root_context = trace.set_span_in_context(trace.INVALID_SPAN)
             root_start_ns = time_ns()
@@ -760,22 +899,27 @@ class MetricsCollector:
                 turn_span.set_attribute("user.id", turn.participant_id)
                 turn_span.set_attribute("langfuse.trace.name", "turn")
                 turn_span.set_attribute("langfuse.trace.input", turn.user_transcript)
-                turn_span.set_attribute(
-                    "langfuse.trace.output",
-                    turn.assistant_text or turn.response_text,
-                )
+                turn_span.set_attribute("langfuse.trace.output", trace_output)
                 turn_span.set_attribute("langfuse.trace.metadata.room_id", turn.room_id)
                 turn_span.set_attribute(
                     "langfuse.trace.metadata.participant_id",
                     turn.participant_id,
                 )
                 turn_span.set_attribute("langfuse.trace.metadata.turn_id", turn.turn_id)
+                turn_span.set_attribute(
+                    "langfuse.trace.metadata.assistant_text_missing",
+                    turn.assistant_text_missing,
+                )
+                turn_span.set_attribute("langfuse.trace.metadata.stt_status", turn.stt_status)
                 turn_span.set_attribute("duration_ms", self._total_duration_ms(turn))
-                turn_span.set_attribute("latency_ms.user_input", user_input_duration_ms)
+                if user_input_duration_ms is not None:
+                    turn_span.set_attribute("latency_ms.user_input", user_input_duration_ms)
                 turn_span.set_attribute("latency_ms.vad", vad_duration_ms)
-                turn_span.set_attribute("latency_ms.stt", stt_duration_ms)
+                if stt_duration_ms is not None:
+                    turn_span.set_attribute("latency_ms.stt", stt_duration_ms)
                 turn_span.set_attribute("latency_ms.llm", llm_duration_ms)
                 turn_span.set_attribute("latency_ms.tts", tts_duration_ms)
+                turn_span.set_attribute("stt_status", turn.stt_status)
 
                 component_context = trace.set_span_in_context(turn_span)
 
@@ -785,6 +929,7 @@ class MetricsCollector:
                     start_ns=cursor_ns,
                     duration_ms=user_input_duration_ms,
                     attributes={"user_transcript": turn.user_transcript},
+                    observation_input=turn.user_transcript,
                 )
                 cursor_ns = self._emit_component_span(
                     name="vad",
@@ -792,13 +937,18 @@ class MetricsCollector:
                     start_ns=cursor_ns,
                     duration_ms=vad_duration_ms,
                     attributes={"eou_delay_ms": vad_duration_ms},
+                    observation_output=str(vad_duration_ms),
                 )
                 cursor_ns = self._emit_component_span(
                     name="stt",
                     context=component_context,
                     start_ns=cursor_ns,
                     duration_ms=stt_duration_ms,
-                    attributes={"user_transcript": turn.user_transcript},
+                    attributes={
+                        "user_transcript": turn.user_transcript,
+                        "stt_status": turn.stt_status,
+                    },
+                    observation_output=turn.user_transcript,
                 )
                 cursor_ns = self._emit_component_span(
                     name="llm",
@@ -809,13 +959,20 @@ class MetricsCollector:
                         "prompt_text": turn.prompt_text,
                         "response_text": turn.response_text,
                     },
+                    observation_input=turn.prompt_text,
+                    observation_output=turn.response_text,
                 )
                 cursor_ns = self._emit_component_span(
                     name="tts",
                     context=component_context,
                     start_ns=cursor_ns,
                     duration_ms=tts_duration_ms,
-                    attributes={"assistant_text": turn.assistant_text},
+                    attributes={
+                        "assistant_text": turn.assistant_text,
+                        "assistant_text_missing": turn.assistant_text_missing,
+                    },
+                    observation_input=turn.assistant_text,
+                    observation_output=turn.assistant_text,
                 )
 
                 self._close_span_at(turn_span, cursor_ns)
@@ -837,15 +994,23 @@ class MetricsCollector:
         name: str,
         context: Any,
         start_ns: int,
-        duration_ms: float,
+        duration_ms: Optional[float],
         attributes: dict[str, Any],
+        observation_input: Optional[str] = None,
+        observation_output: Optional[str] = None,
     ) -> int:
-        actual_duration_ms = max(duration_ms, 0.0)
-        timeline_duration_ms = self._timeline_duration_ms(actual_duration_ms)
-        end_ns = start_ns + self._duration_ms_to_ns(timeline_duration_ms)
+        actual_duration_ms = max(duration_ms, 0.0) if duration_ms is not None else None
+        end_ns = start_ns + self._duration_ms_to_ns(actual_duration_ms or 0.0)
 
         with tracer.start_as_current_span(name, context=context, start_time=start_ns) as span:
-            span.set_attribute("duration_ms", actual_duration_ms)
+            if actual_duration_ms is not None:
+                span.set_attribute("duration_ms", actual_duration_ms)
+            if observation_input is not None:
+                span.set_attribute("input", observation_input)
+                span.set_attribute("langfuse.observation.input", observation_input)
+            if observation_output is not None:
+                span.set_attribute("output", observation_output)
+                span.set_attribute("langfuse.observation.output", observation_output)
             for key, value in attributes.items():
                 if value is None:
                     continue
@@ -865,10 +1030,6 @@ class MetricsCollector:
             except Exception:
                 pass
 
-    def _timeline_duration_ms(self, duration_ms: float) -> float:
-        """Ensure zero-duration stages are still visible in timeline views."""
-        return duration_ms if duration_ms > 0 else 1.0
-
     def _duration_ms_to_ns(self, duration_ms: float) -> int:
         return int(max(duration_ms, 0.0) * 1_000_000)
 
@@ -879,7 +1040,12 @@ class MetricsCollector:
             force_flush = getattr(tracer_provider, "force_flush", None)
             if not callable(force_flush):
                 return
-            await asyncio.to_thread(force_flush)
+            await asyncio.wait_for(
+                asyncio.to_thread(force_flush),
+                timeout=self._trace_flush_timeout_sec,
+            )
+        except TimeoutError:
+            logger.debug("Langfuse tracer force_flush timed out")
         except Exception as exc:
             logger.debug(f"Failed to force flush tracer provider: {exc}")
 
@@ -903,9 +1069,10 @@ class MetricsCollector:
             logger.error(f"Failed to publish trace update: {exc}")
 
     def _total_duration_ms(self, turn: TraceTurn) -> float:
+        stt_component = turn.stt_duration_ms if turn.stt_duration_ms is not None else 0.0
         return (
             (turn.vad_duration_ms or 0.0)
-            + (turn.stt_duration_ms or 0.0)
+            + stt_component
             + (turn.llm_duration_ms or 0.0)
             + (turn.tts_duration_ms or 0.0)
         )
@@ -913,6 +1080,12 @@ class MetricsCollector:
     def _duration_to_ms(self, duration: float, fallback_duration: float) -> float:
         chosen = duration if duration > 0 else fallback_duration
         return max(chosen, 0.0) * 1000.0
+
+    def _duration_to_ms_or_none(self, duration: float, fallback_duration: float) -> Optional[float]:
+        chosen = duration if duration > 0 else fallback_duration
+        if chosen <= 0:
+            return None
+        return chosen * 1000.0
 
     def _normalize_optional_text(self, value: Any) -> Optional[str]:
         if not isinstance(value, str):

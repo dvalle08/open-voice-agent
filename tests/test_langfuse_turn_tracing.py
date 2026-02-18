@@ -176,6 +176,7 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
         await collector.on_metrics_collected(_make_llm_metrics("speech-1"))
         await collector.on_conversation_item_added(role="assistant", content="hi, how can I help?")
         await collector.on_metrics_collected(_make_tts_metrics("speech-1"))
+        await collector.wait_for_pending_trace_tasks()
 
     asyncio.run(_run())
 
@@ -187,18 +188,24 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
     assert root.attributes["room_id"] == "RM123"
     assert root.attributes["participant_id"] == "web-123"
     assert root.attributes["turn_id"]
+    assert root.attributes["langfuse.trace.output"] == "hi, how can I help?"
 
     assert user_input_span.attributes["user_transcript"] == "hello there"
     assert vad_span.attributes["duration_ms"] == pytest.approx(1100.0)
 
     assert stt_span.attributes["user_transcript"] == "hello there"
+    assert stt_span.attributes["stt_status"] == "measured"
     assert stt_span.attributes["duration_ms"] > 0
 
     assert llm_span.attributes["prompt_text"] == "hello there"
     assert llm_span.attributes["response_text"] == "hi, how can I help?"
+    assert llm_span.attributes["input"] == "hello there"
+    assert llm_span.attributes["output"] == "hi, how can I help?"
     assert llm_span.attributes["duration_ms"] > 0
 
     assert tts_span.attributes["assistant_text"] == "hi, how can I help?"
+    assert tts_span.attributes["input"] == "hi, how can I help?"
+    assert tts_span.attributes["output"] == "hi, how can I help?"
     assert tts_span.attributes["duration_ms"] > 0
 
     payloads = _decode_payloads(room)
@@ -233,6 +240,7 @@ def test_tracing_failure_does_not_break_metrics_pipeline(monkeypatch: pytest.Mon
         await collector.on_metrics_collected(_make_llm_metrics("speech-2"))
         await collector.on_conversation_item_added(role="assistant", content="hello back")
         await collector.on_metrics_collected(_make_tts_metrics("speech-2"))
+        await collector.wait_for_pending_trace_tasks()
 
     asyncio.run(_run())
 
@@ -276,6 +284,7 @@ def test_creates_new_trace_for_each_finalized_transcript(
         await collector.on_metrics_collected(_make_llm_metrics("speech-b"))
         await collector.on_conversation_item_added(role="assistant", content="second reply")
         await collector.on_metrics_collected(_make_tts_metrics("speech-b"))
+        await collector.wait_for_pending_trace_tasks()
 
     asyncio.run(_run())
 
@@ -309,6 +318,7 @@ def test_trace_emits_without_stt_metrics(monkeypatch: pytest.MonkeyPatch) -> Non
         await collector.on_metrics_collected(_make_llm_metrics("speech-no-stt"))
         await collector.on_conversation_item_added(role="assistant", content="reply without stt")
         await collector.on_metrics_collected(_make_tts_metrics("speech-no-stt"))
+        await collector.wait_for_pending_trace_tasks()
 
     asyncio.run(_run())
 
@@ -316,4 +326,80 @@ def test_trace_emits_without_stt_metrics(monkeypatch: pytest.MonkeyPatch) -> Non
     assert span_names == ["turn", "user_input", "vad", "stt", "llm", "tts"]
     stt_span = fake_tracer.spans[3]
     assert stt_span.attributes["user_transcript"] == "turn without stt metrics"
-    assert stt_span.attributes["duration_ms"] == 0.0
+    assert stt_span.attributes["stt_status"] == "missing"
+    assert "duration_ms" not in stt_span.attributes
+
+
+def test_trace_waits_for_assistant_text_before_emit(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-wait-assistant",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("hi", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-wait-assistant"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-wait-assistant"))
+        await collector.wait_for_pending_trace_tasks()
+        assert not fake_tracer.spans
+
+        await collector.on_conversation_item_added(role="assistant", content="hello there")
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    assert turn_spans[0].attributes["langfuse.trace.output"] == "hello there"
+
+
+def test_trace_finalize_timeout_for_missing_assistant_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+    collector._trace_finalize_timeout_sec = 0.01
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-assistant-timeout",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("hi", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-timeout"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-timeout"))
+        await asyncio.sleep(0.03)
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    root = turn_spans[0]
+    assert root.attributes["langfuse.trace.metadata.assistant_text_missing"] is True
+    assert root.attributes["langfuse.trace.output"] == "[assistant text unavailable]"

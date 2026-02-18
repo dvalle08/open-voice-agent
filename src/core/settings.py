@@ -191,6 +191,24 @@ class LangfuseSettings(CoreSettings):
         default=None,
         description="Alternative to LANGFUSE_HOST",
     )
+    LANGFUSE_TRACE_FINALIZE_TIMEOUT_MS: float = Field(
+        default=150.0,
+        ge=0.0,
+        le=5000.0,
+        description="Timeout to wait for assistant text before force-finalizing trace",
+    )
+    LANGFUSE_MAX_PENDING_TRACE_TASKS: int = Field(
+        default=200,
+        ge=1,
+        le=5000,
+        description="Maximum queued background trace emission tasks",
+    )
+    LANGFUSE_TRACE_FLUSH_TIMEOUT_MS: float = Field(
+        default=1000.0,
+        ge=0.0,
+        le=10000.0,
+        description="Best-effort tracer flush timeout in milliseconds",
+    )
 
 
 class Settings(CoreSettings):

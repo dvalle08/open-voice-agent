@@ -14,6 +14,7 @@ from livekit.plugins import noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit.plugins import langchain
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
@@ -57,7 +58,15 @@ def setup_langfuse_tracer() -> TracerProvider | None:
             endpoint=f"{host}/api/public/otel/v1/traces",
             headers={"Authorization": f"Basic {auth}"},
         )
-        tracer_provider = TracerProvider()
+        tracer_provider = TracerProvider(
+            resource=Resource.create(
+                {
+                    SERVICE_NAME: "open-voice-agent",
+                    SERVICE_VERSION: getattr(agents, "__version__", "unknown"),
+                    "deployment.environment": "default",
+                }
+            )
+        )
         tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter))
         set_tracer_provider(tracer_provider)
         _langfuse_tracer_provider = tracer_provider
