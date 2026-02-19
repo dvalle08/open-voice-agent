@@ -27,6 +27,7 @@ def pocket_plugin(monkeypatch: pytest.MonkeyPatch) -> Any:
         "raise_on_generate": None,
         "active_generations": 0,
         "max_active_generations": 0,
+        "texts": [],
     }
 
     class _FakeModel:
@@ -46,6 +47,7 @@ def pocket_plugin(monkeypatch: pytest.MonkeyPatch) -> Any:
         ) -> Generator[np.ndarray[Any, np.dtype[np.float32]], None, None]:
             calls["state"] = state
             calls["text"] = text
+            calls["texts"].append(text)
             calls["copy_state"] = copy_state
             calls["active_generations"] += 1
             calls["max_active_generations"] = max(
@@ -203,6 +205,30 @@ def test_stream_emits_before_generation_completes(pocket_plugin: Any) -> None:
     asyncio.run(_run())
 
 
+def test_stream_uses_single_segment_for_one_flush(pocket_plugin: Any) -> None:
+    module = pocket_plugin["module"]
+    tts_v = module.PocketTTS(voice="alba")
+    long_text = (
+        "First sentence with enough words to trigger internal chunking. " * 6
+        + "Second sentence also long enough to split. " * 6
+    )
+
+    async def _run() -> None:
+        async with tts_v.stream() as synth_stream:
+            synth_stream.push_text(long_text)
+            synth_stream.end_input()
+            events = await asyncio.wait_for(_collect_events(synth_stream), timeout=3.0)
+
+        segment_ids = {
+            event.segment_id
+            for event in events
+            if not event.is_final and isinstance(event.segment_id, str) and event.segment_id
+        }
+        assert len(segment_ids) == 1
+
+    asyncio.run(_run())
+
+
 def test_chunked_generation_serializes_concurrent_requests(pocket_plugin: Any) -> None:
     module = pocket_plugin["module"]
     pocket_plugin["per_chunk_sleep"] = 0.03
@@ -251,6 +277,56 @@ def test_generation_timeout_is_mapped_to_api_timeout_error(pocket_plugin: Any) -
         asyncio.run(_run())
     finally:
         gate.set()
+
+
+def test_sanitize_tts_text_removes_markdown_noise(pocket_plugin: Any) -> None:
+    module = pocket_plugin["module"]
+    raw_text = """
+    ## Title
+    - **Bold** item with [link text](https://example.com)
+    1. `code` item
+    """
+
+    sanitized = module._sanitize_tts_text(raw_text)
+    assert "##" not in sanitized
+    assert "**" not in sanitized
+    assert "`" not in sanitized
+    assert "[link text]" not in sanitized
+    assert "(https://example.com)" not in sanitized
+    assert "link text" in sanitized
+    assert "Bold item with" in sanitized
+
+
+def test_chunk_tts_text_respects_length_limit(pocket_plugin: Any) -> None:
+    module = pocket_plugin["module"]
+    text = " ".join(["word"] * 80)
+
+    chunks = module._chunk_tts_text(text, max_chars=40)
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 40 for chunk in chunks)
+    assert " ".join(chunks).replace("  ", " ").strip() == text
+
+
+def test_chunked_synthesize_sanitizes_and_splits_long_text(pocket_plugin: Any) -> None:
+    module = pocket_plugin["module"]
+    tts_v = module.PocketTTS(voice="alba")
+    text = (
+        "## Header\n"
+        "- **First** item with [a link](https://example.com).\n"
+        + "Second sentence keeps going with enough words to exceed the segment limit. " * 5
+        + "Third sentence keeps going with enough words to exceed the segment limit. " * 5
+    )
+
+    async def _run() -> None:
+        await _collect_events(tts_v.synthesize(text))
+
+    asyncio.run(_run())
+
+    generated_texts = pocket_plugin["texts"]
+    assert len(generated_texts) >= 2
+    assert all(len(part) <= module.MAX_TTS_SEGMENT_CHARS for part in generated_texts)
+    assert all("**" not in part and "`" not in part for part in generated_texts)
+    assert all("https://example.com" not in part for part in generated_texts)
 
 
 async def _collect_events(stream: Any) -> list[Any]:

@@ -180,6 +180,7 @@ class MetricsCollector:
         room_id: Optional[str] = None,
         participant_id: Optional[str] = None,
         fallback_session_prefix: Optional[str] = None,
+        fallback_participant_prefix: Optional[str] = None,
         langfuse_enabled: bool = False,
     ) -> None:
         """Initialize metrics collector.
@@ -192,6 +193,8 @@ class MetricsCollector:
             participant_id: LiveKit participant identity when available
             fallback_session_prefix: Prefix used for generated fallback session id
                 (e.g. "console" -> "console_<uuid>") when no metadata session id exists
+            fallback_participant_prefix: Prefix used for generated fallback participant id
+                (e.g. "console" -> "console_<uuid>") when no participant identity exists
             langfuse_enabled: Enable one-trace-per-turn Langfuse traces
         """
         self._room = room
@@ -208,7 +211,14 @@ class MetricsCollector:
             fallback_session_prefix
         )
         self._session_id = self._fallback_session_id or self.UNKNOWN_SESSION_ID
-        self._participant_id = participant_id or self.UNKNOWN_PARTICIPANT_ID
+        self._fallback_participant_id = self._build_fallback_participant_id(
+            fallback_participant_prefix
+        )
+        self._participant_id = (
+            self._normalize_optional_text(participant_id)
+            or self._fallback_participant_id
+            or self.UNKNOWN_PARTICIPANT_ID
+        )
         self._langfuse_enabled = langfuse_enabled
         self._pending_trace_turns: deque[TraceTurn] = deque()
         self._trace_lock = asyncio.Lock()
@@ -271,8 +281,10 @@ class MetricsCollector:
                 ):
                     turn.session_id = self._session_id
                 if (
-                    turn.participant_id == self.UNKNOWN_PARTICIPANT_ID
-                    and self._participant_id != self.UNKNOWN_PARTICIPANT_ID
+                    turn.participant_id
+                    in {self.UNKNOWN_PARTICIPANT_ID, self._fallback_participant_id}
+                    and self._participant_id
+                    not in {self.UNKNOWN_PARTICIPANT_ID, self._fallback_participant_id}
                 ):
                     turn.participant_id = self._participant_id
 
@@ -997,11 +1009,12 @@ class MetricsCollector:
             root_start_ns = time_ns()
             cursor_ns = root_start_ns
 
-            with tracer.start_as_current_span(
+            turn_span = tracer.start_span(
                 "turn",
                 context=root_context,
                 start_time=root_start_ns,
-            ) as turn_span:
+            )
+            try:
                 turn.trace_id = trace.format_trace_id(turn_span.get_span_context().trace_id)
                 turn_span.set_attribute("session_id", turn.session_id)
                 turn_span.set_attribute("room_id", turn.room_id)
@@ -1127,7 +1140,7 @@ class MetricsCollector:
                         },
                         observation_output=str(conversational_latency_ms),
                     )
-
+            finally:
                 self._close_span_at(turn_span, cursor_ns)
             logger.info(
                 "Langfuse turn trace emitted: trace_id=%s turn_id=%s session_id=%s room_id=%s participant_id=%s",
@@ -1155,7 +1168,8 @@ class MetricsCollector:
         actual_duration_ms = max(duration_ms, 0.0) if duration_ms is not None else None
         end_ns = start_ns + self._duration_ms_to_ns(actual_duration_ms or 0.0)
 
-        with tracer.start_as_current_span(name, context=context, start_time=start_ns) as span:
+        span = tracer.start_span(name, context=context, start_time=start_ns)
+        try:
             if actual_duration_ms is not None:
                 span.set_attribute("duration_ms", actual_duration_ms)
             if observation_input is not None:
@@ -1168,6 +1182,7 @@ class MetricsCollector:
                 if value is None:
                     continue
                 span.set_attribute(key, value)
+        finally:
             self._close_span_at(span, end_ns)
         return end_ns
 
@@ -1256,6 +1271,12 @@ class MetricsCollector:
         return normalized or None
 
     def _build_fallback_session_id(self, prefix: Optional[str]) -> Optional[str]:
+        normalized_prefix = self._normalize_optional_text(prefix)
+        if not normalized_prefix:
+            return None
+        return f"{normalized_prefix}_{uuid.uuid4()}"
+
+    def _build_fallback_participant_id(self, prefix: Optional[str]) -> Optional[str]:
         normalized_prefix = self._normalize_optional_text(prefix)
         if not normalized_prefix:
             return None

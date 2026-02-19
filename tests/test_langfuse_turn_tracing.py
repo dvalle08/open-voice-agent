@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from opentelemetry import trace as otel_trace
 from livekit.agents import metrics
 
 from src.agent.metrics_collector import MetricsCollector
@@ -23,6 +24,7 @@ class _FakeSpan:
     name: str
     trace_id: int
     attributes: dict[str, Any] = field(default_factory=dict)
+    end_count: int = 0
 
     def set_attribute(self, key: str, value: Any) -> None:
         self.attributes[key] = value
@@ -30,12 +32,32 @@ class _FakeSpan:
     def get_span_context(self) -> _FakeSpanContext:
         return _FakeSpanContext(trace_id=self.trace_id)
 
+    def end(self, end_time: Any = None) -> None:
+        _ = end_time
+        self.end_count += 1
+
 
 class _FakeTracer:
     def __init__(self) -> None:
         self.spans: list[_FakeSpan] = []
         self._stack: list[_FakeSpan] = []
         self._next_trace_id = 1
+
+    def start_span(self, name: str, **kwargs: Any) -> _FakeSpan:
+        trace_id = None
+        context = kwargs.get("context")
+        if context is not None:
+            parent_span = otel_trace.get_current_span(context)
+            get_span_context = getattr(parent_span, "get_span_context", None)
+            if callable(get_span_context):
+                trace_id = get_span_context().trace_id
+        if not trace_id:
+            trace_id = self._next_trace_id
+            self._next_trace_id += 1
+
+        span = _FakeSpan(name=name, trace_id=trace_id)
+        self.spans.append(span)
+        return span
 
     @contextmanager
     def start_as_current_span(self, name: str, **_: Any):  # type: ignore[no-untyped-def]
@@ -55,6 +77,9 @@ class _FakeTracer:
 
 
 class _BrokenTracer:
+    def start_span(self, name: str, **_: Any) -> Any:
+        raise RuntimeError(f"broken tracer for {name}")
+
     @contextmanager
     def start_as_current_span(self, name: str, **_: Any):  # type: ignore[no-untyped-def]
         raise RuntimeError(f"broken tracer for {name}")
@@ -255,6 +280,7 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
     assert conversational_span.attributes["stt_finalization_ms"] == pytest.approx(250.0)
     assert conversational_span.attributes["llm_ttft_ms"] > 0
     assert conversational_span.attributes["tts_ttfb_ms"] > 0
+    assert all(span.end_count == 1 for span in fake_tracer.spans)
 
     payloads = _decode_payloads(room)
     trace_updates = [payload for payload in payloads if payload.get("type") == "trace_update"]
@@ -566,3 +592,78 @@ def test_real_session_metadata_overrides_fallback_for_pending_turns(
     turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
     assert len(turn_spans) == 1
     assert turn_spans[0].attributes["session_id"] == "session-real"
+
+
+def test_fallback_console_participant_id_is_used_when_metadata_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id=None,
+        fallback_session_prefix="console",
+        fallback_participant_prefix="console",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_user_input_transcribed("console participant", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-console-participant"))
+        await collector.on_conversation_item_added(role="assistant", content="ok")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-console-participant"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    participant_id = turn_spans[0].attributes["participant_id"]
+    assert participant_id.startswith("console_")
+    assert participant_id != "unknown-participant"
+
+
+def test_real_participant_metadata_overrides_fallback_for_pending_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id=None,
+        fallback_session_prefix="console",
+        fallback_participant_prefix="console",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_user_input_transcribed("override participant", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-override-participant"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-override-participant"))
+        await collector.on_session_metadata(
+            session_id="session-real-participant",
+            participant_id="web-real-participant",
+        )
+        await collector.on_conversation_item_added(role="assistant", content="reply")
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    assert turn_spans[0].attributes["session_id"] == "session-real-participant"
+    assert turn_spans[0].attributes["participant_id"] == "web-real-participant"

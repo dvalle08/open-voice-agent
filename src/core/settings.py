@@ -91,13 +91,13 @@ class VoiceSettings(CoreSettings):
 
     # Voice Activity Detection Settings
     VAD_MIN_SPEECH_DURATION: float = Field(
-        default=0.25,
+        default=0.18,
         ge=0.1,
         le=1.0,
         description="Minimum speech duration (seconds) before VAD activation",
     )
     VAD_MIN_SILENCE_DURATION: float = Field(
-        default=0.5,
+        default=0.30,
         ge=0.1,
         le=2.0,
         description="Minimum silence duration (seconds) before VAD deactivation",

@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import queue
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -27,6 +28,12 @@ logging.getLogger("pocket_tts.conditioners.text").setLevel(logging.WARNING)
 
 DEFAULT_VOICE = "alba"
 NATIVE_SAMPLE_RATE = 24000
+MAX_TTS_SEGMENT_CHARS = 220
+
+_BULLET_PREFIX_RE = re.compile(r"^\s*(?:[-*+]|(?:\d+[\.\)]))\s+")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\((?:[^)]+)\)")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 class TTSMetricsCallback(Protocol):
@@ -218,6 +225,13 @@ class PocketTTS(tts.TTS):
         audio_duration = _bytes_to_duration(total_bytes=total_bytes, sample_rate=self.sample_rate)
         return first_chunk_ttfb, generation_duration, audio_duration
 
+    def _prepare_text_segments(self, text: str) -> list[str]:
+        """Normalize text for TTS and split into short chunks for lower tail latency."""
+        cleaned = _sanitize_tts_text(text)
+        if not cleaned:
+            return []
+        return _chunk_tts_text(cleaned, max_chars=MAX_TTS_SEGMENT_CHARS)
+
 
 class PocketChunkedStream(tts.ChunkedStream):
     def __init__(
@@ -240,19 +254,32 @@ class PocketChunkedStream(tts.ChunkedStream):
             stream=False,
         )
 
-        (
-            first_chunk_ttfb,
-            generation_duration,
-            audio_duration,
-        ) = await pocket_tts._push_generated_audio(
-            text=self._input_text,
-            conn_options=self._conn_options,
-            output_emitter=output_emitter,
-        )
+        text_segments = pocket_tts._prepare_text_segments(self._input_text)
+        if not text_segments:
+            output_emitter.flush()
+            return
+
+        first_chunk_ttfb = -1.0
+        generation_duration = 0.0
+        audio_duration = 0.0
+        for text_segment in text_segments:
+            (
+                segment_ttfb,
+                segment_duration,
+                segment_audio_duration,
+            ) = await pocket_tts._push_generated_audio(
+                text=text_segment,
+                conn_options=self._conn_options,
+                output_emitter=output_emitter,
+            )
+            if first_chunk_ttfb < 0 and segment_ttfb >= 0:
+                first_chunk_ttfb = segment_ttfb
+            generation_duration += segment_duration
+            audio_duration += segment_audio_duration
 
         output_emitter.flush()
 
-        if pocket_tts._metrics_callback:
+        if pocket_tts._metrics_callback and first_chunk_ttfb >= 0:
             pocket_tts._metrics_callback(
                 ttfb=first_chunk_ttfb,
                 duration=generation_duration,
@@ -290,33 +317,130 @@ class PocketSynthesizeStream(tts.SynthesizeStream):
     async def _flush_text_buffer(
         self, *, text_buffer: str, output_emitter: tts.AudioEmitter
     ) -> None:
-        if not text_buffer.strip():
+        pocket_tts = cast(PocketTTS, self._tts)
+        text_segments = pocket_tts._prepare_text_segments(text_buffer)
+        if not text_segments:
             return
 
-        segment_id = shortuuid("SEG_")
-        output_emitter.start_segment(segment_id=segment_id)
-        await self._synthesize_segment(text_buffer, output_emitter)
-        output_emitter.end_segment()
+        # LiveKit expects one segment per flushed text buffer in streaming mode.
+        output_emitter.start_segment(segment_id=shortuuid("SEG_"))
+        first_chunk_ttfb = -1.0
+        generation_duration = 0.0
+        audio_duration = 0.0
+        try:
+            for text_segment in text_segments:
+                (
+                    segment_ttfb,
+                    segment_duration,
+                    segment_audio_duration,
+                ) = await self._synthesize_segment(text_segment, output_emitter)
+                if first_chunk_ttfb < 0 and segment_ttfb >= 0:
+                    first_chunk_ttfb = segment_ttfb
+                generation_duration += segment_duration
+                audio_duration += segment_audio_duration
+        finally:
+            output_emitter.end_segment()
 
-    async def _synthesize_segment(self, text: str, output_emitter: tts.AudioEmitter) -> None:
-        self._mark_started()
-        pocket_tts = cast(PocketTTS, self._tts)
-        (
-            first_chunk_ttfb,
-            generation_duration,
-            audio_duration,
-        ) = await pocket_tts._push_generated_audio(
-            text=text,
-            conn_options=self._conn_options,
-            output_emitter=output_emitter,
-        )
-
-        if pocket_tts._metrics_callback:
+        if pocket_tts._metrics_callback and first_chunk_ttfb >= 0:
             pocket_tts._metrics_callback(
                 ttfb=first_chunk_ttfb,
                 duration=generation_duration,
                 audio_duration=audio_duration,
             )
+
+    async def _synthesize_segment(
+        self, text: str, output_emitter: tts.AudioEmitter
+    ) -> tuple[float, float, float]:
+        self._mark_started()
+        pocket_tts = cast(PocketTTS, self._tts)
+        return await pocket_tts._push_generated_audio(
+            text=text,
+            conn_options=self._conn_options,
+            output_emitter=output_emitter,
+        )
+
+
+def _sanitize_tts_text(text: str) -> str:
+    if not text:
+        return ""
+
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = _MARKDOWN_LINK_RE.sub(r"\1", normalized)
+
+    cleaned_lines: list[str] = []
+    for raw_line in normalized.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = _BULLET_PREFIX_RE.sub("", line)
+        line = line.lstrip("#> ").strip()
+        line = line.replace("**", "")
+        line = line.replace("__", "")
+        line = line.replace("`", "")
+        line = line.replace("*", "")
+        line = line.replace("|", " ")
+        cleaned_lines.append(line)
+
+    cleaned = " ".join(cleaned_lines)
+    cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
+    return cleaned
+
+
+def _chunk_tts_text(text: str, *, max_chars: int) -> list[str]:
+    if not text.strip():
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()]
+    if not sentences:
+        sentences = [text.strip()]
+
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        for sentence_part in _split_overlong_text(sentence, max_chars=max_chars):
+            if not current:
+                current = sentence_part
+                continue
+            candidate = f"{current} {sentence_part}"
+            if len(candidate) <= max_chars:
+                current = candidate
+            else:
+                chunks.append(current)
+                current = sentence_part
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _split_overlong_text(text: str, *, max_chars: int) -> list[str]:
+    if len(text) <= max_chars:
+        return [text]
+
+    words = text.split()
+    if not words:
+        return []
+
+    chunks: list[str] = []
+    current_words: list[str] = []
+    current_len = 0
+    for word in words:
+        additional_len = len(word) if not current_words else len(word) + 1
+        if current_words and current_len + additional_len > max_chars:
+            chunks.append(" ".join(current_words))
+            current_words = [word]
+            current_len = len(word)
+            continue
+
+        current_words.append(word)
+        current_len += additional_len
+
+    if current_words:
+        chunks.append(" ".join(current_words))
+
+    return chunks
 
 
 def _tensor_to_pcm_bytes(

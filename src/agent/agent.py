@@ -43,6 +43,13 @@ def _fallback_session_prefix() -> str | None:
     return None
 
 
+def _fallback_participant_prefix() -> str | None:
+    """Use console-prefixed fallback participant id when running `... console`."""
+    if any(arg == "console" for arg in sys.argv[1:]):
+        return "console"
+    return None
+
+
 def setup_langfuse_tracer() -> TracerProvider | None:
     """Configure LiveKit telemetry tracer to export traces to Langfuse."""
     global _langfuse_tracer_provider
@@ -169,6 +176,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         room_id=initial_room_id,
         participant_id=initial_participant_id,
         fallback_session_prefix=_fallback_session_prefix(),
+        fallback_participant_prefix=_fallback_participant_prefix(),
         langfuse_enabled=trace_provider is not None,
     )
 
