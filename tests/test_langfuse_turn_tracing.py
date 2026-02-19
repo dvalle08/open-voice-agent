@@ -494,3 +494,75 @@ def test_trace_finalize_timeout_for_missing_assistant_text(
     root = turn_spans[0]
     assert root.attributes["langfuse.trace.metadata.assistant_text_missing"] is True
     assert root.attributes["langfuse.trace.output"] == "[assistant text unavailable]"
+
+
+def test_fallback_console_session_id_is_used_when_metadata_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="console-user",
+        fallback_session_prefix="console",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_user_input_transcribed("console test", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-console"))
+        await collector.on_conversation_item_added(role="assistant", content="console reply")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-console"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    session_id = turn_spans[0].attributes["session_id"]
+    assert session_id.startswith("console_")
+    assert session_id != "unknown-session"
+
+
+def test_real_session_metadata_overrides_fallback_for_pending_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="console-user",
+        fallback_session_prefix="console",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_user_input_transcribed("override test", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-override"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-override"))
+        await collector.on_session_metadata(
+            session_id="session-real",
+            participant_id="web-override",
+        )
+        await collector.on_conversation_item_added(role="assistant", content="reply")
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    assert turn_spans[0].attributes["session_id"] == "session-real"

@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import sys
 
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, Agent, room_io
@@ -33,6 +34,13 @@ def _normalize_langfuse_host() -> str | None:
     if not host:
         return None
     return host.rstrip("/")
+
+
+def _fallback_session_prefix() -> str | None:
+    """Use console-prefixed fallback session id when running `... console`."""
+    if any(arg == "console" for arg in sys.argv[1:]):
+        return "console"
+    return None
 
 
 def setup_langfuse_tracer() -> TracerProvider | None:
@@ -160,6 +168,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         room_name=ctx.room.name,
         room_id=initial_room_id,
         participant_id=initial_participant_id,
+        fallback_session_prefix=_fallback_session_prefix(),
         langfuse_enabled=trace_provider is not None,
     )
 

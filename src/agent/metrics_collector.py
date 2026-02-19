@@ -179,6 +179,7 @@ class MetricsCollector:
         room_name: str,
         room_id: Optional[str] = None,
         participant_id: Optional[str] = None,
+        fallback_session_prefix: Optional[str] = None,
         langfuse_enabled: bool = False,
     ) -> None:
         """Initialize metrics collector.
@@ -189,6 +190,8 @@ class MetricsCollector:
             room_name: LiveKit room name
             room_id: LiveKit room id (sid) when available
             participant_id: LiveKit participant identity when available
+            fallback_session_prefix: Prefix used for generated fallback session id
+                (e.g. "console" -> "console_<uuid>") when no metadata session id exists
             langfuse_enabled: Enable one-trace-per-turn Langfuse traces
         """
         self._room = room
@@ -201,7 +204,10 @@ class MetricsCollector:
 
         self._room_name = room_name or self.UNKNOWN_ROOM_ID
         self._room_id = room_id or room_name or self.UNKNOWN_ROOM_ID
-        self._session_id = self.UNKNOWN_SESSION_ID
+        self._fallback_session_id = self._build_fallback_session_id(
+            fallback_session_prefix
+        )
+        self._session_id = self._fallback_session_id or self.UNKNOWN_SESSION_ID
         self._participant_id = participant_id or self.UNKNOWN_PARTICIPANT_ID
         self._langfuse_enabled = langfuse_enabled
         self._pending_trace_turns: deque[TraceTurn] = deque()
@@ -259,8 +265,9 @@ class MetricsCollector:
 
             for turn in self._pending_trace_turns:
                 if (
-                    turn.session_id == self.UNKNOWN_SESSION_ID
-                    and self._session_id != self.UNKNOWN_SESSION_ID
+                    turn.session_id in {self.UNKNOWN_SESSION_ID, self._fallback_session_id}
+                    and self._session_id
+                    not in {self.UNKNOWN_SESSION_ID, self._fallback_session_id}
                 ):
                     turn.session_id = self._session_id
                 if (
@@ -1247,6 +1254,12 @@ class MetricsCollector:
             return None
         normalized = value.strip()
         return normalized or None
+
+    def _build_fallback_session_id(self, prefix: Optional[str]) -> Optional[str]:
+        normalized_prefix = self._normalize_optional_text(prefix)
+        if not normalized_prefix:
+            return None
+        return f"{normalized_prefix}_{uuid.uuid4()}"
 
     async def _resolve_room_id(self) -> str:
         if self._room_id and self._room_id != self._room_name:
