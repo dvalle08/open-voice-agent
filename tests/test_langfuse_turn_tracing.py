@@ -181,7 +181,15 @@ def _make_eou_metrics(
 @dataclass
 class _FakeChatItem:
     role: str
-    content: list[str]
+    content: list[Any]
+
+
+class _FakeTextMethodPart:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def text(self) -> str:
+        return self._text
 
 
 class _FakeSpeechHandle:
@@ -483,6 +491,54 @@ def test_speech_created_done_callback_backfills_assistant_text(
     assert turn_spans[0].attributes["langfuse.trace.metadata.assistant_text_missing"] is False
 
 
+def test_speech_created_immediate_capture_backfills_assistant_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-speech-created-immediate",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("hi there", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-speech-created-immediate"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-speech-created-immediate"))
+        await collector.wait_for_pending_trace_tasks()
+        assert not fake_tracer.spans
+
+        handle = _FakeSpeechHandle(
+            chat_items=[
+                _FakeChatItem(
+                    role="assistant",
+                    content=[_FakeTextMethodPart("immediate fallback reply")],
+                )
+            ]
+        )
+        await collector.on_speech_created(handle)
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    assert turn_spans[0].attributes["langfuse.trace.output"] == "immediate fallback reply"
+    assert turn_spans[0].attributes["langfuse.trace.metadata.assistant_text_missing"] is False
+
+
 def test_trace_finalize_timeout_for_missing_assistant_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -520,6 +576,47 @@ def test_trace_finalize_timeout_for_missing_assistant_text(
     root = turn_spans[0]
     assert root.attributes["langfuse.trace.metadata.assistant_text_missing"] is True
     assert root.attributes["langfuse.trace.output"] == "[assistant text unavailable]"
+
+
+def test_trace_finalize_timeout_uses_pending_assistant_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+    collector._trace_finalize_timeout_sec = 0.01
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-assistant-timeout-pending-transcript",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("hi", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-timeout-pending-transcript"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-timeout-pending-transcript"))
+
+        collector._pending_agent_transcripts.append("queued assistant fallback")
+        await asyncio.sleep(0.03)
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    root = turn_spans[0]
+    assert root.attributes["langfuse.trace.metadata.assistant_text_missing"] is False
+    assert root.attributes["langfuse.trace.output"] == "queued assistant fallback"
 
 
 def test_fallback_console_session_id_is_used_when_metadata_absent(

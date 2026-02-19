@@ -167,7 +167,7 @@ class MetricsCollector:
     UNKNOWN_SESSION_ID = "unknown-session"
     UNKNOWN_PARTICIPANT_ID = "unknown-participant"
     UNKNOWN_ROOM_ID = "unknown-room"
-    DEFAULT_TRACE_FINALIZE_TIMEOUT_MS = 5000.0
+    DEFAULT_TRACE_FINALIZE_TIMEOUT_MS = 8000.0
     DEFAULT_MAX_PENDING_TRACE_TASKS = 200
     DEFAULT_TRACE_FLUSH_TIMEOUT_SEC = 1.0
 
@@ -335,6 +335,14 @@ class MetricsCollector:
 
     async def on_speech_created(self, speech_handle: Any) -> None:
         """Attach a done callback to capture assistant text when playout is complete."""
+        # Try immediate extraction first. Some pipelines do not preserve/trigger
+        # done callbacks consistently for long responses.
+        assistant_text = self._extract_text_from_chat_items(
+            getattr(speech_handle, "chat_items", [])
+        )
+        if assistant_text:
+            await self._on_assistant_text(assistant_text)
+
         add_done_callback = getattr(speech_handle, "add_done_callback", None)
         if not callable(add_done_callback):
             return
@@ -888,11 +896,17 @@ class MetricsCollector:
             turn.assistant_text = turn.response_text
 
         if missing_assistant_fallback and not turn.assistant_text:
-            turn.assistant_text_missing = True
-            fallback_text = "[assistant text unavailable]"
-            turn.assistant_text = fallback_text
-            if not turn.response_text:
-                turn.response_text = fallback_text
+            fallback_text = self._best_available_assistant_text_locked(turn)
+            if fallback_text:
+                turn.assistant_text = fallback_text
+                if not turn.response_text:
+                    turn.response_text = fallback_text
+            else:
+                turn.assistant_text_missing = True
+                unavailable_text = "[assistant text unavailable]"
+                turn.assistant_text = unavailable_text
+                if not turn.response_text:
+                    turn.response_text = unavailable_text
 
         self._pending_trace_turns.remove(turn)
         self._cancel_finalize_timeout(turn.turn_id)
@@ -1294,26 +1308,122 @@ class MetricsCollector:
             pass
         return self._room_id or self._room_name or self.UNKNOWN_ROOM_ID
 
+    def _best_available_assistant_text_locked(self, turn: TraceTurn) -> str:
+        if turn.assistant_text.strip():
+            return turn.assistant_text.strip()
+        if turn.response_text.strip():
+            return turn.response_text.strip()
+        if self._pending_agent_transcripts:
+            return self._pending_agent_transcripts.popleft().strip()
+        return ""
+
     def _extract_content_text(self, content: Any) -> str:
         """Extract plain text from a chat content payload."""
-        if isinstance(content, str):
-            return content
-        if not isinstance(content, list):
-            return ""
+        parts = self._extract_text_parts(content, depth=0, seen=set())
+        return " ".join(part.strip() for part in parts if part.strip())
+
+    def _extract_text_parts(
+        self,
+        value: Any,
+        *,
+        depth: int,
+        seen: set[int],
+    ) -> list[str]:
+        if value is None or depth > 8:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (bytes, bytearray)):
+            return [value.decode("utf-8", errors="ignore")]
+
+        value_id = id(value)
+        if value_id in seen:
+            return []
+
+        if isinstance(value, dict):
+            seen.add(value_id)
+            parts: list[str] = []
+            preferred_keys = (
+                "text",
+                "content",
+                "parts",
+                "message",
+                "output",
+                "value",
+                "delta",
+            )
+            for key in preferred_keys:
+                if key in value:
+                    parts.extend(
+                        self._extract_text_parts(
+                            value[key],
+                            depth=depth + 1,
+                            seen=seen,
+                        )
+                    )
+            if parts:
+                return parts
+            for nested in value.values():
+                parts.extend(
+                    self._extract_text_parts(
+                        nested,
+                        depth=depth + 1,
+                        seen=seen,
+                    )
+                )
+            return parts
+
+        if isinstance(value, Sequence) and not isinstance(
+            value, (str, bytes, bytearray)
+        ):
+            seen.add(value_id)
+            parts: list[str] = []
+            for item in value:
+                parts.extend(
+                    self._extract_text_parts(
+                        item,
+                        depth=depth + 1,
+                        seen=seen,
+                    )
+                )
+            return parts
+
+        text_attr = getattr(value, "text", None)
+        if isinstance(text_attr, str):
+            return [text_attr]
+        if callable(text_attr):
+            text_value = self._safe_text_call(text_attr)
+            if text_value is not None:
+                parts = self._extract_text_parts(
+                    text_value,
+                    depth=depth + 1,
+                    seen=seen,
+                )
+                if parts:
+                    return parts
+
+        seen.add(value_id)
         parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
+        for attr_name in ("content", "parts", "message", "output", "delta"):
+            nested_value = getattr(value, attr_name, None)
+            if nested_value is None:
                 continue
-            if isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-                continue
-            text = getattr(item, "text", None)
-            if isinstance(text, str):
-                parts.append(text)
-        return " ".join(part for part in parts if part)
+            parts.extend(
+                self._extract_text_parts(
+                    nested_value,
+                    depth=depth + 1,
+                    seen=seen,
+                )
+            )
+        return parts
+
+    def _safe_text_call(self, text_callable: Any) -> Any:
+        try:
+            return text_callable()
+        except TypeError:
+            return None
+        except Exception:
+            return None
 
     def _extract_text_from_chat_items(self, chat_items: Any) -> str:
         """Extract assistant text from speech handle chat items."""
