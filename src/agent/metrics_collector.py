@@ -963,12 +963,12 @@ class MetricsCollector:
                 else None
             )
             stt_span_duration_ms: Optional[float] = None
-            if stt_finalization_ms is not None and stt_finalization_ms > 0:
-                stt_span_duration_ms = stt_finalization_ms
-            elif stt_processing_ms is not None and stt_processing_ms > 0:
-                stt_span_duration_ms = stt_processing_ms
-            else:
+            if stt_total_latency_ms is not None and stt_total_latency_ms > 0:
                 stt_span_duration_ms = stt_total_latency_ms
+            elif stt_finalization_ms is not None and stt_finalization_ms > 0:
+                stt_span_duration_ms = stt_finalization_ms
+            else:
+                stt_span_duration_ms = stt_processing_ms
 
             llm_duration_ms = max(turn.llm_duration_ms or 0.0, 0.0)
             llm_ttft_ms = max(turn.llm_ttft_ms or 0.0, 0.0)
@@ -1054,6 +1054,7 @@ class MetricsCollector:
                     attributes={"user_transcript": turn.user_transcript},
                     observation_input=turn.user_transcript,
                 )
+                vad_start_ns = cursor_ns
                 cursor_ns = self._emit_component_span(
                     name="vad",
                     context=component_context,
@@ -1062,10 +1063,10 @@ class MetricsCollector:
                     attributes={"eou_delay_ms": vad_duration_ms},
                     observation_output=str(vad_duration_ms),
                 )
-                cursor_ns = self._emit_component_span(
+                stt_end_ns = self._emit_component_span(
                     name="stt",
                     context=component_context,
-                    start_ns=cursor_ns,
+                    start_ns=vad_start_ns,
                     duration_ms=stt_span_duration_ms,
                     attributes={
                         "user_transcript": turn.user_transcript,
@@ -1076,6 +1077,7 @@ class MetricsCollector:
                     },
                     observation_output=turn.user_transcript,
                 )
+                cursor_ns = max(cursor_ns, stt_end_ns)
                 cursor_ns = self._emit_component_span(
                     name="llm",
                     context=component_context,
@@ -1103,6 +1105,21 @@ class MetricsCollector:
                     observation_input=turn.assistant_text,
                     observation_output=turn.assistant_text,
                 )
+                if conversational_latency_ms is not None:
+                    self._emit_component_span(
+                        name="conversation_latency",
+                        context=component_context,
+                        start_ns=vad_start_ns,
+                        duration_ms=conversational_latency_ms,
+                        attributes={
+                            "speech_end_to_assistant_speech_start_ms": conversational_latency_ms,
+                            "eou_delay_ms": vad_duration_ms,
+                            "stt_finalization_ms": stt_finalization_ms,
+                            "llm_ttft_ms": llm_ttft_ms,
+                            "tts_ttfb_ms": tts_ttfb_ms,
+                        },
+                        observation_output=str(conversational_latency_ms),
+                    )
 
                 self._close_span_at(turn_span, cursor_ns)
             logger.info(

@@ -206,9 +206,9 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
     asyncio.run(_run())
 
     span_names = [span.name for span in fake_tracer.spans]
-    assert span_names == ["turn", "user_input", "vad", "stt", "llm", "tts"]
+    assert span_names == ["turn", "user_input", "vad", "stt", "llm", "tts", "conversation_latency"]
 
-    root, user_input_span, vad_span, stt_span, llm_span, tts_span = fake_tracer.spans
+    root, user_input_span, vad_span, stt_span, llm_span, tts_span, conversational_span = fake_tracer.spans
     assert root.attributes["session_id"] == "session-abc"
     assert root.attributes["room_id"] == "RM123"
     assert root.attributes["participant_id"] == "web-123"
@@ -228,7 +228,7 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
 
     assert stt_span.attributes["user_transcript"] == "hello there"
     assert stt_span.attributes["stt_status"] == "measured"
-    assert stt_span.attributes["duration_ms"] > 0
+    assert stt_span.attributes["duration_ms"] == pytest.approx(1350.0)
     assert stt_span.attributes["stt_finalization_ms"] == pytest.approx(250.0)
     assert stt_span.attributes["stt_total_latency_ms"] == pytest.approx(1350.0)
 
@@ -245,6 +245,16 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
     assert tts_span.attributes["input"] == "hi, how can I help?"
     assert tts_span.attributes["output"] == "hi, how can I help?"
     assert tts_span.attributes["duration_ms"] > 0
+
+    assert conversational_span.attributes["duration_ms"] == pytest.approx(1600.0)
+    assert (
+        conversational_span.attributes["speech_end_to_assistant_speech_start_ms"]
+        == pytest.approx(1600.0)
+    )
+    assert conversational_span.attributes["eou_delay_ms"] == pytest.approx(1100.0)
+    assert conversational_span.attributes["stt_finalization_ms"] == pytest.approx(250.0)
+    assert conversational_span.attributes["llm_ttft_ms"] > 0
+    assert conversational_span.attributes["tts_ttfb_ms"] > 0
 
     payloads = _decode_payloads(room)
     trace_updates = [payload for payload in payloads if payload.get("type") == "trace_update"]
