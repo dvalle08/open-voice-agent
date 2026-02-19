@@ -192,9 +192,9 @@ class LangfuseSettings(CoreSettings):
         description="Alternative to LANGFUSE_HOST",
     )
     LANGFUSE_TRACE_FINALIZE_TIMEOUT_MS: float = Field(
-        default=150.0,
+        default=5000.0,
         ge=0.0,
-        le=5000.0,
+        le=10000.0,
         description="Timeout to wait for assistant text before force-finalizing trace",
     )
     LANGFUSE_MAX_PENDING_TRACE_TASKS: int = Field(

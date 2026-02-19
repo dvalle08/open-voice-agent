@@ -8,6 +8,7 @@ from livekit.agents.telemetry import set_tracer_provider
 from livekit.agents.voice.events import (
     ConversationItemAddedEvent,
     MetricsCollectedEvent,
+    SpeechCreatedEvent,
     UserInputTranscribedEvent,
 )
 from livekit.plugins import noise_cancellation, silero
@@ -113,9 +114,15 @@ class Assistant(Agent):
                 )
             )
 
+        def speech_created_wrapper(event: SpeechCreatedEvent) -> None:
+            asyncio.create_task(
+                self._metrics_collector.on_speech_created(event.speech_handle)
+            )
+
         self.session.on("metrics_collected", metrics_wrapper)
         self.session.on("user_input_transcribed", transcript_wrapper)
         self.session.on("conversation_item_added", conversation_item_wrapper)
+        self.session.on("speech_created", speech_created_wrapper)
 
 
 server = AgentServer(num_idle_processes=settings.livekit.LIVEKIT_NUM_IDLE_PROCESSES)
