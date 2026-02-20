@@ -21,10 +21,12 @@ let currentSessionId = null;
 let metricsHistory = [];
 let turnCount = 0;
 let averages = {
-  totalLatency: [],
-  vadDetectionDelay: [],
+  eouDelay: [],
+  sttFinalization: [],
   llmTtft: [],
-  ttsTtfb: []
+  llmToTtsHandoff: [],
+  ttsTtfb: [],
+  totalLatency: [],
 };
 const LIVE_METRIC_IDS = [
   "eou",
@@ -277,17 +279,26 @@ function resetMetrics() {
   turnCount = 0;
   activeLiveSpeechId = null;
   averages = {
-    totalLatency: [],
-    vadDetectionDelay: [],
+    eouDelay: [],
+    sttFinalization: [],
     llmTtft: [],
-    ttsTtfb: []
+    llmToTtsHandoff: [],
+    ttsTtfb: [],
+    totalLatency: [],
   };
 
   clearAllLiveMetrics();
 
-  document.getElementById("avg-latency").innerHTML = '-- <span class="unit">s</span>';
-  document.getElementById("avg-llm").innerHTML = '-- <span class="unit">s</span>';
-  document.getElementById("avg-tts").innerHTML = '-- <span class="unit">s</span>';
+  [
+    "avg-eou",
+    "avg-stt-finalization",
+    "avg-llm-ttft",
+    "avg-llm-handoff",
+    "avg-tts-ttfb",
+    "avg-total",
+  ].forEach((id) => {
+    document.getElementById(id).innerHTML = '-- <span class="unit">s</span>';
+  });
 }
 
 function handleLiveTurnBoundary(metricsData) {
@@ -424,29 +435,55 @@ function updateLiveMetrics(turn) {
 function updateAverages() {
   const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
 
-  const latency = avg(averages.totalLatency);
-  const llm = avg(averages.llmTtft);
-  const tts = avg(averages.ttsTtfb);
+  const avgEou = avg(averages.eouDelay);
+  const avgSttFinalization = avg(averages.sttFinalization);
+  const avgLlmTtft = avg(averages.llmTtft);
+  const avgLlmToTtsHandoff = avg(averages.llmToTtsHandoff);
+  const avgTtsTtfb = avg(averages.ttsTtfb);
+  const avgTotalLatency = avg(averages.totalLatency);
 
-  document.getElementById("avg-latency").innerHTML = latency !== null
-    ? `${latency.toFixed(2)} <span class="unit">s</span>`
-    : '-- <span class="unit">s</span>';
-  document.getElementById("avg-llm").innerHTML = llm !== null
-    ? `${llm.toFixed(2)} <span class="unit">s</span>`
-    : '-- <span class="unit">s</span>';
-  document.getElementById("avg-tts").innerHTML = tts !== null
-    ? `${tts.toFixed(2)} <span class="unit">s</span>`
-    : '-- <span class="unit">s</span>';
+  const setAverageValue = (id, value) => {
+    document.getElementById(id).innerHTML = value !== null
+      ? `${value.toFixed(2)} <span class="unit">s</span>`
+      : '-- <span class="unit">s</span>';
+  };
+
+  setAverageValue("avg-eou", avgEou);
+  setAverageValue("avg-stt-finalization", avgSttFinalization);
+  setAverageValue("avg-llm-ttft", avgLlmTtft);
+  setAverageValue("avg-llm-handoff", avgLlmToTtsHandoff);
+  setAverageValue("avg-tts-ttfb", avgTtsTtfb);
+  setAverageValue("avg-total", avgTotalLatency);
 }
 
 function renderTurn(turn) {
   metricsHistory.push(turn);
+  const latencies = turn.latencies || {};
+  const metrics = turn.metrics || {};
 
-  if (turn.latencies?.total_latency > 0) averages.totalLatency.push(turn.latencies.total_latency);
-  const vadDelay = turn.latencies?.vad_detection_delay ?? turn.latencies?.eou_delay ?? 0;
-  if (vadDelay > 0) averages.vadDetectionDelay.push(vadDelay);
-  if (turn.metrics?.llm?.ttft > 0) averages.llmTtft.push(turn.metrics.llm.ttft);
-  if (turn.metrics?.tts?.ttfb > 0) averages.ttsTtfb.push(turn.metrics.tts.ttfb);
+  const eouDelay = latencies.eou_delay ?? latencies.vad_detection_delay;
+  if (isFiniteNumber(eouDelay) && eouDelay > 0) averages.eouDelay.push(eouDelay);
+
+  const sttFinalization = latencies.stt_finalization_delay;
+  if (isFiniteNumber(sttFinalization) && sttFinalization > 0) {
+    averages.sttFinalization.push(sttFinalization);
+  }
+
+  const llmTtft = metrics.llm?.ttft;
+  if (isFiniteNumber(llmTtft) && llmTtft > 0) averages.llmTtft.push(llmTtft);
+
+  const llmToTtsHandoff = latencies.llm_to_tts_handoff_latency;
+  if (isFiniteNumber(llmToTtsHandoff) && llmToTtsHandoff > 0) {
+    averages.llmToTtsHandoff.push(llmToTtsHandoff);
+  }
+
+  const ttsTtfb = metrics.tts?.ttfb;
+  if (isFiniteNumber(ttsTtfb) && ttsTtfb > 0) averages.ttsTtfb.push(ttsTtfb);
+
+  const totalLatency = latencies.total_latency;
+  if (isFiniteNumber(totalLatency) && totalLatency > 0) {
+    averages.totalLatency.push(totalLatency);
+  }
 
   updateAverages();
 }

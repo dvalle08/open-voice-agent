@@ -247,8 +247,9 @@
       .averages-row {
         flex-shrink: 0;
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
-        gap: 24px;
+        gap: 10px 24px;
         padding: 8px 24px;
         border-top: 1px solid var(--border);
         border-bottom: 1px solid var(--border);
@@ -390,16 +391,28 @@
       <!-- Averages compact row -->
       <div class="averages-row">
         <div class="avg-item">
-          <span class="avg-item-label">Avg Latency:</span>
-          <span class="avg-item-value" id="avg-latency">-- <span class="unit">s</span></span>
+          <span class="avg-item-label">Avg EOU:</span>
+          <span class="avg-item-value" id="avg-eou">-- <span class="unit">s</span></span>
         </div>
         <div class="avg-item">
-          <span class="avg-item-label">Avg LLM:</span>
-          <span class="avg-item-value" id="avg-llm">-- <span class="unit">s</span></span>
+          <span class="avg-item-label">Avg STT Finalization:</span>
+          <span class="avg-item-value" id="avg-stt-finalization">-- <span class="unit">s</span></span>
         </div>
         <div class="avg-item">
-          <span class="avg-item-label">Avg TTS:</span>
-          <span class="avg-item-value" id="avg-tts">-- <span class="unit">s</span></span>
+          <span class="avg-item-label">Avg LLM TTFT:</span>
+          <span class="avg-item-value" id="avg-llm-ttft">-- <span class="unit">s</span></span>
+        </div>
+        <div class="avg-item">
+          <span class="avg-item-label">Avg LLM→TTS Handoff:</span>
+          <span class="avg-item-value" id="avg-llm-handoff">-- <span class="unit">s</span></span>
+        </div>
+        <div class="avg-item">
+          <span class="avg-item-label">Avg TTS TTFB:</span>
+          <span class="avg-item-value" id="avg-tts-ttfb">-- <span class="unit">s</span></span>
+        </div>
+        <div class="avg-item">
+          <span class="avg-item-label">Avg Total:</span>
+          <span class="avg-item-value" id="avg-total">-- <span class="unit">s</span></span>
         </div>
       </div>
 
