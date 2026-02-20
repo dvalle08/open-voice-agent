@@ -26,17 +26,29 @@ let averages = {
   llmTtft: [],
   llmToTtsHandoff: [],
   ttsTtfb: [],
+  voiceGeneration: [],
   totalLatency: [],
 };
 const LIVE_METRIC_IDS = [
   "eou",
   "stt-finalization",
   "llm-ttft",
-  "llm-handoff",
-  "tts-ttfb",
+  "voice-generation",
   "total",
 ];
 let activeLiveSpeechId = null;
+let liveTurnValues = createEmptyLiveTurnValues();
+
+function createEmptyLiveTurnValues() {
+  return {
+    eouDelay: null,
+    sttFinalizationDelay: null,
+    llmTtft: null,
+    llmToTtsHandoff: null,
+    ttsTtfb: null,
+    totalLatency: null,
+  };
+}
 
 // Initialize canvas sizing on load
 window.addEventListener('DOMContentLoaded', () => {
@@ -278,12 +290,14 @@ function resetMetrics() {
   metricsHistory = [];
   turnCount = 0;
   activeLiveSpeechId = null;
+  liveTurnValues = createEmptyLiveTurnValues();
   averages = {
     eouDelay: [],
     sttFinalization: [],
     llmTtft: [],
     llmToTtsHandoff: [],
     ttsTtfb: [],
+    voiceGeneration: [],
     totalLatency: [],
   };
 
@@ -299,6 +313,8 @@ function resetMetrics() {
   ].forEach((id) => {
     document.getElementById(id).innerHTML = '-- <span class="unit">s</span>';
   });
+
+  updateLiveMetricAverages();
 }
 
 function handleLiveTurnBoundary(metricsData) {
@@ -308,12 +324,14 @@ function handleLiveTurnBoundary(metricsData) {
   if (!speechId) {
     clearAllLiveMetrics();
     activeLiveSpeechId = null;
+    liveTurnValues = createEmptyLiveTurnValues();
     return;
   }
 
   if (speechId === activeLiveSpeechId) return;
   activeLiveSpeechId = speechId;
-  clearAllLiveMetrics();
+  liveTurnValues = createEmptyLiveTurnValues();
+  setAllLiveMetricsLoading();
 }
 
 async function toggleMute() {
@@ -361,6 +379,12 @@ function getTpsClass(value, warningThreshold, criticalThreshold) {
   return "";
 }
 
+function getLiveMetricValueBaseClass(metricId) {
+  return metricId === "total"
+    ? "metric-card-value pipeline-total-value"
+    : "metric-card-value";
+}
+
 function setLiveMetric(metricId, value, maxValue, warningThreshold, criticalThreshold, options) {
   const bar = document.getElementById(`live-${metricId}-bar`);
   const label = document.getElementById(`live-${metricId}`);
@@ -375,66 +399,135 @@ function setLiveMetric(metricId, value, maxValue, warningThreshold, criticalThre
   const suffix = (options && options.suffix) || "s";
   const decimals = (options && options.decimals !== undefined) ? options.decimals : 2;
   label.textContent = decimals > 0 ? `${value.toFixed(decimals)}${suffix}` : `${Math.round(value)} ${suffix}`;
-  label.className = "metric-card-value" + (cls ? ` ${cls}` : "");
+  label.className = getLiveMetricValueBaseClass(metricId) + (cls ? ` ${cls}` : "");
   bar.style.width = `${percent}%`;
   bar.className = "metric-card-fill" + (cls ? ` ${cls}` : "");
+}
+
+function setLiveMetricAverage(metricId, value) {
+  const averageLabel = document.getElementById(`live-${metricId}-avg`);
+  if (!averageLabel) return;
+  averageLabel.textContent = value !== null ? `avg ${value.toFixed(2)}s` : "";
+}
+
+function setLiveMetricLoading(metricId) {
+  const label = document.getElementById(`live-${metricId}`);
+  const bar = document.getElementById(`live-${metricId}-bar`);
+  label.textContent = "coming...";
+  label.className = `${getLiveMetricValueBaseClass(metricId)} loading`;
+  bar.style.width = "0%";
+  bar.className = "metric-card-fill";
 }
 
 function clearLiveMetric(metricId) {
   const label = document.getElementById(`live-${metricId}`);
   const bar = document.getElementById(`live-${metricId}-bar`);
+  const averageLabel = document.getElementById(`live-${metricId}-avg`);
   label.textContent = "--";
-  label.className = "metric-card-value";
+  label.className = getLiveMetricValueBaseClass(metricId);
   bar.style.width = "0%";
   bar.className = "metric-card-fill";
+  if (averageLabel) averageLabel.textContent = "";
 }
 
 function clearAllLiveMetrics() {
   LIVE_METRIC_IDS.forEach((id) => clearLiveMetric(id));
 }
 
+function setAllLiveMetricsLoading() {
+  LIVE_METRIC_IDS.forEach((id) => setLiveMetricLoading(id));
+  updateLiveMetricAverages();
+}
+
 function isFiniteNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function avg(values) {
+  if (!values.length) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function updateLiveMetricAverages() {
+  setLiveMetricAverage("eou", avg(averages.eouDelay));
+  setLiveMetricAverage("stt-finalization", avg(averages.sttFinalization));
+  setLiveMetricAverage("llm-ttft", avg(averages.llmTtft));
+  setLiveMetricAverage("voice-generation", avg(averages.voiceGeneration));
+  setLiveMetricAverage("total", avg(averages.totalLatency));
 }
 
 function updateLiveMetrics(turn) {
   const metrics = turn.metrics || {};
   const latencies = turn.latencies || {};
+  const speechId = turn.speech_id;
+
+  if (speechId && speechId !== activeLiveSpeechId) {
+    activeLiveSpeechId = speechId;
+    liveTurnValues = createEmptyLiveTurnValues();
+    setAllLiveMetricsLoading();
+  }
 
   const eouDelay = latencies.eou_delay ?? latencies.vad_detection_delay;
   if (isFiniteNumber(eouDelay)) {
+    liveTurnValues.eouDelay = eouDelay;
     setLiveMetric("eou", eouDelay, 4.0, 0.8, 1.2);
   }
 
   const sttFinalizationDelay = latencies.stt_finalization_delay;
   if (isFiniteNumber(sttFinalizationDelay)) {
+    liveTurnValues.sttFinalizationDelay = sttFinalizationDelay;
     setLiveMetric("stt-finalization", sttFinalizationDelay, 3.0, 0.4, 0.8);
   }
 
   const llmTtft = metrics.llm?.ttft;
   if (isFiniteNumber(llmTtft)) {
+    liveTurnValues.llmTtft = llmTtft;
     setLiveMetric("llm-ttft", llmTtft, 4.0, 0.5, 1.0);
   }
 
   const llmToTtsHandoff = latencies.llm_to_tts_handoff_latency;
   if (isFiniteNumber(llmToTtsHandoff)) {
-    setLiveMetric("llm-handoff", llmToTtsHandoff, 8.0, 1.5, 3.0);
+    liveTurnValues.llmToTtsHandoff = llmToTtsHandoff;
   }
 
   const ttsTtfb = metrics.tts?.ttfb;
   if (isFiniteNumber(ttsTtfb)) {
-    setLiveMetric("tts-ttfb", ttsTtfb, 4.0, 0.3, 0.6);
+    liveTurnValues.ttsTtfb = ttsTtfb;
   }
 
   const totalLatency = latencies.total_latency;
   if (isFiniteNumber(totalLatency)) {
-    setLiveMetric("total", totalLatency, 8.0, 1.5, 3.0);
+    liveTurnValues.totalLatency = totalLatency;
+  }
+
+  if (isFiniteNumber(liveTurnValues.llmToTtsHandoff) && isFiniteNumber(liveTurnValues.ttsTtfb)) {
+    const voiceGeneration = liveTurnValues.llmToTtsHandoff + liveTurnValues.ttsTtfb;
+    setLiveMetric("voice-generation", voiceGeneration, 8.0, 1.0, 2.2);
+  }
+
+  const hasAllStages = (
+    isFiniteNumber(liveTurnValues.eouDelay) &&
+    isFiniteNumber(liveTurnValues.sttFinalizationDelay) &&
+    isFiniteNumber(liveTurnValues.llmTtft) &&
+    isFiniteNumber(liveTurnValues.llmToTtsHandoff) &&
+    isFiniteNumber(liveTurnValues.ttsTtfb)
+  );
+
+  if (hasAllStages) {
+    const computedTotal =
+      liveTurnValues.eouDelay +
+      liveTurnValues.sttFinalizationDelay +
+      liveTurnValues.llmTtft +
+      liveTurnValues.llmToTtsHandoff +
+      liveTurnValues.ttsTtfb;
+    const totalValue = isFiniteNumber(liveTurnValues.totalLatency)
+      ? liveTurnValues.totalLatency
+      : computedTotal;
+    setLiveMetric("total", totalValue, 8.0, 1.5, 3.0);
   }
 }
 
 function updateAverages() {
-  const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
-
   const avgEou = avg(averages.eouDelay);
   const avgSttFinalization = avg(averages.sttFinalization);
   const avgLlmTtft = avg(averages.llmTtft);
@@ -454,6 +547,7 @@ function updateAverages() {
   setAverageValue("avg-llm-handoff", avgLlmToTtsHandoff);
   setAverageValue("avg-tts-ttfb", avgTtsTtfb);
   setAverageValue("avg-total", avgTotalLatency);
+  updateLiveMetricAverages();
 }
 
 function renderTurn(turn) {
@@ -479,6 +573,9 @@ function renderTurn(turn) {
 
   const ttsTtfb = metrics.tts?.ttfb;
   if (isFiniteNumber(ttsTtfb) && ttsTtfb > 0) averages.ttsTtfb.push(ttsTtfb);
+  if (isFiniteNumber(llmToTtsHandoff) && llmToTtsHandoff > 0 && isFiniteNumber(ttsTtfb) && ttsTtfb > 0) {
+    averages.voiceGeneration.push(llmToTtsHandoff + ttsTtfb);
+  }
 
   const totalLatency = latencies.total_latency;
   if (isFiniteNumber(totalLatency) && totalLatency > 0) {

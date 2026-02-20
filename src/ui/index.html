@@ -123,7 +123,7 @@
         display: flex;
         gap: 6px;
       }
-      button {
+      .controls button {
         padding: 7px 14px;
         border-radius: 20px;
         border: 1px solid var(--border);
@@ -137,28 +137,28 @@
         align-items: center;
         gap: 5px;
       }
-      button:hover:not(:disabled) {
+      .controls button:hover:not(:disabled) {
         background: var(--bg-card);
         border-color: var(--border-light);
       }
-      button:disabled {
+      .controls button:disabled {
         opacity: 0.35;
         cursor: not-allowed;
       }
-      button.btn-primary {
+      .controls button.btn-primary {
         background: var(--accent);
         border-color: var(--accent);
         color: #fff;
       }
-      button.btn-primary:hover:not(:disabled) {
+      .controls button.btn-primary:hover:not(:disabled) {
         background: var(--accent-light);
         border-color: var(--accent-light);
       }
-      button.btn-danger {
+      .controls button.btn-danger {
         color: var(--critical);
         border-color: rgba(239, 68, 68, 0.3);
       }
-      button.btn-danger:hover:not(:disabled) {
+      .controls button.btn-danger:hover:not(:disabled) {
         background: rgba(239, 68, 68, 0.1);
         border-color: rgba(239, 68, 68, 0.5);
       }
@@ -168,7 +168,8 @@
         display: flex;
         flex-direction: column;
         height: calc(100vh - 57px);
-        overflow: hidden;
+        overflow-x: hidden;
+        overflow-y: auto;
       }
 
       /* Waveform hero */
@@ -195,10 +196,29 @@
       /* Live metrics row */
       .live-metrics-row {
         flex-shrink: 0;
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 8px;
         padding: 0 24px 12px;
+      }
+      .pipeline-header {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .pipeline-title {
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-muted);
+      }
+      .pipeline-subtitle {
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+      .pipeline-stage-row {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
       }
       .metric-card {
         background: var(--bg-card);
@@ -206,42 +226,233 @@
         border-radius: var(--radius-sm);
         padding: 10px 12px;
       }
-      .metric-card-label {
+      .stage-card {
+        position: relative;
+      }
+      .stage-card::after {
+        content: "";
+        position: absolute;
+        top: 50%;
+        right: -14px;
+        width: 18px;
+        height: 2px;
+        border-radius: 999px;
+        background: linear-gradient(
+          90deg,
+          rgba(108, 143, 255, 0.12) 0%,
+          rgba(108, 143, 255, 0.75) 45%,
+          rgba(167, 139, 250, 0.65) 100%
+        );
+        box-shadow: 0 0 8px rgba(108, 143, 255, 0.22);
+        transform: translateY(-50%);
+        pointer-events: none;
+        z-index: 1;
+      }
+      .stage-card:last-child::after {
+        display: none;
+      }
+      .metric-card-top {
         display: flex;
         justify-content: space-between;
-        align-items: baseline;
-        margin-bottom: 6px;
+        align-items: center;
+        margin-bottom: 8px;
       }
-      .metric-card-name {
+      .metric-step {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        display: inline-grid;
+        place-items: center;
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--accent-light);
+        background: var(--accent-glow);
+        border: 1px solid rgba(108, 143, 255, 0.35);
+        flex-shrink: 0;
+      }
+      .metric-tech-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .metric-tech {
         font-size: 10px;
-        color: var(--text-muted);
+        color: var(--text-secondary);
+      }
+      .metric-card-human {
+        font-size: 13px;
         font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.4px;
+        margin-bottom: 2px;
+      }
+      .metric-card-desc {
+        font-size: 11px;
+        color: var(--text-muted);
+        margin-bottom: 8px;
+        min-height: 28px;
+      }
+      .metric-card-value-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        margin-bottom: 8px;
       }
       .metric-card-value {
-        font-size: 14px;
+        font-size: 22px;
         font-weight: 700;
+        line-height: 1;
         font-variant-numeric: tabular-nums;
-        color: var(--accent);
+        color: var(--accent-light);
         transition: color 0.3s;
+      }
+      .metric-card-value.loading {
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.2;
+        color: var(--text-muted);
       }
       .metric-card-value.warning { color: var(--warning); }
       .metric-card-value.critical { color: var(--critical); }
+      .metric-card-avg {
+        font-size: 10px;
+        color: var(--text-secondary);
+      }
       .metric-card-track {
         height: 4px;
-        background: var(--bg-primary);
-        border-radius: 2px;
+        background: var(--border);
+        border-radius: 999px;
         overflow: hidden;
       }
       .metric-card-fill {
         height: 100%;
-        border-radius: 2px;
-        background: var(--accent);
-        transition: width 0.4s cubic-bezier(0.22, 1, 0.36, 1), background 0.3s;
+        border-radius: 999px;
+        background: var(--accent-gradient);
+        transition: width 0.5s ease, background 0.3s;
       }
       .metric-card-fill.warning { background: var(--warning); }
       .metric-card-fill.critical { background: var(--critical); }
+      .pipeline-total-card {
+        margin-top: 10px;
+        background: linear-gradient(135deg, rgba(108, 143, 255, 0.08), rgba(167, 139, 250, 0.06));
+        border: 1px solid rgba(108, 143, 255, 0.28);
+        border-radius: var(--radius-sm);
+        padding: 12px 14px;
+      }
+      .pipeline-total-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .pipeline-total-label {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .pipeline-total-tech {
+        font-size: 10px;
+        color: var(--text-secondary);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .pipeline-total-value-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 2px;
+      }
+      .pipeline-total-value {
+        font-size: 28px;
+      }
+      .pipeline-total-avg {
+        font-size: 11px;
+        color: var(--text-secondary);
+      }
+
+      .tooltip {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
+      .tooltip-trigger {
+        width: 16px;
+        height: 16px;
+        padding: 0;
+        border-radius: 50%;
+        border: 1px solid var(--border-light);
+        background: rgba(255, 255, 255, 0.02);
+        color: var(--text-secondary);
+        cursor: pointer;
+        font-size: 10px;
+        line-height: 1;
+        display: inline-grid;
+        place-items: center;
+      }
+      .tooltip-trigger:hover {
+        border-color: rgba(108, 143, 255, 0.4);
+        color: var(--text-primary);
+      }
+      .tooltip-content {
+        position: absolute;
+        right: 0;
+        bottom: calc(100% + 8px);
+        width: 220px;
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid var(--border-light);
+        background: #111725;
+        color: var(--text-primary);
+        font-size: 11px;
+        line-height: 1.35;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(4px);
+        transition: opacity 0.2s ease, transform 0.2s ease;
+        z-index: 20;
+      }
+      .tooltip:hover .tooltip-content,
+      .tooltip:focus-within .tooltip-content {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0);
+      }
+
+      @media (max-width: 1100px) {
+        .pipeline-stage-row {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .stage-card::after {
+          display: none;
+        }
+        .stage-card:nth-child(odd)::after {
+          display: block;
+        }
+        .stage-card:last-child::after {
+          display: none;
+        }
+      }
+      @media (max-width: 700px) {
+        .waveform-section {
+          min-height: 160px;
+          padding: 14px 14px 10px;
+        }
+        .live-metrics-row {
+          padding: 0 14px 10px;
+        }
+        .pipeline-stage-row {
+          grid-template-columns: 1fr;
+        }
+        .pipeline-total-top {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+        .pipeline-total-value-wrap {
+          align-items: flex-start;
+        }
+        .stage-card::after {
+          display: none !important;
+        }
+      }
 
       /* Averages compact row */
       .averages-row {
@@ -332,55 +543,117 @@
 
       <!-- Live metric cards -->
       <div class="live-metrics-row">
-        <div class="metric-card">
-          <div class="metric-card-label">
-            <span class="metric-card-name">EOU Delay</span>
-            <span class="metric-card-value" id="live-eou">--</span>
+        <div class="pipeline-header">
+          <span class="pipeline-title">Voice Agent Pipeline</span>
+          <span class="pipeline-subtitle">4 stages from voice input to response</span>
+        </div>
+
+        <div class="pipeline-stage-row">
+          <div class="metric-card stage-card">
+            <div class="metric-card-top">
+              <span class="metric-step">1</span>
+              <div class="metric-tech-wrap">
+                <span class="metric-tech">EOU Delay</span>
+                <div class="tooltip">
+                  <button type="button" class="tooltip-trigger" aria-label="What is EOU Delay?">i</button>
+                  <span class="tooltip-content" role="tooltip">Time from user speech end to end-of-utterance detection.</span>
+                </div>
+              </div>
+            </div>
+            <div class="metric-card-human">Silence Detection</div>
+            <div class="metric-card-desc">Detecting when you stop speaking</div>
+            <div class="metric-card-value-row">
+              <span class="metric-card-value" id="live-eou">--</span>
+              <span class="metric-card-avg" id="live-eou-avg"></span>
+            </div>
+            <div class="metric-card-track">
+              <div class="metric-card-fill" id="live-eou-bar" style="width: 0%"></div>
+            </div>
           </div>
-          <div class="metric-card-track">
-            <div class="metric-card-fill" id="live-eou-bar" style="width: 0%"></div>
+
+          <div class="metric-card stage-card">
+            <div class="metric-card-top">
+              <span class="metric-step">2</span>
+              <div class="metric-tech-wrap">
+                <span class="metric-tech">STT Finalization</span>
+                <div class="tooltip">
+                  <button type="button" class="tooltip-trigger" aria-label="What is STT Finalization?">i</button>
+                  <span class="tooltip-content" role="tooltip">Time to finalize the transcript after speech end.</span>
+                </div>
+              </div>
+            </div>
+            <div class="metric-card-human">Speech to Text</div>
+            <div class="metric-card-desc">Finalizing transcription</div>
+            <div class="metric-card-value-row">
+              <span class="metric-card-value" id="live-stt-finalization">--</span>
+              <span class="metric-card-avg" id="live-stt-finalization-avg"></span>
+            </div>
+            <div class="metric-card-track">
+              <div class="metric-card-fill" id="live-stt-finalization-bar" style="width: 0%"></div>
+            </div>
+          </div>
+
+          <div class="metric-card stage-card">
+            <div class="metric-card-top">
+              <span class="metric-step">3</span>
+              <div class="metric-tech-wrap">
+                <span class="metric-tech">LLM TTFT</span>
+                <div class="tooltip">
+                  <button type="button" class="tooltip-trigger" aria-label="What is LLM TTFT?">i</button>
+                  <span class="tooltip-content" role="tooltip">Time for the LLM to produce the first token.</span>
+                </div>
+              </div>
+            </div>
+            <div class="metric-card-human">Thinking</div>
+            <div class="metric-card-desc">Generating first token</div>
+            <div class="metric-card-value-row">
+              <span class="metric-card-value" id="live-llm-ttft">--</span>
+              <span class="metric-card-avg" id="live-llm-ttft-avg"></span>
+            </div>
+            <div class="metric-card-track">
+              <div class="metric-card-fill" id="live-llm-ttft-bar" style="width: 0%"></div>
+            </div>
+          </div>
+
+          <div class="metric-card stage-card">
+            <div class="metric-card-top">
+              <span class="metric-step">4</span>
+              <div class="metric-tech-wrap">
+                <span class="metric-tech">Voice Generation</span>
+                <div class="tooltip">
+                  <button type="button" class="tooltip-trigger" aria-label="What is Voice Generation?">i</button>
+                  <span class="tooltip-content" role="tooltip">Sum of LLM to TTS handoff latency and TTS first-byte latency.</span>
+                </div>
+              </div>
+            </div>
+            <div class="metric-card-human">Voice Generation</div>
+            <div class="metric-card-desc">Synthesizing assistant voice</div>
+            <div class="metric-card-value-row">
+              <span class="metric-card-value" id="live-voice-generation">--</span>
+              <span class="metric-card-avg" id="live-voice-generation-avg"></span>
+            </div>
+            <div class="metric-card-track">
+              <div class="metric-card-fill" id="live-voice-generation-bar" style="width: 0%"></div>
+            </div>
           </div>
         </div>
-        <div class="metric-card">
-          <div class="metric-card-label">
-            <span class="metric-card-name">STT Finalization</span>
-            <span class="metric-card-value" id="live-stt-finalization">--</span>
-          </div>
-          <div class="metric-card-track">
-            <div class="metric-card-fill" id="live-stt-finalization-bar" style="width: 0%"></div>
-          </div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-card-label">
-            <span class="metric-card-name">LLM TTFT</span>
-            <span class="metric-card-value" id="live-llm-ttft">--</span>
-          </div>
-          <div class="metric-card-track">
-            <div class="metric-card-fill" id="live-llm-ttft-bar" style="width: 0%"></div>
-          </div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-card-label">
-            <span class="metric-card-name">LLM→TTS Handoff</span>
-            <span class="metric-card-value" id="live-llm-handoff">--</span>
-          </div>
-          <div class="metric-card-track">
-            <div class="metric-card-fill" id="live-llm-handoff-bar" style="width: 0%"></div>
-          </div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-card-label">
-            <span class="metric-card-name">TTS TTFB</span>
-            <span class="metric-card-value" id="live-tts-ttfb">--</span>
-          </div>
-          <div class="metric-card-track">
-            <div class="metric-card-fill" id="live-tts-ttfb-bar" style="width: 0%"></div>
-          </div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-card-label">
-            <span class="metric-card-name">Total Latency</span>
-            <span class="metric-card-value" id="live-total">--</span>
+
+        <div class="pipeline-total-card">
+          <div class="pipeline-total-top">
+            <div>
+              <div class="pipeline-total-label">Total Round-Trip</div>
+              <div class="pipeline-total-tech">
+                <span>End-to-End Latency</span>
+                <div class="tooltip">
+                  <button type="button" class="tooltip-trigger" aria-label="What is End-to-End Latency?">i</button>
+                  <span class="tooltip-content" role="tooltip">Total latency from end of user speech to assistant speech start.</span>
+                </div>
+              </div>
+            </div>
+            <div class="pipeline-total-value-wrap">
+              <span class="metric-card-value pipeline-total-value" id="live-total">--</span>
+              <span class="pipeline-total-avg" id="live-total-avg"></span>
+            </div>
           </div>
           <div class="metric-card-track">
             <div class="metric-card-fill" id="live-total-bar" style="width: 0%"></div>
