@@ -7,6 +7,7 @@ from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, Agent, room_io
 from livekit.agents.telemetry import set_tracer_provider
 from livekit.agents.voice.events import (
+    AgentStateChangedEvent,
     ConversationItemAddedEvent,
     MetricsCollectedEvent,
     SpeechCreatedEvent,
@@ -134,10 +135,19 @@ class Assistant(Agent):
                 self._metrics_collector.on_speech_created(event.speech_handle)
             )
 
+        def agent_state_changed_wrapper(event: AgentStateChangedEvent) -> None:
+            asyncio.create_task(
+                self._metrics_collector.on_agent_state_changed(
+                    old_state=event.old_state,
+                    new_state=event.new_state,
+                )
+            )
+
         self.session.on("metrics_collected", metrics_wrapper)
         self.session.on("user_input_transcribed", transcript_wrapper)
         self.session.on("conversation_item_added", conversation_item_wrapper)
         self.session.on("speech_created", speech_created_wrapper)
+        self.session.on("agent_state_changed", agent_state_changed_wrapper)
 
 
 server = AgentServer(num_idle_processes=settings.livekit.LIVEKIT_NUM_IDLE_PROCESSES)

@@ -204,7 +204,8 @@ class _FakeTextMethodPart:
 
 
 class _FakeSpeechHandle:
-    def __init__(self, chat_items: list[Any]) -> None:
+    def __init__(self, chat_items: list[Any], speech_id: str = "speech-fake") -> None:
+        self.id = speech_id
         self.chat_items = chat_items
         self._callbacks: list[Any] = []
 
@@ -672,6 +673,7 @@ def test_long_response_latency_accounts_for_llm_generation_wait(
             session_id="session-long-gap",
             participant_id="web-123",
         )
+        await collector.on_speech_created(_FakeSpeechHandle(chat_items=[], speech_id=speech_id))
         await collector.on_user_input_transcribed("Explain neural networks", is_final=True)
         await collector.on_metrics_collected(
             _make_eou_metrics(speech_id, delay=0.0, transcription_delay=0.0)
@@ -684,6 +686,7 @@ def test_long_response_latency_accounts_for_llm_generation_wait(
             content="A neural network is a layered function approximator.",
         )
         await asyncio.sleep(0.2)
+        await collector.on_agent_state_changed(old_state="thinking", new_state="speaking")
         await collector.on_metrics_collected(
             _make_tts_metrics(speech_id, ttfb=0.01, duration=0.2, audio_duration=0.8)
         )

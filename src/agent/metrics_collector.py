@@ -219,6 +219,7 @@ class MetricsCollector:
         self._stt_finalization_delays: dict[str, float] = {}
         self._speech_end_monotonic_by_speech: dict[str, float] = {}
         self._first_audio_monotonic_by_speech: dict[str, float] = {}
+        self._pending_speech_ids_for_first_audio: deque[str] = deque()
         self._pending_transcripts: deque[str] = deque()
         self._pending_agent_transcripts: deque[str] = deque()
         self._latest_agent_speech_id: Optional[str] = None
@@ -353,6 +354,10 @@ class MetricsCollector:
 
     async def on_speech_created(self, speech_handle: Any) -> None:
         """Attach a done callback to capture assistant text when playout is complete."""
+        speech_id = self._normalize_optional_text(getattr(speech_handle, "id", None))
+        if speech_id:
+            self._pending_speech_ids_for_first_audio.append(speech_id)
+
         # Try immediate extraction first. Some pipelines do not preserve/trigger
         # done callbacks consistently for long responses.
         assistant_text = self._extract_text_from_chat_items(
@@ -367,6 +372,9 @@ class MetricsCollector:
 
         def _on_done(handle: Any) -> None:
             try:
+                done_speech_id = self._normalize_optional_text(getattr(handle, "id", None))
+                if done_speech_id:
+                    self._discard_pending_speech_id(done_speech_id)
                 assistant_text = self._extract_text_from_chat_items(
                     getattr(handle, "chat_items", [])
                 )
@@ -381,6 +389,37 @@ class MetricsCollector:
             add_done_callback(_on_done)
         except Exception:
             return
+
+    async def on_agent_state_changed(
+        self,
+        *,
+        old_state: str,
+        new_state: str,
+    ) -> None:
+        """Record first assistant audio timestamp when agent enters speaking state."""
+        if new_state != "speaking":
+            return
+
+        speech_id: Optional[str] = None
+        while self._pending_speech_ids_for_first_audio:
+            candidate = self._pending_speech_ids_for_first_audio.popleft()
+            if candidate not in self._first_audio_monotonic_by_speech:
+                speech_id = candidate
+                break
+
+        if speech_id is None:
+            latest = self._latest_agent_speech_id
+            if latest and latest not in self._first_audio_monotonic_by_speech:
+                speech_id = latest
+
+        if speech_id:
+            self._record_first_assistant_audio_timestamp(speech_id)
+            logger.debug(
+                "First assistant audio recorded from state transition: speech_id=%s, old_state=%s, new_state=%s",
+                speech_id,
+                old_state,
+                new_state,
+            )
 
     async def _on_assistant_text(self, assistant_text: str) -> None:
         normalized = assistant_text.strip()
@@ -401,7 +440,6 @@ class MetricsCollector:
         if ttfb < 0:
             return
         speech_id = self._latest_agent_speech_id or f"tts-{uuid.uuid4()}"
-        self._record_first_assistant_audio_timestamp(speech_id)
         turn_metrics = self._get_or_create_turn(speech_id, role="agent")
         turn_metrics.tts = TTSMetrics(
             ttfb=ttfb,
@@ -509,7 +547,6 @@ class MetricsCollector:
 
         elif isinstance(collected_metrics, metrics.TTSMetrics):
             speech_id = collected_metrics.speech_id or collected_metrics.request_id
-            self._record_first_assistant_audio_timestamp(speech_id)
             turn_metrics = self._get_or_create_turn(speech_id, role="agent")
             turn_metrics.tts = TTSMetrics(
                 ttfb=collected_metrics.ttfb,
@@ -648,6 +685,7 @@ class MetricsCollector:
             self._stt_finalization_delays.pop(speech_id, None)
             self._speech_end_monotonic_by_speech.pop(speech_id, None)
             self._first_audio_monotonic_by_speech.pop(speech_id, None)
+            self._discard_pending_speech_id(speech_id)
 
     async def _publish_live_update(
         self,
@@ -920,6 +958,13 @@ class MetricsCollector:
 
     def _record_first_assistant_audio_timestamp(self, speech_id: str) -> None:
         self._first_audio_monotonic_by_speech.setdefault(speech_id, monotonic())
+
+    def _discard_pending_speech_id(self, speech_id: str) -> None:
+        if not self._pending_speech_ids_for_first_audio:
+            return
+        self._pending_speech_ids_for_first_audio = deque(
+            pending for pending in self._pending_speech_ids_for_first_audio if pending != speech_id
+        )
 
     def _observed_total_latency_seconds(self, speech_id: str) -> Optional[float]:
         start = self._speech_end_monotonic_by_speech.get(speech_id)
