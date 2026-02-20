@@ -132,13 +132,18 @@ def _make_stt_metrics(request_id: str) -> metrics.STTMetrics:
     )
 
 
-def _make_llm_metrics(speech_id: str) -> metrics.LLMMetrics:
+def _make_llm_metrics(
+    speech_id: str,
+    *,
+    duration: float = 0.6,
+    ttft: float = 0.1,
+) -> metrics.LLMMetrics:
     return metrics.LLMMetrics(
         label="llm",
         request_id=f"req-{speech_id}",
         timestamp=0.0,
-        duration=0.6,
-        ttft=0.1,
+        duration=duration,
+        ttft=ttft,
         cancelled=False,
         completion_tokens=24,
         prompt_tokens=12,
@@ -149,14 +154,20 @@ def _make_llm_metrics(speech_id: str) -> metrics.LLMMetrics:
     )
 
 
-def _make_tts_metrics(speech_id: str) -> metrics.TTSMetrics:
+def _make_tts_metrics(
+    speech_id: str,
+    *,
+    ttfb: float = 0.15,
+    duration: float = 0.5,
+    audio_duration: float = 1.3,
+) -> metrics.TTSMetrics:
     return metrics.TTSMetrics(
         label="tts",
         request_id=f"req-{speech_id}",
         timestamp=0.0,
-        ttfb=0.15,
-        duration=0.5,
-        audio_duration=1.3,
+        ttfb=ttfb,
+        duration=duration,
+        audio_duration=audio_duration,
         cancelled=False,
         characters_count=42,
         streamed=True,
@@ -291,6 +302,24 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
     assert all(span.end_count == 1 for span in fake_tracer.spans)
 
     payloads = _decode_payloads(room)
+    conversation_turns = [
+        payload for payload in payloads if payload.get("type") == "conversation_turn"
+    ]
+    agent_turn = next(
+        payload
+        for payload in conversation_turns
+        if payload.get("role") == "agent"
+    )
+    assert agent_turn["latencies"]["total_latency"] == pytest.approx(
+        root.attributes["latency_ms.conversational"] / 1000.0
+    )
+    assert agent_turn["metrics"]["llm"]["ttft"] == pytest.approx(
+        root.attributes["latency_ms.llm_ttft"] / 1000.0
+    )
+    assert agent_turn["metrics"]["tts"]["ttfb"] == pytest.approx(
+        root.attributes["latency_ms.tts_ttfb"] / 1000.0
+    )
+
     trace_updates = [payload for payload in payloads if payload.get("type") == "trace_update"]
     assert len(trace_updates) == 1
     assert trace_updates[0]["session_id"] == "session-abc"
@@ -617,6 +646,86 @@ def test_trace_finalize_timeout_uses_pending_assistant_transcript(
     root = turn_spans[0]
     assert root.attributes["langfuse.trace.metadata.assistant_text_missing"] is False
     assert root.attributes["langfuse.trace.output"] == "queued assistant fallback"
+
+
+def test_long_response_latency_accounts_for_llm_generation_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        speech_id = "speech-long-gap"
+        await collector.on_session_metadata(
+            session_id="session-long-gap",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("Explain neural networks", is_final=True)
+        await collector.on_metrics_collected(
+            _make_eou_metrics(speech_id, delay=0.0, transcription_delay=0.0)
+        )
+        await collector.on_metrics_collected(
+            _make_llm_metrics(speech_id, duration=2.0, ttft=0.01)
+        )
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="A neural network is a layered function approximator.",
+        )
+        await asyncio.sleep(0.2)
+        await collector.on_metrics_collected(
+            _make_tts_metrics(speech_id, ttfb=0.01, duration=0.2, audio_duration=0.8)
+        )
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    root = turn_spans[0]
+
+    assert root.attributes["latency_ms.conversational"] > 200.0
+    assert root.attributes["latency_ms.llm_generation_wait"] > 150.0
+    assert root.attributes["latency_ms.conversational"] == pytest.approx(
+        root.attributes["latency_ms.eou_delay"]
+        + root.attributes["latency_ms.stt_finalization"]
+        + root.attributes["latency_ms.llm_ttft"]
+        + root.attributes["latency_ms.llm_generation_wait"]
+        + root.attributes["latency_ms.tts_ttfb"],
+        abs=5.0,
+    )
+
+    gap_spans = [span for span in fake_tracer.spans if span.name == "llm_generation_wait"]
+    assert len(gap_spans) == 1
+    assert gap_spans[0].attributes["duration_ms"] == pytest.approx(
+        root.attributes["latency_ms.llm_generation_wait"],
+        abs=5.0,
+    )
+
+    payloads = _decode_payloads(room)
+    conversation_turns = [
+        payload for payload in payloads if payload.get("type") == "conversation_turn"
+    ]
+    agent_turn = next(payload for payload in conversation_turns if payload.get("role") == "agent")
+    assert agent_turn["latencies"]["total_latency"] == pytest.approx(
+        root.attributes["latency_ms.conversational"] / 1000.0,
+        abs=0.05,
+    )
+    assert agent_turn["latencies"]["llm_generation_wait_latency"] == pytest.approx(
+        root.attributes["latency_ms.llm_generation_wait"] / 1000.0,
+        abs=0.05,
+    )
 
 
 def test_fallback_console_session_id_is_used_when_metadata_absent(

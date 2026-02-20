@@ -2,8 +2,6 @@ const { Room, RoomEvent, Track, createLocalAudioTrack } = LivekitClient;
 
 const statusEl = document.getElementById("status");
 const statusDot = document.getElementById("status-dot");
-const sessionIdEl = document.getElementById("session-id");
-const latestTraceIdEl = document.getElementById("latest-trace-id");
 const connectBtn = document.getElementById("connect");
 const disconnectBtn = document.getElementById("disconnect");
 const muteBtn = document.getElementById("mute");
@@ -26,12 +24,8 @@ let averages = {
   totalLatency: [],
   vadDetectionDelay: [],
   llmTtft: [],
-  ttsTtfb: [],
-  sttDuration: []
+  ttsTtfb: []
 };
-
-setSessionId("--");
-setLatestTraceId("--");
 
 // Initialize canvas sizing on load
 window.addEventListener('DOMContentLoaded', () => {
@@ -49,14 +43,6 @@ function setStatus(text, state) {
   statusDot.className = "status-dot";
   if (state === "connected") statusDot.classList.add("connected");
   else if (state === "connecting") statusDot.classList.add("connecting");
-}
-
-function setSessionId(value) {
-  sessionIdEl.textContent = value || "--";
-}
-
-function setLatestTraceId(value) {
-  latestTraceIdEl.textContent = value || "--";
 }
 
 function clearWave() {
@@ -178,8 +164,6 @@ async function connectToRoom() {
   }
 
   currentSessionId = crypto.randomUUID();
-  setSessionId(currentSessionId);
-  setLatestTraceId("--");
 
   setStatus("Connecting...", "connecting");
   connectBtn.disabled = true;
@@ -213,11 +197,6 @@ async function connectToRoom() {
         } else if (metricsData.type === "conversation_turn") {
           updateLiveMetrics(metricsData, false);
           renderTurn(metricsData);
-        } else if (metricsData.type === "trace_update") {
-          if (!metricsData.trace_id) return;
-          if (!metricsData.session_id || metricsData.session_id === currentSessionId) {
-            setLatestTraceId(metricsData.trace_id);
-          }
         }
       } catch (error) {
         console.error("Failed to parse metrics:", error);
@@ -291,11 +270,10 @@ function resetMetrics() {
     totalLatency: [],
     vadDetectionDelay: [],
     llmTtft: [],
-    ttsTtfb: [],
-    sttDuration: []
+    ttsTtfb: []
   };
 
-  ["total", "llm", "tts", "stt"].forEach((id) => {
+  ["total", "llm", "tts"].forEach((id) => {
     document.getElementById(`live-${id}`).textContent = "--";
     document.getElementById(`live-${id}`).className = "metric-card-value";
     document.getElementById(`live-${id}-bar`).style.width = "0%";
@@ -402,17 +380,6 @@ function updateLiveMetrics(turn, resetMissing) {
   } else if (resetMissing) {
     clearLiveMetric("tts");
   }
-
-  if (metrics.stt) {
-    const sttDisplayDuration = metrics.stt.display_duration ?? metrics.stt.duration;
-    if (sttDisplayDuration !== undefined) {
-      setLiveMetric("stt", sttDisplayDuration, maxLatency, 0.2, 0.5);
-    } else if (resetMissing) {
-      clearLiveMetric("stt");
-    }
-  } else if (resetMissing) {
-    clearLiveMetric("stt");
-  }
 }
 
 function updateAverages() {
@@ -441,10 +408,6 @@ function renderTurn(turn) {
   if (vadDelay > 0) averages.vadDetectionDelay.push(vadDelay);
   if (turn.metrics?.llm?.ttft > 0) averages.llmTtft.push(turn.metrics.llm.ttft);
   if (turn.metrics?.tts?.ttfb > 0) averages.ttsTtfb.push(turn.metrics.tts.ttfb);
-  if (turn.metrics?.stt) {
-    const sttDuration = turn.metrics.stt.display_duration ?? turn.metrics.stt.duration ?? 0;
-    if (sttDuration > 0) averages.sttDuration.push(sttDuration);
-  }
 
   updateAverages();
 }

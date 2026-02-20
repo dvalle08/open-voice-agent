@@ -142,15 +142,7 @@ def main() -> None:
         st.error(f"Failed to ensure agent dispatch: {exc}")
         st.stop()
 
-    st.caption(
-        " | ".join(
-            [
-                f"Room: `{room_name}`",
-                f"Dispatch: `{st.session_state.get('dispatch_id', '--')}`",
-                f"Worker: `{st.session_state.get('dispatch_worker_id') or '--'}`",
-            ]
-        )
-    )
+    st.caption(f"Room: `{room_name}`")
     render_client(token=st.session_state["token"], livekit_url=settings.livekit.LIVEKIT_URL)
 
 

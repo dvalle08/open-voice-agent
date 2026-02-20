@@ -11,7 +11,7 @@ import json
 import uuid
 from collections import deque
 from dataclasses import asdict, dataclass
-from time import time, time_ns
+from time import monotonic, time, time_ns
 from typing import Any, Optional, Sequence, Union
 
 from livekit import rtc
@@ -66,6 +66,8 @@ class Latencies:
 
     total_latency: float
     eou_delay: float
+    stt_finalization_delay: float
+    llm_generation_wait_latency: float
     vad_detection_delay: float
     llm_ttft: float
     tts_ttfb: float
@@ -85,18 +87,30 @@ class TurnMetrics:
     vad: Optional[VADMetrics] = None
     latencies: Optional[Latencies] = None
 
-    def compute_latencies(self, eou_delay: float = 0.0) -> None:
+    def compute_latencies(
+        self,
+        eou_delay: float = 0.0,
+        stt_finalization_delay: float = 0.0,
+        observed_total_latency: Optional[float] = None,
+    ) -> None:
         """Compute total latency from component metrics.
 
-        Total latency = eou_delay + llm_ttft + tts_ttfb
+        Total latency prefers observed wall-clock elapsed time (EOU -> first
+        assistant audio) and falls back to component approximation:
+        eou_delay + stt_finalization_delay + llm_ttft + tts_ttfb
         """
         llm_ttft = self.llm.ttft if self.llm else 0.0
         tts_ttfb = self.tts.ttfb if self.tts else 0.0
-        total_latency = eou_delay + llm_ttft + tts_ttfb
+        baseline_latency = eou_delay + stt_finalization_delay + llm_ttft + tts_ttfb
+        observed = observed_total_latency if observed_total_latency is not None else 0.0
+        total_latency = max(baseline_latency, observed)
+        llm_generation_wait_latency = max(total_latency - baseline_latency, 0.0)
 
         self.latencies = Latencies(
             total_latency=total_latency,
             eou_delay=eou_delay,
+            stt_finalization_delay=stt_finalization_delay,
+            llm_generation_wait_latency=llm_generation_wait_latency,
             vad_detection_delay=eou_delay,
             llm_ttft=llm_ttft,
             tts_ttfb=tts_ttfb,
@@ -158,6 +172,7 @@ class TraceTurn:
     tts_duration_ms: Optional[float] = None
     tts_ttfb_ms: Optional[float] = None
     conversational_latency_ms: Optional[float] = None
+    llm_generation_wait_ms: Optional[float] = None
     trace_id: Optional[str] = None
 
 
@@ -201,6 +216,9 @@ class MetricsCollector:
         self._model_name = model_name
         self._pending_metrics: dict[str, TurnMetrics] = {}
         self._eou_delays: dict[str, float] = {}
+        self._stt_finalization_delays: dict[str, float] = {}
+        self._speech_end_monotonic_by_speech: dict[str, float] = {}
+        self._first_audio_monotonic_by_speech: dict[str, float] = {}
         self._pending_transcripts: deque[str] = deque()
         self._pending_agent_transcripts: deque[str] = deque()
         self._latest_agent_speech_id: Optional[str] = None
@@ -383,6 +401,7 @@ class MetricsCollector:
         if ttfb < 0:
             return
         speech_id = self._latest_agent_speech_id or f"tts-{uuid.uuid4()}"
+        self._record_first_assistant_audio_timestamp(speech_id)
         turn_metrics = self._get_or_create_turn(speech_id, role="agent")
         turn_metrics.tts = TTSMetrics(
             ttfb=ttfb,
@@ -402,6 +421,7 @@ class MetricsCollector:
         await self._maybe_publish_turn(speech_id, turn_metrics)
 
         trace_turn = await self._attach_tts_stage(
+            speech_id=speech_id,
             duration=duration,
             fallback_duration=audio_duration,
             ttfb=ttfb,
@@ -489,6 +509,7 @@ class MetricsCollector:
 
         elif isinstance(collected_metrics, metrics.TTSMetrics):
             speech_id = collected_metrics.speech_id or collected_metrics.request_id
+            self._record_first_assistant_audio_timestamp(speech_id)
             turn_metrics = self._get_or_create_turn(speech_id, role="agent")
             turn_metrics.tts = TTSMetrics(
                 ttfb=collected_metrics.ttfb,
@@ -505,6 +526,7 @@ class MetricsCollector:
                 f"TTS metrics collected: speech_id={speech_id}, ttfb={collected_metrics.ttfb:.3f}s"
             )
             trace_turn = await self._attach_tts_stage(
+                speech_id=speech_id,
                 duration=collected_metrics.duration,
                 fallback_duration=collected_metrics.audio_duration,
                 ttfb=collected_metrics.ttfb,
@@ -513,7 +535,11 @@ class MetricsCollector:
         elif isinstance(collected_metrics, metrics.EOUMetrics):
             speech_id = collected_metrics.speech_id
             if speech_id:
+                self._record_user_speech_end_timestamp(speech_id)
                 self._eou_delays[speech_id] = collected_metrics.end_of_utterance_delay
+                self._stt_finalization_delays[speech_id] = (
+                    collected_metrics.transcription_delay
+                )
                 turn_metrics = self._pending_metrics.get(speech_id)
                 await self._publish_live_update(
                     speech_id=speech_id,
@@ -605,7 +631,13 @@ class MetricsCollector:
         if is_complete:
             # Compute latencies
             eou_delay = self._eou_delays.get(speech_id, 0.0)
-            turn_metrics.compute_latencies(eou_delay)
+            stt_finalization_delay = self._stt_finalization_delays.get(speech_id, 0.0)
+            observed_total_latency = self._observed_total_latency_seconds(speech_id)
+            turn_metrics.compute_latencies(
+                eou_delay,
+                stt_finalization_delay=stt_finalization_delay,
+                observed_total_latency=observed_total_latency,
+            )
 
             # Publish to data channel
             await self._publish_metrics(turn_metrics)
@@ -613,6 +645,9 @@ class MetricsCollector:
             # Cleanup
             self._pending_metrics.pop(speech_id, None)
             self._eou_delays.pop(speech_id, None)
+            self._stt_finalization_delays.pop(speech_id, None)
+            self._speech_end_monotonic_by_speech.pop(speech_id, None)
+            self._first_audio_monotonic_by_speech.pop(speech_id, None)
 
     async def _publish_live_update(
         self,
@@ -682,11 +717,26 @@ class MetricsCollector:
             return None
 
         eou_delay = self._eou_delays.get(speech_id or "", 0.0)
+        stt_finalization_delay = self._stt_finalization_delays.get(speech_id or "", 0.0)
         llm_ttft = turn_metrics.llm.ttft if turn_metrics.llm else 0.0
         tts_ttfb = turn_metrics.tts.ttfb if turn_metrics.tts else 0.0
+        baseline_total_latency = self._compute_conversational_latency_seconds(
+            eou_delay=eou_delay,
+            stt_finalization_delay=stt_finalization_delay,
+            llm_ttft=llm_ttft,
+            tts_ttfb=tts_ttfb,
+        )
+        observed_total_latency = self._observed_total_latency_seconds(speech_id or "")
+        total_latency = max(
+            baseline_total_latency,
+            observed_total_latency if observed_total_latency is not None else 0.0,
+        )
+        llm_generation_wait_latency = max(total_latency - baseline_total_latency, 0.0)
         return {
-            "total_latency": eou_delay + llm_ttft + tts_ttfb,
+            "total_latency": total_latency,
             "eou_delay": eou_delay,
+            "stt_finalization_delay": stt_finalization_delay,
+            "llm_generation_wait_latency": llm_generation_wait_latency,
             "vad_detection_delay": eou_delay,
             "llm_ttft": llm_ttft,
             "tts_ttfb": tts_ttfb,
@@ -779,6 +829,7 @@ class MetricsCollector:
     async def _attach_tts_stage(
         self,
         *,
+        speech_id: str,
         duration: float,
         fallback_duration: float,
         ttfb: float,
@@ -790,19 +841,94 @@ class MetricsCollector:
             turn.tts_duration_ms = self._duration_to_ms(duration, fallback_duration)
             turn.tts_ttfb_ms = self._duration_to_ms(ttfb, 0.0)
             self._recompute_conversational_latency(turn)
+            observed_total_latency = self._observed_total_latency_seconds(speech_id)
+            if observed_total_latency is not None:
+                observed_total_latency_ms = observed_total_latency * 1000.0
+                baseline_latency_ms = turn.conversational_latency_ms
+                turn.conversational_latency_ms = max(
+                    observed_total_latency_ms,
+                    baseline_latency_ms if baseline_latency_ms is not None else 0.0,
+                )
+            turn.llm_generation_wait_ms = self._compute_llm_generation_wait_ms(
+                total_latency_ms=turn.conversational_latency_ms,
+                vad_duration_ms=turn.vad_duration_ms,
+                stt_finalization_ms=turn.stt_finalization_ms,
+                llm_ttft_ms=turn.llm_ttft_ms,
+                tts_ttfb_ms=turn.tts_ttfb_ms,
+            )
             return turn
 
     def _recompute_conversational_latency(self, turn: TraceTurn) -> None:
+        turn.conversational_latency_ms = self._compute_conversational_latency_ms(
+            vad_duration_ms=turn.vad_duration_ms,
+            stt_finalization_ms=turn.stt_finalization_ms,
+            llm_ttft_ms=turn.llm_ttft_ms,
+            tts_ttfb_ms=turn.tts_ttfb_ms,
+        )
+
+    def _compute_conversational_latency_seconds(
+        self,
+        *,
+        eou_delay: float,
+        stt_finalization_delay: float,
+        llm_ttft: float,
+        tts_ttfb: float,
+    ) -> float:
+        return eou_delay + stt_finalization_delay + llm_ttft + tts_ttfb
+
+    def _compute_conversational_latency_ms(
+        self,
+        *,
+        vad_duration_ms: Optional[float],
+        stt_finalization_ms: Optional[float],
+        llm_ttft_ms: Optional[float],
+        tts_ttfb_ms: Optional[float],
+    ) -> Optional[float]:
         components = (
-            turn.vad_duration_ms,
-            turn.stt_finalization_ms,
-            turn.llm_ttft_ms,
-            turn.tts_ttfb_ms,
+            vad_duration_ms,
+            stt_finalization_ms,
+            llm_ttft_ms,
+            tts_ttfb_ms,
         )
         if any(component is None for component in components):
-            turn.conversational_latency_ms = None
-            return
-        turn.conversational_latency_ms = sum(component for component in components if component is not None)
+            return None
+        return sum(component for component in components if component is not None)
+
+    def _compute_llm_generation_wait_ms(
+        self,
+        *,
+        total_latency_ms: Optional[float],
+        vad_duration_ms: Optional[float],
+        stt_finalization_ms: Optional[float],
+        llm_ttft_ms: Optional[float],
+        tts_ttfb_ms: Optional[float],
+    ) -> Optional[float]:
+        if total_latency_ms is None:
+            return None
+        baseline_ms = self._compute_conversational_latency_ms(
+            vad_duration_ms=vad_duration_ms,
+            stt_finalization_ms=stt_finalization_ms,
+            llm_ttft_ms=llm_ttft_ms,
+            tts_ttfb_ms=tts_ttfb_ms,
+        )
+        if baseline_ms is None:
+            return None
+        return max(total_latency_ms - baseline_ms, 0.0)
+
+    def _record_user_speech_end_timestamp(self, speech_id: str) -> None:
+        self._speech_end_monotonic_by_speech.setdefault(speech_id, monotonic())
+
+    def _record_first_assistant_audio_timestamp(self, speech_id: str) -> None:
+        self._first_audio_monotonic_by_speech.setdefault(speech_id, monotonic())
+
+    def _observed_total_latency_seconds(self, speech_id: str) -> Optional[float]:
+        start = self._speech_end_monotonic_by_speech.get(speech_id)
+        end = self._first_audio_monotonic_by_speech.get(speech_id)
+        if start is None or end is None:
+            return None
+        if end <= start:
+            return None
+        return end - start
 
     async def _attach_assistant_text(self, assistant_text: str) -> Optional[TraceTurn]:
         async with self._trace_lock:
@@ -1017,6 +1143,11 @@ class MetricsCollector:
                 if turn.conversational_latency_ms is not None
                 else None
             )
+            llm_generation_wait_ms = (
+                max(turn.llm_generation_wait_ms, 0.0)
+                if turn.llm_generation_wait_ms is not None
+                else None
+            )
             trace_output = turn.assistant_text or turn.response_text
 
             root_context = trace.set_span_in_context(trace.INVALID_SPAN)
@@ -1070,6 +1201,11 @@ class MetricsCollector:
                 turn_span.set_attribute("latency_ms.llm_total", llm_total_latency_ms)
                 turn_span.set_attribute("latency_ms.tts", tts_duration_ms)
                 turn_span.set_attribute("latency_ms.tts_ttfb", tts_ttfb_ms)
+                if llm_generation_wait_ms is not None:
+                    turn_span.set_attribute(
+                        "latency_ms.llm_generation_wait",
+                        llm_generation_wait_ms,
+                    )
                 if conversational_latency_ms is not None:
                     turn_span.set_attribute("latency_ms.conversational", conversational_latency_ms)
                     turn_span.set_attribute(
@@ -1150,12 +1286,35 @@ class MetricsCollector:
                             "eou_delay_ms": vad_duration_ms,
                             "stt_finalization_ms": stt_finalization_ms,
                             "llm_ttft_ms": llm_ttft_ms,
+                            "llm_generation_wait_ms": llm_generation_wait_ms,
                             "tts_ttfb_ms": tts_ttfb_ms,
                         },
                         observation_output=str(conversational_latency_ms),
                     )
+                if llm_generation_wait_ms is not None and llm_generation_wait_ms > 0:
+                    llm_generation_wait_start_ns = vad_start_ns + self._duration_ms_to_ns(
+                        max(vad_duration_ms, 0.0)
+                        + max(stt_finalization_ms or 0.0, 0.0)
+                        + max(llm_ttft_ms, 0.0)
+                    )
+                    self._emit_component_span(
+                        name="llm_generation_wait",
+                        context=component_context,
+                        start_ns=llm_generation_wait_start_ns,
+                        duration_ms=llm_generation_wait_ms,
+                        attributes={
+                            "llm_generation_wait_ms": llm_generation_wait_ms,
+                            "speech_end_to_assistant_speech_start_ms": conversational_latency_ms,
+                            "eou_delay_ms": vad_duration_ms,
+                            "stt_finalization_ms": stt_finalization_ms,
+                            "llm_ttft_ms": llm_ttft_ms,
+                            "tts_ttfb_ms": tts_ttfb_ms,
+                        },
+                        observation_output=str(llm_generation_wait_ms),
+                    )
             finally:
-                self._close_span_at(turn_span, cursor_ns)
+                turn_total_duration_ns = self._duration_ms_to_ns(self._total_duration_ms(turn))
+                self._close_span_at(turn_span, max(cursor_ns, root_start_ns + turn_total_duration_ns))
             logger.info(
                 "Langfuse turn trace emitted: trace_id=%s turn_id=%s session_id=%s room_id=%s participant_id=%s",
                 turn.trace_id,
@@ -1261,12 +1420,15 @@ class MetricsCollector:
             if turn.llm_total_latency_ms is not None
             else (turn.llm_duration_ms or 0.0)
         )
-        return (
+        calculated = (
             (turn.vad_duration_ms or 0.0)
             + stt_component
             + llm_component
             + (turn.tts_duration_ms or 0.0)
         )
+        if turn.conversational_latency_ms is not None:
+            calculated = max(calculated, turn.conversational_latency_ms)
+        return calculated
 
     def _duration_to_ms(self, duration: float, fallback_duration: float) -> float:
         chosen = duration if duration > 0 else fallback_duration
