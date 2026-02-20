@@ -649,7 +649,7 @@ def test_trace_finalize_timeout_uses_pending_assistant_transcript(
     assert root.attributes["langfuse.trace.output"] == "queued assistant fallback"
 
 
-def test_long_response_latency_accounts_for_llm_generation_wait(
+def test_long_response_latency_accounts_for_llm_to_tts_handoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import src.agent.metrics_collector as metrics_collector_module
@@ -699,20 +699,20 @@ def test_long_response_latency_accounts_for_llm_generation_wait(
     root = turn_spans[0]
 
     assert root.attributes["latency_ms.conversational"] > 200.0
-    assert root.attributes["latency_ms.llm_generation_wait"] > 150.0
+    assert root.attributes["latency_ms.llm_to_tts_handoff"] > 150.0
     assert root.attributes["latency_ms.conversational"] == pytest.approx(
         root.attributes["latency_ms.eou_delay"]
         + root.attributes["latency_ms.stt_finalization"]
         + root.attributes["latency_ms.llm_ttft"]
-        + root.attributes["latency_ms.llm_generation_wait"]
+        + root.attributes["latency_ms.llm_to_tts_handoff"]
         + root.attributes["latency_ms.tts_ttfb"],
         abs=5.0,
     )
 
-    gap_spans = [span for span in fake_tracer.spans if span.name == "llm_generation_wait"]
+    gap_spans = [span for span in fake_tracer.spans if span.name == "llm_to_tts_handoff"]
     assert len(gap_spans) == 1
     assert gap_spans[0].attributes["duration_ms"] == pytest.approx(
-        root.attributes["latency_ms.llm_generation_wait"],
+        root.attributes["latency_ms.llm_to_tts_handoff"],
         abs=5.0,
     )
 
@@ -725,8 +725,8 @@ def test_long_response_latency_accounts_for_llm_generation_wait(
         root.attributes["latency_ms.conversational"] / 1000.0,
         abs=0.05,
     )
-    assert agent_turn["latencies"]["llm_generation_wait_latency"] == pytest.approx(
-        root.attributes["latency_ms.llm_generation_wait"] / 1000.0,
+    assert agent_turn["latencies"]["llm_to_tts_handoff_latency"] == pytest.approx(
+        root.attributes["latency_ms.llm_to_tts_handoff"] / 1000.0,
         abs=0.05,
     )
 

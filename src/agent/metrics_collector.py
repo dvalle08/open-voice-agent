@@ -67,7 +67,7 @@ class Latencies:
     total_latency: float
     eou_delay: float
     stt_finalization_delay: float
-    llm_generation_wait_latency: float
+    llm_to_tts_handoff_latency: float
     vad_detection_delay: float
     llm_ttft: float
     tts_ttfb: float
@@ -104,13 +104,13 @@ class TurnMetrics:
         baseline_latency = eou_delay + stt_finalization_delay + llm_ttft + tts_ttfb
         observed = observed_total_latency if observed_total_latency is not None else 0.0
         total_latency = max(baseline_latency, observed)
-        llm_generation_wait_latency = max(total_latency - baseline_latency, 0.0)
+        llm_to_tts_handoff_latency = max(total_latency - baseline_latency, 0.0)
 
         self.latencies = Latencies(
             total_latency=total_latency,
             eou_delay=eou_delay,
             stt_finalization_delay=stt_finalization_delay,
-            llm_generation_wait_latency=llm_generation_wait_latency,
+            llm_to_tts_handoff_latency=llm_to_tts_handoff_latency,
             vad_detection_delay=eou_delay,
             llm_ttft=llm_ttft,
             tts_ttfb=tts_ttfb,
@@ -172,7 +172,7 @@ class TraceTurn:
     tts_duration_ms: Optional[float] = None
     tts_ttfb_ms: Optional[float] = None
     conversational_latency_ms: Optional[float] = None
-    llm_generation_wait_ms: Optional[float] = None
+    llm_to_tts_handoff_ms: Optional[float] = None
     trace_id: Optional[str] = None
 
 
@@ -769,12 +769,12 @@ class MetricsCollector:
             baseline_total_latency,
             observed_total_latency if observed_total_latency is not None else 0.0,
         )
-        llm_generation_wait_latency = max(total_latency - baseline_total_latency, 0.0)
+        llm_to_tts_handoff_latency = max(total_latency - baseline_total_latency, 0.0)
         return {
             "total_latency": total_latency,
             "eou_delay": eou_delay,
             "stt_finalization_delay": stt_finalization_delay,
-            "llm_generation_wait_latency": llm_generation_wait_latency,
+            "llm_to_tts_handoff_latency": llm_to_tts_handoff_latency,
             "vad_detection_delay": eou_delay,
             "llm_ttft": llm_ttft,
             "tts_ttfb": tts_ttfb,
@@ -887,7 +887,7 @@ class MetricsCollector:
                     observed_total_latency_ms,
                     baseline_latency_ms if baseline_latency_ms is not None else 0.0,
                 )
-            turn.llm_generation_wait_ms = self._compute_llm_generation_wait_ms(
+            turn.llm_to_tts_handoff_ms = self._compute_llm_to_tts_handoff_ms(
                 total_latency_ms=turn.conversational_latency_ms,
                 vad_duration_ms=turn.vad_duration_ms,
                 stt_finalization_ms=turn.stt_finalization_ms,
@@ -932,7 +932,7 @@ class MetricsCollector:
             return None
         return sum(component for component in components if component is not None)
 
-    def _compute_llm_generation_wait_ms(
+    def _compute_llm_to_tts_handoff_ms(
         self,
         *,
         total_latency_ms: Optional[float],
@@ -1188,9 +1188,9 @@ class MetricsCollector:
                 if turn.conversational_latency_ms is not None
                 else None
             )
-            llm_generation_wait_ms = (
-                max(turn.llm_generation_wait_ms, 0.0)
-                if turn.llm_generation_wait_ms is not None
+            llm_to_tts_handoff_ms = (
+                max(turn.llm_to_tts_handoff_ms, 0.0)
+                if turn.llm_to_tts_handoff_ms is not None
                 else None
             )
             trace_output = turn.assistant_text or turn.response_text
@@ -1246,10 +1246,10 @@ class MetricsCollector:
                 turn_span.set_attribute("latency_ms.llm_total", llm_total_latency_ms)
                 turn_span.set_attribute("latency_ms.tts", tts_duration_ms)
                 turn_span.set_attribute("latency_ms.tts_ttfb", tts_ttfb_ms)
-                if llm_generation_wait_ms is not None:
+                if llm_to_tts_handoff_ms is not None:
                     turn_span.set_attribute(
-                        "latency_ms.llm_generation_wait",
-                        llm_generation_wait_ms,
+                        "latency_ms.llm_to_tts_handoff",
+                        llm_to_tts_handoff_ms,
                     )
                 if conversational_latency_ms is not None:
                     turn_span.set_attribute("latency_ms.conversational", conversational_latency_ms)
@@ -1331,31 +1331,31 @@ class MetricsCollector:
                             "eou_delay_ms": vad_duration_ms,
                             "stt_finalization_ms": stt_finalization_ms,
                             "llm_ttft_ms": llm_ttft_ms,
-                            "llm_generation_wait_ms": llm_generation_wait_ms,
+                            "llm_to_tts_handoff_ms": llm_to_tts_handoff_ms,
                             "tts_ttfb_ms": tts_ttfb_ms,
                         },
                         observation_output=str(conversational_latency_ms),
                     )
-                if llm_generation_wait_ms is not None and llm_generation_wait_ms > 0:
-                    llm_generation_wait_start_ns = vad_start_ns + self._duration_ms_to_ns(
+                if llm_to_tts_handoff_ms is not None and llm_to_tts_handoff_ms > 0:
+                    llm_to_tts_handoff_start_ns = vad_start_ns + self._duration_ms_to_ns(
                         max(vad_duration_ms, 0.0)
                         + max(stt_finalization_ms or 0.0, 0.0)
                         + max(llm_ttft_ms, 0.0)
                     )
                     self._emit_component_span(
-                        name="llm_generation_wait",
+                        name="llm_to_tts_handoff",
                         context=component_context,
-                        start_ns=llm_generation_wait_start_ns,
-                        duration_ms=llm_generation_wait_ms,
+                        start_ns=llm_to_tts_handoff_start_ns,
+                        duration_ms=llm_to_tts_handoff_ms,
                         attributes={
-                            "llm_generation_wait_ms": llm_generation_wait_ms,
+                            "llm_to_tts_handoff_ms": llm_to_tts_handoff_ms,
                             "speech_end_to_assistant_speech_start_ms": conversational_latency_ms,
                             "eou_delay_ms": vad_duration_ms,
                             "stt_finalization_ms": stt_finalization_ms,
                             "llm_ttft_ms": llm_ttft_ms,
                             "tts_ttfb_ms": tts_ttfb_ms,
                         },
-                        observation_output=str(llm_generation_wait_ms),
+                        observation_output=str(llm_to_tts_handoff_ms),
                     )
             finally:
                 turn_total_duration_ns = self._duration_ms_to_ns(self._total_duration_ms(turn))
