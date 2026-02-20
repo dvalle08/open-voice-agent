@@ -26,6 +26,15 @@ let averages = {
   llmTtft: [],
   ttsTtfb: []
 };
+const LIVE_METRIC_IDS = [
+  "eou",
+  "stt-finalization",
+  "llm-ttft",
+  "llm-handoff",
+  "tts-ttfb",
+  "total",
+];
+let activeLiveSpeechId = null;
 
 // Initialize canvas sizing on load
 window.addEventListener('DOMContentLoaded', () => {
@@ -192,10 +201,10 @@ async function connectToRoom() {
         const metricsData = JSON.parse(jsonStr);
         if (metricsData.type === "metrics_live_update") {
           if (metricsData.diagnostic === true) return;
-          const shouldReset = metricsData.stage === "stt";
-          updateLiveMetrics(metricsData, shouldReset);
+          handleLiveTurnBoundary(metricsData);
+          updateLiveMetrics(metricsData);
         } else if (metricsData.type === "conversation_turn") {
-          updateLiveMetrics(metricsData, false);
+          updateLiveMetrics(metricsData);
           renderTurn(metricsData);
         }
       } catch (error) {
@@ -266,6 +275,7 @@ async function disconnectRoom() {
 function resetMetrics() {
   metricsHistory = [];
   turnCount = 0;
+  activeLiveSpeechId = null;
   averages = {
     totalLatency: [],
     vadDetectionDelay: [],
@@ -273,16 +283,26 @@ function resetMetrics() {
     ttsTtfb: []
   };
 
-  ["total", "llm", "tts"].forEach((id) => {
-    document.getElementById(`live-${id}`).textContent = "--";
-    document.getElementById(`live-${id}`).className = "metric-card-value";
-    document.getElementById(`live-${id}-bar`).style.width = "0%";
-    document.getElementById(`live-${id}-bar`).className = "metric-card-fill";
-  });
+  clearAllLiveMetrics();
 
   document.getElementById("avg-latency").innerHTML = '-- <span class="unit">s</span>';
   document.getElementById("avg-llm").innerHTML = '-- <span class="unit">s</span>';
   document.getElementById("avg-tts").innerHTML = '-- <span class="unit">s</span>';
+}
+
+function handleLiveTurnBoundary(metricsData) {
+  if (metricsData.stage !== "eou") return;
+
+  const speechId = metricsData.speech_id;
+  if (!speechId) {
+    clearAllLiveMetrics();
+    activeLiveSpeechId = null;
+    return;
+  }
+
+  if (speechId === activeLiveSpeechId) return;
+  activeLiveSpeechId = speechId;
+  clearAllLiveMetrics();
 }
 
 async function toggleMute() {
@@ -358,27 +378,46 @@ function clearLiveMetric(metricId) {
   bar.className = "metric-card-fill";
 }
 
-function updateLiveMetrics(turn, resetMissing) {
-  const maxLatency = 6.0;
+function clearAllLiveMetrics() {
+  LIVE_METRIC_IDS.forEach((id) => clearLiveMetric(id));
+}
+
+function isFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function updateLiveMetrics(turn) {
   const metrics = turn.metrics || {};
   const latencies = turn.latencies || {};
 
-  if (latencies.total_latency !== undefined) {
-    setLiveMetric("total", latencies.total_latency, maxLatency, 1.0, 2.0);
-  } else if (resetMissing) {
-    clearLiveMetric("total");
+  const eouDelay = latencies.eou_delay ?? latencies.vad_detection_delay;
+  if (isFiniteNumber(eouDelay)) {
+    setLiveMetric("eou", eouDelay, 4.0, 0.8, 1.2);
   }
 
-  if (metrics.llm && metrics.llm.ttft !== undefined) {
-    setLiveMetric("llm", metrics.llm.ttft, maxLatency, 0.5, 1.0);
-  } else if (resetMissing) {
-    clearLiveMetric("llm");
+  const sttFinalizationDelay = latencies.stt_finalization_delay;
+  if (isFiniteNumber(sttFinalizationDelay)) {
+    setLiveMetric("stt-finalization", sttFinalizationDelay, 3.0, 0.4, 0.8);
   }
 
-  if (metrics.tts && metrics.tts.ttfb !== undefined) {
-    setLiveMetric("tts", metrics.tts.ttfb, maxLatency, 0.3, 0.6);
-  } else if (resetMissing) {
-    clearLiveMetric("tts");
+  const llmTtft = metrics.llm?.ttft;
+  if (isFiniteNumber(llmTtft)) {
+    setLiveMetric("llm-ttft", llmTtft, 4.0, 0.5, 1.0);
+  }
+
+  const llmToTtsHandoff = latencies.llm_to_tts_handoff_latency;
+  if (isFiniteNumber(llmToTtsHandoff)) {
+    setLiveMetric("llm-handoff", llmToTtsHandoff, 8.0, 1.5, 3.0);
+  }
+
+  const ttsTtfb = metrics.tts?.ttfb;
+  if (isFiniteNumber(ttsTtfb)) {
+    setLiveMetric("tts-ttfb", ttsTtfb, 4.0, 0.3, 0.6);
+  }
+
+  const totalLatency = latencies.total_latency;
+  if (isFiniteNumber(totalLatency)) {
+    setLiveMetric("total", totalLatency, 8.0, 1.5, 3.0);
   }
 }
 

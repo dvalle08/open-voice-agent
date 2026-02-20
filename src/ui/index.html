@@ -196,7 +196,7 @@
       .live-metrics-row {
         flex-shrink: 0;
         display: grid;
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 8px;
         padding: 0 24px 12px;
       }
@@ -333,29 +333,56 @@
       <div class="live-metrics-row">
         <div class="metric-card">
           <div class="metric-card-label">
-            <span class="metric-card-name">Total</span>
-            <span class="metric-card-value" id="live-total">--</span>
+            <span class="metric-card-name">EOU Delay</span>
+            <span class="metric-card-value" id="live-eou">--</span>
           </div>
           <div class="metric-card-track">
-            <div class="metric-card-fill" id="live-total-bar" style="width: 0%"></div>
+            <div class="metric-card-fill" id="live-eou-bar" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-card-label">
+            <span class="metric-card-name">STT Finalization</span>
+            <span class="metric-card-value" id="live-stt-finalization">--</span>
+          </div>
+          <div class="metric-card-track">
+            <div class="metric-card-fill" id="live-stt-finalization-bar" style="width: 0%"></div>
           </div>
         </div>
         <div class="metric-card">
           <div class="metric-card-label">
             <span class="metric-card-name">LLM TTFT</span>
-            <span class="metric-card-value" id="live-llm">--</span>
+            <span class="metric-card-value" id="live-llm-ttft">--</span>
           </div>
           <div class="metric-card-track">
-            <div class="metric-card-fill" id="live-llm-bar" style="width: 0%"></div>
+            <div class="metric-card-fill" id="live-llm-ttft-bar" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-card-label">
+            <span class="metric-card-name">LLM→TTS Handoff</span>
+            <span class="metric-card-value" id="live-llm-handoff">--</span>
+          </div>
+          <div class="metric-card-track">
+            <div class="metric-card-fill" id="live-llm-handoff-bar" style="width: 0%"></div>
           </div>
         </div>
         <div class="metric-card">
           <div class="metric-card-label">
             <span class="metric-card-name">TTS TTFB</span>
-            <span class="metric-card-value" id="live-tts">--</span>
+            <span class="metric-card-value" id="live-tts-ttfb">--</span>
           </div>
           <div class="metric-card-track">
-            <div class="metric-card-fill" id="live-tts-bar" style="width: 0%"></div>
+            <div class="metric-card-fill" id="live-tts-ttfb-bar" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-card-label">
+            <span class="metric-card-name">Total Latency</span>
+            <span class="metric-card-value" id="live-total">--</span>
+          </div>
+          <div class="metric-card-track">
+            <div class="metric-card-fill" id="live-total-bar" style="width: 0%"></div>
           </div>
         </div>
       </div>
