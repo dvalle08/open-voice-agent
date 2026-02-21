@@ -303,17 +303,6 @@ function resetMetrics() {
 
   clearAllLiveMetrics();
 
-  [
-    "avg-eou",
-    "avg-stt-finalization",
-    "avg-llm-ttft",
-    "avg-llm-handoff",
-    "avg-tts-ttfb",
-    "avg-total",
-  ].forEach((id) => {
-    document.getElementById(id).innerHTML = '-- <span class="unit">s</span>';
-  });
-
   updateLiveMetricAverages();
 }
 
@@ -528,25 +517,6 @@ function updateLiveMetrics(turn) {
 }
 
 function updateAverages() {
-  const avgEou = avg(averages.eouDelay);
-  const avgSttFinalization = avg(averages.sttFinalization);
-  const avgLlmTtft = avg(averages.llmTtft);
-  const avgLlmToTtsHandoff = avg(averages.llmToTtsHandoff);
-  const avgTtsTtfb = avg(averages.ttsTtfb);
-  const avgTotalLatency = avg(averages.totalLatency);
-
-  const setAverageValue = (id, value) => {
-    document.getElementById(id).innerHTML = value !== null
-      ? `${value.toFixed(2)} <span class="unit">s</span>`
-      : '-- <span class="unit">s</span>';
-  };
-
-  setAverageValue("avg-eou", avgEou);
-  setAverageValue("avg-stt-finalization", avgSttFinalization);
-  setAverageValue("avg-llm-ttft", avgLlmTtft);
-  setAverageValue("avg-llm-handoff", avgLlmToTtsHandoff);
-  setAverageValue("avg-tts-ttfb", avgTtsTtfb);
-  setAverageValue("avg-total", avgTotalLatency);
   updateLiveMetricAverages();
 }
 
@@ -572,8 +542,8 @@ function renderTurn(turn) {
   }
 
   const ttsTtfb = metrics.tts?.ttfb;
-  if (isFiniteNumber(ttsTtfb) && ttsTtfb > 0) averages.ttsTtfb.push(ttsTtfb);
-  if (isFiniteNumber(llmToTtsHandoff) && llmToTtsHandoff > 0 && isFiniteNumber(ttsTtfb) && ttsTtfb > 0) {
+  if (isFiniteNumber(ttsTtfb) && ttsTtfb >= 0) averages.ttsTtfb.push(ttsTtfb);
+  if (isFiniteNumber(llmToTtsHandoff) && llmToTtsHandoff >= 0 && isFiniteNumber(ttsTtfb) && ttsTtfb >= 0) {
     averages.voiceGeneration.push(llmToTtsHandoff + ttsTtfb);
   }
 

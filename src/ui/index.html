@@ -233,22 +233,39 @@
         content: "";
         position: absolute;
         top: 50%;
-        right: -14px;
-        width: 18px;
-        height: 2px;
+        left: calc(100% - 6px);
+        width: 16px;
+        height: 1px;
         border-radius: 999px;
         background: linear-gradient(
           90deg,
-          rgba(108, 143, 255, 0.12) 0%,
-          rgba(108, 143, 255, 0.75) 45%,
-          rgba(167, 139, 250, 0.65) 100%
+          rgba(108, 143, 255, 0.18) 0%,
+          rgba(108, 143, 255, 0.5) 60%,
+          rgba(167, 139, 250, 0.58) 100%
         );
-        box-shadow: 0 0 8px rgba(108, 143, 255, 0.22);
+        box-shadow: 0 0 5px rgba(108, 143, 255, 0.18);
+        transform: translateY(-50%);
+        pointer-events: none;
+        z-index: 1;
+      }
+      .stage-card::before {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: calc(100% + 10px);
+        width: 6px;
+        height: 6px;
+        background: rgba(167, 139, 250, 0.72);
+        clip-path: polygon(0 0, 100% 50%, 0 100%);
+        box-shadow: 0 0 6px rgba(108, 143, 255, 0.2);
         transform: translateY(-50%);
         pointer-events: none;
         z-index: 1;
       }
       .stage-card:last-child::after {
+        display: none;
+      }
+      .stage-card:last-child::before {
         display: none;
       }
       .metric-card-top {
@@ -424,10 +441,19 @@
         .stage-card::after {
           display: none;
         }
+        .stage-card::before {
+          display: none;
+        }
         .stage-card:nth-child(odd)::after {
           display: block;
         }
+        .stage-card:nth-child(odd)::before {
+          display: block;
+        }
         .stage-card:last-child::after {
+          display: none;
+        }
+        .stage-card:last-child::before {
           display: none;
         }
       }
@@ -452,39 +478,9 @@
         .stage-card::after {
           display: none !important;
         }
-      }
-
-      /* Averages compact row */
-      .averages-row {
-        flex-shrink: 0;
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 10px 24px;
-        padding: 8px 24px;
-        border-top: 1px solid var(--border);
-        border-bottom: 1px solid var(--border);
-        background: var(--bg-secondary);
-      }
-      .avg-item {
-        display: flex;
-        align-items: baseline;
-        gap: 6px;
-        font-size: 12px;
-      }
-      .avg-item-label {
-        color: var(--text-muted);
-        font-weight: 500;
-      }
-      .avg-item-value {
-        color: var(--text-primary);
-        font-weight: 700;
-        font-variant-numeric: tabular-nums;
-      }
-      .avg-item-value .unit {
-        font-size: 10px;
-        font-weight: 500;
-        color: var(--text-muted);
+        .stage-card::before {
+          display: none !important;
+        }
       }
 
       /* Footer note */
@@ -556,7 +552,7 @@
                 <span class="metric-tech">EOU Delay</span>
                 <div class="tooltip">
                   <button type="button" class="tooltip-trigger" aria-label="What is EOU Delay?">i</button>
-                  <span class="tooltip-content" role="tooltip">Time from user speech end to end-of-utterance detection.</span>
+                  <span class="tooltip-content" role="tooltip">VAD end-of-utterance delay: time from the user's last speech frame to utterance-end detection.</span>
                 </div>
               </div>
             </div>
@@ -578,7 +574,7 @@
                 <span class="metric-tech">STT Finalization</span>
                 <div class="tooltip">
                   <button type="button" class="tooltip-trigger" aria-label="What is STT Finalization?">i</button>
-                  <span class="tooltip-content" role="tooltip">Time to finalize the transcript after speech end.</span>
+                  <span class="tooltip-content" role="tooltip">Post-EOU STT finalization delay: time from utterance-end detection until the final transcript is emitted.</span>
                 </div>
               </div>
             </div>
@@ -600,7 +596,7 @@
                 <span class="metric-tech">LLM TTFT</span>
                 <div class="tooltip">
                   <button type="button" class="tooltip-trigger" aria-label="What is LLM TTFT?">i</button>
-                  <span class="tooltip-content" role="tooltip">Time for the LLM to produce the first token.</span>
+                  <span class="tooltip-content" role="tooltip">LLM time-to-first-token: elapsed time from LLM request start to the first generated token.</span>
                 </div>
               </div>
             </div>
@@ -622,7 +618,7 @@
                 <span class="metric-tech">Voice Generation</span>
                 <div class="tooltip">
                   <button type="button" class="tooltip-trigger" aria-label="What is Voice Generation?">i</button>
-                  <span class="tooltip-content" role="tooltip">Sum of LLM to TTS handoff latency and TTS first-byte latency.</span>
+                  <span class="tooltip-content" role="tooltip">Voice generation = LLM→TTS handoff + TTS TTFB, where handoff = max(total_latency - (EOU + STT finalization + LLM TTFT + TTS TTFB), 0).</span>
                 </div>
               </div>
             </div>
@@ -646,7 +642,7 @@
                 <span>End-to-End Latency</span>
                 <div class="tooltip">
                   <button type="button" class="tooltip-trigger" aria-label="What is End-to-End Latency?">i</button>
-                  <span class="tooltip-content" role="tooltip">Total latency from end of user speech to assistant speech start.</span>
+                  <span class="tooltip-content" role="tooltip">Total latency = max(EOU + STT finalization + LLM TTFT + TTS TTFB, observed speech-end→assistant-audio-start).</span>
                 </div>
               </div>
             </div>
@@ -658,34 +654,6 @@
           <div class="metric-card-track">
             <div class="metric-card-fill" id="live-total-bar" style="width: 0%"></div>
           </div>
-        </div>
-      </div>
-
-      <!-- Averages compact row -->
-      <div class="averages-row">
-        <div class="avg-item">
-          <span class="avg-item-label">Avg EOU:</span>
-          <span class="avg-item-value" id="avg-eou">-- <span class="unit">s</span></span>
-        </div>
-        <div class="avg-item">
-          <span class="avg-item-label">Avg STT Finalization:</span>
-          <span class="avg-item-value" id="avg-stt-finalization">-- <span class="unit">s</span></span>
-        </div>
-        <div class="avg-item">
-          <span class="avg-item-label">Avg LLM TTFT:</span>
-          <span class="avg-item-value" id="avg-llm-ttft">-- <span class="unit">s</span></span>
-        </div>
-        <div class="avg-item">
-          <span class="avg-item-label">Avg LLM→TTS Handoff:</span>
-          <span class="avg-item-value" id="avg-llm-handoff">-- <span class="unit">s</span></span>
-        </div>
-        <div class="avg-item">
-          <span class="avg-item-label">Avg TTS TTFB:</span>
-          <span class="avg-item-value" id="avg-tts-ttfb">-- <span class="unit">s</span></span>
-        </div>
-        <div class="avg-item">
-          <span class="avg-item-label">Avg Total:</span>
-          <span class="avg-item-value" id="avg-total">-- <span class="unit">s</span></span>
         </div>
       </div>
 
