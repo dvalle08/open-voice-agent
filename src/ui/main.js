@@ -296,7 +296,9 @@ async function connectToRoom() {
             handleLiveTurnBoundary(metricsData);
             updateLiveMetrics(metricsData);
           } else if (metricsData.type === "conversation_turn") {
-            updateLiveMetrics(metricsData);
+            if (metricsData.role === "agent") {
+              updateLiveMetrics(metricsData);
+            }
             renderTurn(metricsData);
           }
         } catch (error) {
@@ -557,25 +559,40 @@ function updateLiveMetricAverages() {
   setLiveMetricAverage("total", avg(averages.totalLatency));
 }
 
+function shouldApplyUserLatency(turn, nextValue, currentValue) {
+  if (!isFiniteNumber(nextValue)) return false;
+
+  const stage = turn.stage;
+  const isUserStage = stage === "eou" || stage === "stt" || turn.role === "user";
+  if (isUserStage) return true;
+  if (nextValue > 0) return true;
+
+  if (isFiniteNumber(currentValue)) {
+    return false;
+  }
+
+  // Instruction-only startup turn has no EOU boundary and can legitimately be zero.
+  return activeLiveSpeechId === null;
+}
+
 function updateLiveMetrics(turn) {
   const metrics = turn.metrics || {};
   const latencies = turn.latencies || {};
-  const speechId = turn.speech_id;
-
-  if (speechId && speechId !== activeLiveSpeechId) {
-    activeLiveSpeechId = speechId;
-    liveTurnValues = createEmptyLiveTurnValues();
-    setAllLiveMetricsLoading();
-  }
 
   const eouDelay = latencies.eou_delay ?? latencies.vad_detection_delay;
-  if (isFiniteNumber(eouDelay)) {
+  if (shouldApplyUserLatency(turn, eouDelay, liveTurnValues.eouDelay)) {
     liveTurnValues.eouDelay = eouDelay;
     setLiveMetric("eou", eouDelay, 4.0, 0.8, 1.2);
   }
 
   const sttFinalizationDelay = latencies.stt_finalization_delay;
-  if (isFiniteNumber(sttFinalizationDelay)) {
+  if (
+    shouldApplyUserLatency(
+      turn,
+      sttFinalizationDelay,
+      liveTurnValues.sttFinalizationDelay
+    )
+  ) {
     liveTurnValues.sttFinalizationDelay = sttFinalizationDelay;
     setLiveMetric("stt-finalization", sttFinalizationDelay, 3.0, 0.4, 0.8);
   }

@@ -189,6 +189,45 @@ def _make_eou_metrics(
     )
 
 
+def test_live_update_includes_eou_latencies_without_llm_or_tts() -> None:
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=False,
+    )
+
+    async def _run() -> None:
+        await collector.on_metrics_collected(
+            _make_eou_metrics(
+                "speech-eou-only",
+                delay=0.9,
+                transcription_delay=0.2,
+            )
+        )
+
+    asyncio.run(_run())
+
+    payloads = _decode_payloads(room)
+    live_updates = [
+        payload
+        for payload in payloads
+        if payload.get("type") == "metrics_live_update"
+        and payload.get("stage") == "eou"
+        and payload.get("speech_id") == "speech-eou-only"
+    ]
+    assert live_updates
+
+    eou_update = live_updates[-1]
+    assert eou_update["latencies"]["eou_delay"] == pytest.approx(0.9)
+    assert eou_update["latencies"]["stt_finalization_delay"] == pytest.approx(0.2)
+    assert eou_update["latencies"]["llm_ttft"] == 0.0
+    assert eou_update["latencies"]["tts_ttfb"] == 0.0
+
+
 @dataclass
 class _FakeChatItem:
     role: str
