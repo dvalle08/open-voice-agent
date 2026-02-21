@@ -308,26 +308,6 @@ async function connectToRoom() {
     await nextRoom.connect(LIVEKIT_URL, bootstrap.token);
     if (room !== nextRoom || connectionSeq !== activeConnectionSeq) return;
 
-    try {
-      await nextRoom.localParticipant.publishData(
-        new TextEncoder().encode(
-          JSON.stringify({
-            type: "session_meta",
-            session_id: currentSessionId,
-            participant_id:
-              bootstrap.participant_identity || nextRoom.localParticipant.identity,
-            room_name: currentRoomName,
-          })
-        ),
-        {
-          reliable: true,
-          topic: "session_meta",
-        }
-      );
-    } catch (error) {
-      console.warn("Failed to publish session metadata:", error);
-    }
-
     localTrack = await createLocalAudioTrack();
     if (room !== nextRoom || connectionSeq !== activeConnectionSeq) {
       localTrack.stop();

@@ -190,34 +190,6 @@ async def session_handler(ctx: agents.JobContext) -> None:
         langfuse_enabled=trace_provider is not None,
     )
 
-    @ctx.room.on("data_received")
-    def on_data_received(packet: rtc.DataPacket) -> None:
-        if packet.topic != "session_meta":
-            return
-        try:
-            payload = json.loads(packet.data.decode("utf-8"))
-        except Exception:
-            logger.debug("Ignoring invalid session_meta payload")
-            return
-        if payload.get("type") != "session_meta":
-            return
-
-        participant_id = payload.get("participant_id")
-        if not isinstance(participant_id, str) and packet.participant:
-            participant_id = packet.participant.identity
-        logger.info(
-            "Session metadata received from data channel: session_id=%s participant_id=%s room=%s",
-            payload.get("session_id"),
-            participant_id,
-            ctx.room.name,
-        )
-        asyncio.create_task(
-            metrics_collector.on_session_metadata(
-                session_id=payload.get("session_id"),
-                participant_id=participant_id,
-            )
-        )
-
     if isinstance(ctx.job.metadata, str) and ctx.job.metadata.strip():
         try:
             metadata = json.loads(ctx.job.metadata)
