@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from uuid import uuid4
 
 import streamlit as st
 
-from src.api.livekit_tokens import create_room_token, ensure_agent_dispatched_sync
+from src.api.session_bootstrap import ensure_session_bootstrap_server
 from src.core.settings import settings
 
 UI_DIR = Path(__file__).parent / "ui"
@@ -73,7 +72,7 @@ def generate_footer_html() -> str:
         <a href="https://livekit.io/" target="_blank" rel="noopener noreferrer">LiveKit</a>"""
 
 
-def render_client(token: str, livekit_url: str) -> None:
+def render_client(*, livekit_url: str, session_bootstrap_url: str) -> None:
     template = INDEX_TEMPLATE.read_text(encoding="utf-8")
     js = MAIN_JS.read_text(encoding="utf-8")
     footer_html = generate_footer_html()
@@ -81,7 +80,7 @@ def render_client(token: str, livekit_url: str) -> None:
     html = (
         template.replace("{{MAIN_JS}}", js)
         .replace("{{LIVEKIT_URL_JSON}}", json.dumps(livekit_url))
-        .replace("{{TOKEN_JSON}}", json.dumps(token))
+        .replace("{{SESSION_BOOTSTRAP_URL_JSON}}", json.dumps(session_bootstrap_url))
         .replace("{{FOOTER_POWERED_BY}}", footer_html)
     )
 
@@ -106,44 +105,16 @@ def main() -> None:
         st.error("LIVEKIT_API_KEY or LIVEKIT_API_SECRET is not set.")
         st.stop()
 
-    # Auto-generate room name once
-    if "room_name" not in st.session_state:
-        st.session_state["room_name"] = f"voice-{uuid4().hex[:8]}"
-
-    room_name = st.session_state["room_name"]
-
-    # Auto-create token once
-    if "token" not in st.session_state:
-        try:
-            token_data = create_room_token(room_name=room_name)
-            st.session_state["token"] = token_data.token
-            st.session_state["participant_identity"] = token_data.identity
-        except Exception as exc:
-            st.error(f"Failed to create room token: {exc}")
-            st.stop()
-
-    # Ensure dispatch exists on each app run.
-    # This avoids stale session_state when agent worker restarts.
     try:
-        dispatch = ensure_agent_dispatched_sync(
-            room_name=room_name,
-            agent_name=settings.livekit.LIVEKIT_AGENT_NAME,
-            reset_existing=True,
-        )
-        st.session_state["dispatch_id"] = dispatch.id
-        assigned_worker_id = None
-        for job in getattr(dispatch.state, "jobs", []):
-            state = getattr(job, "state", None)
-            if state and getattr(state, "worker_id", None):
-                assigned_worker_id = state.worker_id
-                break
-        st.session_state["dispatch_worker_id"] = assigned_worker_id
+        session_bootstrap_url = ensure_session_bootstrap_server()
     except Exception as exc:
-        st.error(f"Failed to ensure agent dispatch: {exc}")
+        st.error(f"Failed to start session bootstrap service: {exc}")
         st.stop()
 
-    st.caption(f"Room: `{room_name}`")
-    render_client(token=st.session_state["token"], livekit_url=settings.livekit.LIVEKIT_URL)
+    render_client(
+        livekit_url=settings.livekit.LIVEKIT_URL,
+        session_bootstrap_url=session_bootstrap_url,
+    )
 
 
 if __name__ == "__main__":

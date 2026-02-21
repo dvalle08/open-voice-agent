@@ -205,6 +205,12 @@ async def session_handler(ctx: agents.JobContext) -> None:
         participant_id = payload.get("participant_id")
         if not isinstance(participant_id, str) and packet.participant:
             participant_id = packet.participant.identity
+        logger.info(
+            "Session metadata received from data channel: session_id=%s participant_id=%s room=%s",
+            payload.get("session_id"),
+            participant_id,
+            ctx.room.name,
+        )
         asyncio.create_task(
             metrics_collector.on_session_metadata(
                 session_id=payload.get("session_id"),
@@ -217,6 +223,12 @@ async def session_handler(ctx: agents.JobContext) -> None:
             metadata = json.loads(ctx.job.metadata)
         except Exception:
             metadata = {}
+        logger.info(
+            "Session metadata received from dispatch: session_id=%s participant_id=%s room=%s",
+            metadata.get("session_id"),
+            metadata.get("participant_id"),
+            ctx.room.name,
+        )
         asyncio.create_task(
             metrics_collector.on_session_metadata(
                 session_id=metadata.get("session_id"),

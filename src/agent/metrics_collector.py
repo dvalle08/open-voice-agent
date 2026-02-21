@@ -285,10 +285,22 @@ class MetricsCollector:
         normalized_participant_id = self._normalize_optional_text(participant_id)
 
         async with self._trace_lock:
+            previous_session_id = self._session_id
+            previous_participant_id = self._participant_id
             if normalized_session_id:
                 self._session_id = normalized_session_id
             if normalized_participant_id:
                 self._participant_id = normalized_participant_id
+
+            if (
+                self._session_id != previous_session_id
+                or self._participant_id != previous_participant_id
+            ):
+                logger.debug(
+                    "Session context updated: session_id=%s participant_id=%s",
+                    self._session_id,
+                    self._participant_id,
+                )
 
             for turn in self._pending_trace_turns:
                 if (

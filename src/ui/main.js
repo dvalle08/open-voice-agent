@@ -17,6 +17,16 @@ let animationId = null;
 let muted = false;
 let resizeObserver = null;
 let currentSessionId = null;
+let currentRoomName = null;
+let activeConnectionSeq = 0;
+let connectionState = "idle";
+
+const CONNECTION_STATES = Object.freeze({
+  IDLE: "idle",
+  CONNECTING: "connecting",
+  CONNECTED: "connected",
+  DISCONNECTING: "disconnecting",
+});
 
 let averages = {
   eouDelay: [],
@@ -62,6 +72,23 @@ function setStatus(text, state) {
   statusDot.className = "status-dot";
   if (state === "connected") statusDot.classList.add("connected");
   else if (state === "connecting") statusDot.classList.add("connecting");
+}
+
+function setConnectionState(nextState) {
+  connectionState = nextState;
+  connectBtn.disabled = connectionState !== CONNECTION_STATES.IDLE;
+  disconnectBtn.disabled = connectionState !== CONNECTION_STATES.CONNECTED;
+  muteBtn.disabled = connectionState !== CONNECTION_STATES.CONNECTED;
+}
+
+function resetMuteButton() {
+  muteBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg> Mute`;
+}
+
+function clearRemoteAudio() {
+  remoteAudio.pause();
+  remoteAudio.srcObject = null;
+  remoteAudio.removeAttribute("src");
 }
 
 function clearWave() {
@@ -176,81 +203,168 @@ function setupAnalyser(track) {
   drawWave();
 }
 
+async function fetchSessionBootstrap() {
+  if (!SESSION_BOOTSTRAP_URL || !LIVEKIT_URL) {
+    throw new Error("Missing LiveKit configuration");
+  }
+
+  const response = await fetch(`${SESSION_BOOTSTRAP_URL}?t=${Date.now()}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    let message = `bootstrap request failed (${response.status})`;
+    try {
+      const body = await response.json();
+      if (typeof body.message === "string" && body.message) {
+        message = body.message;
+      }
+    } catch (_ignored) {
+      // Keep default message when response is not JSON.
+    }
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
 async function connectToRoom() {
-  if (!TOKEN || !LIVEKIT_URL) {
-    setStatus("Missing token or URL", "");
-    return;
-  }
+  if (connectionState !== CONNECTION_STATES.IDLE) return;
 
-  currentSessionId = crypto.randomUUID();
+  const connectionSeq = ++activeConnectionSeq;
+  setConnectionState(CONNECTION_STATES.CONNECTING);
+  setStatus("Preparing session...", "connecting");
 
-  setStatus("Connecting...", "connecting");
-  connectBtn.disabled = true;
-
-  room = new Room();
-  room.on(RoomEvent.TrackSubscribed, (track) => {
-    if (track.kind === Track.Kind.Audio) {
-      track.attach(remoteAudio);
-      setStatus("Agent streaming", "connected");
-    }
-  });
-
-  room.on(RoomEvent.Disconnected, () => {
-    setStatus("Disconnected", "");
-    connectBtn.disabled = false;
-    disconnectBtn.disabled = true;
-    muteBtn.disabled = true;
-    cleanupWave();
-  });
-
-  room.on(RoomEvent.DataReceived, (data, participant, kind, topic) => {
-    if (topic === "metrics") {
-      const decoder = new TextDecoder("utf-8");
-      const jsonStr = decoder.decode(data);
-      try {
-        const metricsData = JSON.parse(jsonStr);
-        if (metricsData.type === "metrics_live_update") {
-          if (metricsData.diagnostic === true) return;
-          handleLiveTurnBoundary(metricsData);
-          updateLiveMetrics(metricsData);
-        } else if (metricsData.type === "conversation_turn") {
-          updateLiveMetrics(metricsData);
-          renderTurn(metricsData);
-        }
-      } catch (error) {
-        console.error("Failed to parse metrics:", error);
-      }
-    }
-  });
-
-  await room.connect(LIVEKIT_URL, TOKEN);
-
+  let nextRoom = null;
   try {
-    await room.localParticipant.publishData(
-      new TextEncoder().encode(
-        JSON.stringify({
-          type: "session_meta",
-          session_id: currentSessionId,
-          participant_id: room.localParticipant.identity
-        })
-      ),
-      {
-        reliable: true,
-        topic: "session_meta"
-      }
+    const bootstrap = await fetchSessionBootstrap();
+    if (connectionSeq !== activeConnectionSeq) return;
+
+    currentSessionId = bootstrap.session_id || crypto.randomUUID();
+    currentRoomName = bootstrap.room_name || null;
+
+    if (!bootstrap.token) {
+      throw new Error("Session bootstrap did not return a token");
+    }
+
+    setStatus(
+      `Connecting to ${currentRoomName || "room"}...`,
+      "connecting"
     );
+
+    nextRoom = new Room();
+    room = nextRoom;
+    resetMetrics();
+    clearRemoteAudio();
+
+    nextRoom.on(RoomEvent.TrackSubscribed, (track) => {
+      if (room !== nextRoom || connectionSeq !== activeConnectionSeq) return;
+      if (track.kind === Track.Kind.Audio) {
+        track.attach(remoteAudio);
+        setStatus("Agent streaming", "connected");
+      }
+    });
+
+    nextRoom.on(RoomEvent.Disconnected, () => {
+      if (room !== nextRoom || connectionSeq !== activeConnectionSeq) return;
+      room = null;
+      if (localTrack) {
+        localTrack.stop();
+      }
+      localTrack = null;
+      currentSessionId = null;
+      currentRoomName = null;
+      muted = false;
+      resetMuteButton();
+      clearRemoteAudio();
+      cleanupWave();
+      resetMetrics();
+      setConnectionState(CONNECTION_STATES.IDLE);
+      setStatus("Disconnected", "");
+    });
+
+    nextRoom.on(RoomEvent.DataReceived, (data, participant, kind, topic) => {
+      if (room !== nextRoom || connectionSeq !== activeConnectionSeq) return;
+      if (topic === "metrics") {
+        const decoder = new TextDecoder("utf-8");
+        const jsonStr = decoder.decode(data);
+        try {
+          const metricsData = JSON.parse(jsonStr);
+          if (metricsData.type === "metrics_live_update") {
+            if (metricsData.diagnostic === true) return;
+            handleLiveTurnBoundary(metricsData);
+            updateLiveMetrics(metricsData);
+          } else if (metricsData.type === "conversation_turn") {
+            updateLiveMetrics(metricsData);
+            renderTurn(metricsData);
+          }
+        } catch (error) {
+          console.error("Failed to parse metrics:", error);
+        }
+      }
+    });
+
+    await nextRoom.connect(LIVEKIT_URL, bootstrap.token);
+    if (room !== nextRoom || connectionSeq !== activeConnectionSeq) return;
+
+    try {
+      await nextRoom.localParticipant.publishData(
+        new TextEncoder().encode(
+          JSON.stringify({
+            type: "session_meta",
+            session_id: currentSessionId,
+            participant_id:
+              bootstrap.participant_identity || nextRoom.localParticipant.identity,
+            room_name: currentRoomName,
+          })
+        ),
+        {
+          reliable: true,
+          topic: "session_meta",
+        }
+      );
+    } catch (error) {
+      console.warn("Failed to publish session metadata:", error);
+    }
+
+    localTrack = await createLocalAudioTrack();
+    if (room !== nextRoom || connectionSeq !== activeConnectionSeq) {
+      localTrack.stop();
+      localTrack = null;
+      return;
+    }
+
+    await nextRoom.localParticipant.publishTrack(localTrack);
+    setupAnalyser(localTrack);
+
+    muted = false;
+    resetMuteButton();
+    setConnectionState(CONNECTION_STATES.CONNECTED);
+    setStatus(`Mic streaming (${currentRoomName || "connected"})`, "connected");
   } catch (error) {
-    console.warn("Failed to publish session metadata:", error);
+    if (localTrack) {
+      localTrack.stop();
+      localTrack = null;
+    }
+    if (room === nextRoom) {
+      try {
+        await room.disconnect();
+      } catch (disconnectError) {
+        console.warn("Failed to disconnect after connect error:", disconnectError);
+      }
+      room = null;
+    }
+    currentSessionId = null;
+    currentRoomName = null;
+    muted = false;
+    resetMuteButton();
+    clearRemoteAudio();
+    cleanupWave();
+    resetMetrics();
+    setConnectionState(CONNECTION_STATES.IDLE);
+    throw error;
   }
-
-  localTrack = await createLocalAudioTrack();
-  await room.localParticipant.publishTrack(localTrack);
-
-  setupAnalyser(localTrack);
-
-  disconnectBtn.disabled = false;
-  muteBtn.disabled = false;
-  setStatus("Mic streaming", "connected");
 }
 
 function cleanupWave() {
@@ -259,27 +373,51 @@ function cleanupWave() {
     animationId = null;
   }
   if (audioContext) {
-    audioContext.close();
+    const closeResult = audioContext.close();
+    if (closeResult && typeof closeResult.catch === "function") {
+      closeResult.catch(() => {});
+    }
     audioContext = null;
-  }
-  if (resizeObserver) {
-    resizeObserver.disconnect();
-    resizeObserver = null;
   }
   analyser = null;
   clearWave();
 }
 
 async function disconnectRoom() {
-  if (!room) return;
+  if (!room || connectionState !== CONNECTION_STATES.CONNECTED) return;
+
+  const disconnectingRoom = room;
+  const disconnectSeq = ++activeConnectionSeq;
+  setConnectionState(CONNECTION_STATES.DISCONNECTING);
   setStatus("Disconnecting...", "connecting");
-  await room.disconnect();
-  room = null;
-  localTrack = null;
-  muted = false;
-  muteBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg> Mute`;
-  cleanupWave();
-  resetMetrics();
+
+  try {
+    if (localTrack) {
+      try {
+        await disconnectingRoom.localParticipant.unpublishTrack(localTrack);
+      } catch (error) {
+        console.warn("Failed to unpublish local track during disconnect:", error);
+      }
+      localTrack.stop();
+      localTrack = null;
+    }
+    clearRemoteAudio();
+    await disconnectingRoom.disconnect();
+  } finally {
+    if (room === disconnectingRoom) {
+      room = null;
+    }
+    if (disconnectSeq === activeConnectionSeq) {
+      currentSessionId = null;
+      currentRoomName = null;
+      muted = false;
+      resetMuteButton();
+      cleanupWave();
+      resetMetrics();
+      setConnectionState(CONNECTION_STATES.IDLE);
+      setStatus("Disconnected", "");
+    }
+  }
 }
 
 function resetMetrics() {
@@ -328,11 +466,13 @@ async function toggleMute() {
   }
 }
 
+resetMuteButton();
+setConnectionState(CONNECTION_STATES.IDLE);
+
 connectBtn.addEventListener("click", () => {
   connectToRoom().catch((error) => {
     setStatus(`Failed: ${error.message}`, "");
-    connectBtn.disabled = false;
-    cleanupWave();
+    setConnectionState(CONNECTION_STATES.IDLE);
   });
 });
 
