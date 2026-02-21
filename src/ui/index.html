@@ -426,12 +426,25 @@
         transform: translateY(4px);
         transition: opacity 0.2s ease, transform 0.2s ease;
         z-index: 20;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+      .tooltip.tooltip-right .tooltip-content {
+        left: calc(100% + 8px);
+        right: auto;
+        top: 50%;
+        bottom: auto;
+        transform: translateY(-50%) translateX(4px);
       }
       .tooltip:hover .tooltip-content,
       .tooltip:focus-within .tooltip-content {
         opacity: 1;
         pointer-events: auto;
         transform: translateY(0);
+      }
+      .tooltip.tooltip-right:hover .tooltip-content,
+      .tooltip.tooltip-right:focus-within .tooltip-content {
+        transform: translateY(-50%) translateX(0);
       }
 
       @media (max-width: 1100px) {
@@ -480,6 +493,17 @@
         }
         .stage-card::before {
           display: none !important;
+        }
+        .tooltip.tooltip-right .tooltip-content {
+          left: auto;
+          right: 0;
+          top: auto;
+          bottom: calc(100% + 8px);
+          transform: translateY(4px);
+        }
+        .tooltip.tooltip-right:hover .tooltip-content,
+        .tooltip.tooltip-right:focus-within .tooltip-content {
+          transform: translateY(0);
         }
       }
 
@@ -618,7 +642,7 @@
                 <span class="metric-tech">Voice Generation</span>
                 <div class="tooltip">
                   <button type="button" class="tooltip-trigger" aria-label="What is Voice Generation?">i</button>
-                  <span class="tooltip-content" role="tooltip">Voice generation = LLM→TTS handoff + TTS TTFB, where handoff = max(total_latency - (EOU + STT finalization + LLM TTFT + TTS TTFB), 0).</span>
+                  <span class="tooltip-content" role="tooltip">Time from the model output phase to first audible assistant speech. It includes model-to-TTS handoff time and TTS startup latency (TTFB).</span>
                 </div>
               </div>
             </div>
@@ -640,9 +664,9 @@
               <div class="pipeline-total-label">Total Round-Trip</div>
               <div class="pipeline-total-tech">
                 <span>End-to-End Latency</span>
-                <div class="tooltip">
+                <div class="tooltip tooltip-right">
                   <button type="button" class="tooltip-trigger" aria-label="What is End-to-End Latency?">i</button>
-                  <span class="tooltip-content" role="tooltip">Total latency = max(EOU + STT finalization + LLM TTFT + TTS TTFB, observed speech-end→assistant-audio-start).</span>
+                  <span class="tooltip-content" role="tooltip">Full response latency from end of user speech to first assistant audio, including EOU detection, STT finalization, LLM TTFT, and TTS startup.</span>
                 </div>
               </div>
             </div>

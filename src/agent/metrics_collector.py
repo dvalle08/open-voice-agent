@@ -12,7 +12,7 @@ import uuid
 from collections import deque
 from dataclasses import asdict, dataclass
 from time import monotonic, time, time_ns
-from typing import Any, Optional, Sequence, Union
+from typing import Any, Callable, Optional, Sequence, Union
 
 from livekit import rtc
 from livekit.agents import metrics
@@ -226,11 +226,9 @@ class MetricsCollector:
 
         self._room_name = room_name or self.UNKNOWN_ROOM_ID
         self._room_id = room_id or room_name or self.UNKNOWN_ROOM_ID
-        self._fallback_session_id = self._build_fallback_session_id(
-            fallback_session_prefix
-        )
+        self._fallback_session_id = self._build_fallback_id(fallback_session_prefix)
         self._session_id = self._fallback_session_id or self.UNKNOWN_SESSION_ID
-        self._fallback_participant_id = self._build_fallback_participant_id(
+        self._fallback_participant_id = self._build_fallback_id(
             fallback_participant_prefix
         )
         self._participant_id = (
@@ -413,7 +411,7 @@ class MetricsCollector:
                 speech_id = latest
 
         if speech_id:
-            self._record_first_assistant_audio_timestamp(speech_id)
+            self._first_audio_monotonic_by_speech.setdefault(speech_id, monotonic())
             logger.debug(
                 "First assistant audio recorded from state transition: speech_id=%s, old_state=%s, new_state=%s",
                 speech_id,
@@ -572,7 +570,7 @@ class MetricsCollector:
         elif isinstance(collected_metrics, metrics.EOUMetrics):
             speech_id = collected_metrics.speech_id
             if speech_id:
-                self._record_user_speech_end_timestamp(speech_id)
+                self._speech_end_monotonic_by_speech.setdefault(speech_id, monotonic())
                 self._eou_delays[speech_id] = collected_metrics.end_of_utterance_delay
                 self._stt_finalization_delays[speech_id] = (
                     collected_metrics.transcription_delay
@@ -758,12 +756,7 @@ class MetricsCollector:
         stt_finalization_delay = self._stt_finalization_delays.get(speech_id or "", 0.0)
         llm_ttft = turn_metrics.llm.ttft if turn_metrics.llm else 0.0
         tts_ttfb = turn_metrics.tts.ttfb if turn_metrics.tts else 0.0
-        baseline_total_latency = self._compute_conversational_latency_seconds(
-            eou_delay=eou_delay,
-            stt_finalization_delay=stt_finalization_delay,
-            llm_ttft=llm_ttft,
-            tts_ttfb=tts_ttfb,
-        )
+        baseline_total_latency = eou_delay + stt_finalization_delay + llm_ttft + tts_ttfb
         observed_total_latency = self._observed_total_latency_seconds(speech_id or "")
         total_latency = max(
             baseline_total_latency,
@@ -814,7 +807,7 @@ class MetricsCollector:
         fallback_duration: float,
     ) -> Optional[TraceTurn]:
         async with self._trace_lock:
-            turn = self._next_turn_for_stt()
+            turn = self._next_turn_where(lambda candidate: candidate.stt_status != "measured")
             if not turn:
                 return None
             if transcript:
@@ -838,7 +831,7 @@ class MetricsCollector:
         transcription_delay: float,
     ) -> Optional[TraceTurn]:
         async with self._trace_lock:
-            turn = self._next_turn_for_vad()
+            turn = self._next_turn_where(lambda candidate: candidate.vad_duration_ms is None)
             if not turn:
                 return None
             eou_delay_ms = self._duration_to_ms(duration, 0.0)
@@ -854,7 +847,7 @@ class MetricsCollector:
 
     async def _attach_llm_stage(self, *, duration: float, ttft: float) -> Optional[TraceTurn]:
         async with self._trace_lock:
-            turn = self._next_turn_for_llm()
+            turn = self._next_turn_where(lambda candidate: candidate.llm_duration_ms is None)
             if not turn:
                 return None
             turn.prompt_text = turn.user_transcript
@@ -873,7 +866,12 @@ class MetricsCollector:
         ttfb: float,
     ) -> Optional[TraceTurn]:
         async with self._trace_lock:
-            turn = self._next_turn_for_tts()
+            turn = self._next_turn_where(
+                lambda candidate: (
+                    candidate.llm_duration_ms is not None
+                    and candidate.tts_duration_ms is None
+                )
+            )
             if not turn:
                 return None
             turn.tts_duration_ms = self._duration_to_ms(duration, fallback_duration)
@@ -903,16 +901,6 @@ class MetricsCollector:
             llm_ttft_ms=turn.llm_ttft_ms,
             tts_ttfb_ms=turn.tts_ttfb_ms,
         )
-
-    def _compute_conversational_latency_seconds(
-        self,
-        *,
-        eou_delay: float,
-        stt_finalization_delay: float,
-        llm_ttft: float,
-        tts_ttfb: float,
-    ) -> float:
-        return eou_delay + stt_finalization_delay + llm_ttft + tts_ttfb
 
     def _compute_conversational_latency_ms(
         self,
@@ -953,12 +941,6 @@ class MetricsCollector:
             return None
         return max(total_latency_ms - baseline_ms, 0.0)
 
-    def _record_user_speech_end_timestamp(self, speech_id: str) -> None:
-        self._speech_end_monotonic_by_speech.setdefault(speech_id, monotonic())
-
-    def _record_first_assistant_audio_timestamp(self, speech_id: str) -> None:
-        self._first_audio_monotonic_by_speech.setdefault(speech_id, monotonic())
-
     def _discard_pending_speech_id(self, speech_id: str) -> None:
         if not self._pending_speech_ids_for_first_audio:
             return
@@ -977,7 +959,7 @@ class MetricsCollector:
 
     async def _attach_assistant_text(self, assistant_text: str) -> Optional[TraceTurn]:
         async with self._trace_lock:
-            turn = self._next_turn_for_assistant_text()
+            turn = self._next_turn_where(lambda candidate: not candidate.assistant_text)
             if not turn:
                 return None
             turn.assistant_text = assistant_text
@@ -1006,33 +988,12 @@ class MetricsCollector:
         if completed_turn:
             self._schedule_trace_emit(completed_turn)
 
-    def _next_turn_for_stt(self) -> Optional[TraceTurn]:
+    def _next_turn_where(
+        self,
+        predicate: Callable[[TraceTurn], bool],
+    ) -> Optional[TraceTurn]:
         for turn in self._pending_trace_turns:
-            if turn.stt_status != "measured":
-                return turn
-        return None
-
-    def _next_turn_for_vad(self) -> Optional[TraceTurn]:
-        for turn in self._pending_trace_turns:
-            if turn.vad_duration_ms is None:
-                return turn
-        return None
-
-    def _next_turn_for_llm(self) -> Optional[TraceTurn]:
-        for turn in self._pending_trace_turns:
-            if turn.llm_duration_ms is None:
-                return turn
-        return None
-
-    def _next_turn_for_tts(self) -> Optional[TraceTurn]:
-        for turn in self._pending_trace_turns:
-            if turn.llm_duration_ms is not None and turn.tts_duration_ms is None:
-                return turn
-        return None
-
-    def _next_turn_for_assistant_text(self) -> Optional[TraceTurn]:
-        for turn in self._pending_trace_turns:
-            if not turn.assistant_text:
+            if predicate(turn):
                 return turn
         return None
 
@@ -1491,13 +1452,7 @@ class MetricsCollector:
         normalized = value.strip()
         return normalized or None
 
-    def _build_fallback_session_id(self, prefix: Optional[str]) -> Optional[str]:
-        normalized_prefix = self._normalize_optional_text(prefix)
-        if not normalized_prefix:
-            return None
-        return f"{normalized_prefix}_{uuid.uuid4()}"
-
-    def _build_fallback_participant_id(self, prefix: Optional[str]) -> Optional[str]:
+    def _build_fallback_id(self, prefix: Optional[str]) -> Optional[str]:
         normalized_prefix = self._normalize_optional_text(prefix)
         if not normalized_prefix:
             return None

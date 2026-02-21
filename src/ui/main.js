@@ -18,14 +18,10 @@ let muted = false;
 let resizeObserver = null;
 let currentSessionId = null;
 
-let metricsHistory = [];
-let turnCount = 0;
 let averages = {
   eouDelay: [],
   sttFinalization: [],
   llmTtft: [],
-  llmToTtsHandoff: [],
-  ttsTtfb: [],
   voiceGeneration: [],
   totalLatency: [],
 };
@@ -287,16 +283,12 @@ async function disconnectRoom() {
 }
 
 function resetMetrics() {
-  metricsHistory = [];
-  turnCount = 0;
   activeLiveSpeechId = null;
   liveTurnValues = createEmptyLiveTurnValues();
   averages = {
     eouDelay: [],
     sttFinalization: [],
     llmTtft: [],
-    llmToTtsHandoff: [],
-    ttsTtfb: [],
     voiceGeneration: [],
     totalLatency: [],
   };
@@ -516,12 +508,7 @@ function updateLiveMetrics(turn) {
   }
 }
 
-function updateAverages() {
-  updateLiveMetricAverages();
-}
-
 function renderTurn(turn) {
-  metricsHistory.push(turn);
   const latencies = turn.latencies || {};
   const metrics = turn.metrics || {};
 
@@ -537,12 +524,7 @@ function renderTurn(turn) {
   if (isFiniteNumber(llmTtft) && llmTtft > 0) averages.llmTtft.push(llmTtft);
 
   const llmToTtsHandoff = latencies.llm_to_tts_handoff_latency;
-  if (isFiniteNumber(llmToTtsHandoff) && llmToTtsHandoff > 0) {
-    averages.llmToTtsHandoff.push(llmToTtsHandoff);
-  }
-
   const ttsTtfb = metrics.tts?.ttfb;
-  if (isFiniteNumber(ttsTtfb) && ttsTtfb >= 0) averages.ttsTtfb.push(ttsTtfb);
   if (isFiniteNumber(llmToTtsHandoff) && llmToTtsHandoff >= 0 && isFiniteNumber(ttsTtfb) && ttsTtfb >= 0) {
     averages.voiceGeneration.push(llmToTtsHandoff + ttsTtfb);
   }
@@ -552,5 +534,5 @@ function renderTurn(turn) {
     averages.totalLatency.push(totalLatency);
   }
 
-  updateAverages();
+  updateLiveMetricAverages();
 }
