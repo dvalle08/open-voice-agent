@@ -173,3 +173,13 @@ def test_build_session_bootstrap_payload_does_not_retry_non_retryable_twirp_erro
 
     assert attempts == 1
     assert sleep_calls == []
+
+
+def test_build_bootstrap_error_payload_hides_exception_details() -> None:
+    payload = session_bootstrap.build_bootstrap_error_payload(
+        RuntimeError("NVIDIA_API_KEY=super-secret")
+    )
+
+    assert payload["error"] == "bootstrap_failed"
+    assert payload["message"] == session_bootstrap.CLIENT_BOOTSTRAP_ERROR_MESSAGE
+    assert "super-secret" not in payload["message"]

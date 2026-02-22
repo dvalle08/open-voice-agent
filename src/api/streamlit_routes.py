@@ -12,7 +12,10 @@ from streamlit.web.server.server_util import make_url_path_regex
 from tornado.routing import PathMatches, Rule
 from tornado.web import Application, RequestHandler
 
-from src.api.session_bootstrap import build_session_bootstrap_payload
+from src.api.session_bootstrap import (
+    build_bootstrap_error_payload,
+    build_session_bootstrap_payload,
+)
 from src.core.logger import logger
 
 SESSION_BOOTSTRAP_ENDPOINT = "session/bootstrap"
@@ -46,7 +49,7 @@ class SessionBootstrapRequestHandler(RequestHandler):
         except Exception as exc:  # pragma: no cover - integration behavior
             logger.exception("Failed to create session bootstrap payload: %s", exc)
             self._write_json(
-                {"error": "bootstrap_failed", "message": str(exc)},
+                build_bootstrap_error_payload(exc),
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
             return

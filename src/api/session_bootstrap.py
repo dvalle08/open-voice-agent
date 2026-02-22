@@ -25,6 +25,7 @@ RETRYABLE_TWIRP_CODES = {
     livekit_api.TwirpErrorCode.UNAVAILABLE,
     livekit_api.TwirpErrorCode.UNKNOWN,
 }
+CLIENT_BOOTSTRAP_ERROR_MESSAGE = "Could not initialize voice session. Please try again."
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,14 @@ def _is_retryable_bootstrap_error(exc: Exception) -> bool:
     return False
 
 
+def build_bootstrap_error_payload(_: Exception | None = None) -> dict[str, str]:
+    """Build a client-safe error response payload without internal details."""
+    return {
+        "error": "bootstrap_failed",
+        "message": CLIENT_BOOTSTRAP_ERROR_MESSAGE,
+    }
+
+
 class _SessionBootstrapHandler(BaseHTTPRequestHandler):
     server_version = "OpenVoiceAgentBootstrap/1.0"
     protocol_version = "HTTP/1.1"
@@ -124,7 +133,7 @@ class _SessionBootstrapHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # pragma: no cover - exercised by integration flow
             logger.exception("Failed to create session bootstrap payload: %s", exc)
             self._write_json(
-                {"error": "bootstrap_failed", "message": str(exc)},
+                build_bootstrap_error_payload(exc),
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
             return

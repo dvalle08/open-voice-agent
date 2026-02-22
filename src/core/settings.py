@@ -14,21 +14,32 @@ ENV_FILE = BASE_DIR / ".env"
 load_dotenv(ENV_FILE, override=True)
 logger.info(f"Loaded environment from: {ENV_FILE}")
 
+SENSITIVE_KEY_MARKERS = ("key", "token", "secret", "password")
+
+
+def _is_sensitive_key(key: str) -> bool:
+    key_lower = key.lower()
+    return any(marker in key_lower for marker in SENSITIVE_KEY_MARKERS)
+
+
+def _redact_sensitive_value(value: object) -> str:
+    if value is None:
+        return "<not set>"
+    if isinstance(value, str) and not value:
+        return "<not set>"
+    return "<redacted>"
+
 
 def mask_sensitive_data(data: dict) -> dict:
     masked = {}
-    sensitive_keys = ["key", "token", "secret", "password"]
 
     for key, value in data.items():
+        if _is_sensitive_key(key):
+            masked[key] = _redact_sensitive_value(value)
+            continue
+
         if isinstance(value, dict):
             masked[key] = mask_sensitive_data(value)
-        elif isinstance(value, str) and any(s in key.lower() for s in sensitive_keys):
-            if not value:
-                masked[key] = "<not set>"
-            elif len(value) <= 4:
-                masked[key] = "***"
-            else:
-                masked[key] = f"{value[:4]}...{value[-4:]}"
         else:
             masked[key] = value
 
@@ -227,5 +238,13 @@ try:
     logger.info(f"Settings loaded: {json.dumps(masked_settings, indent=2)}")
 
 except ValidationError as e:
-    logger.exception(f"Error validating settings: {e.json()}")
+    safe_errors = e.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    )
+    logger.exception(
+        "Error validating settings: %s",
+        json.dumps(safe_errors),
+    )
     raise
