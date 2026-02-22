@@ -5,12 +5,26 @@ import threading
 from dataclasses import asdict, dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from time import sleep
 from typing import Any
 from uuid import uuid4
+
+from livekit import api as livekit_api
 
 from src.api.livekit_tokens import create_room_token, ensure_agent_dispatched_sync
 from src.core.logger import logger
 from src.core.settings import settings
+
+BOOTSTRAP_MAX_ATTEMPTS = 4
+BOOTSTRAP_RETRY_DELAYS_SEC = (0.25, 0.5, 1.0)
+RETRYABLE_TWIRP_CODES = {
+    livekit_api.TwirpErrorCode.ABORTED,
+    livekit_api.TwirpErrorCode.DEADLINE_EXCEEDED,
+    livekit_api.TwirpErrorCode.INTERNAL,
+    livekit_api.TwirpErrorCode.RESOURCE_EXHAUSTED,
+    livekit_api.TwirpErrorCode.UNAVAILABLE,
+    livekit_api.TwirpErrorCode.UNKNOWN,
+}
 
 
 @dataclass(frozen=True)
@@ -25,6 +39,29 @@ class SessionBootstrapPayload:
 
 def build_session_bootstrap_payload() -> SessionBootstrapPayload:
     """Create a brand-new room/token/dispatch payload for a connect attempt."""
+    attempt = 1
+    while True:
+        try:
+            return _build_session_bootstrap_payload_once()
+        except Exception as exc:
+            if attempt >= BOOTSTRAP_MAX_ATTEMPTS or not _is_retryable_bootstrap_error(exc):
+                raise
+
+            delay = BOOTSTRAP_RETRY_DELAYS_SEC[min(attempt - 1, len(BOOTSTRAP_RETRY_DELAYS_SEC) - 1)]
+            logger.warning(
+                "Bootstrap payload attempt %s/%s failed with retryable error (%s): %s; retrying in %.2fs",
+                attempt,
+                BOOTSTRAP_MAX_ATTEMPTS,
+                type(exc).__name__,
+                exc,
+                delay,
+            )
+            sleep(delay)
+            attempt += 1
+
+
+def _build_session_bootstrap_payload_once() -> SessionBootstrapPayload:
+    """Create one room/token/dispatch payload without retries."""
     room_name = f"voice-{uuid4().hex[:8]}"
     token_data = create_room_token(room_name=room_name)
     session_id = str(uuid4())
@@ -63,6 +100,14 @@ def build_session_bootstrap_payload() -> SessionBootstrapPayload:
         payload.dispatch_worker_id or "unassigned",
     )
     return payload
+
+
+def _is_retryable_bootstrap_error(exc: Exception) -> bool:
+    if isinstance(exc, livekit_api.TwirpError):
+        return exc.code in RETRYABLE_TWIRP_CODES
+    if isinstance(exc, (TimeoutError, OSError, ConnectionError)):
+        return True
+    return False
 
 
 class _SessionBootstrapHandler(BaseHTTPRequestHandler):

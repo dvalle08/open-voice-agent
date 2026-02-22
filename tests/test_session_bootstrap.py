@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from livekit import api as livekit_api
 
 from src.api import session_bootstrap
 from src.api.livekit_tokens import LiveKitToken
@@ -95,3 +96,80 @@ def test_build_session_bootstrap_payload_handles_missing_worker_assignment(
 
     assert payload.dispatch_id == "dispatch-1"
     assert payload.dispatch_worker_id is None
+
+
+def test_build_session_bootstrap_payload_retries_transient_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(
+        session_bootstrap,
+        "create_room_token",
+        lambda *, room_name: LiveKitToken(
+            token=f"token-{room_name}",
+            room_name=room_name,
+            identity="web-retry",
+        ),
+    )
+
+    def fake_ensure_dispatch(**_: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise TimeoutError("worker init timeout")
+        return _make_dispatch(dispatch_id="dispatch-retry", worker_id="worker-ready")
+
+    monkeypatch.setattr(
+        session_bootstrap,
+        "ensure_agent_dispatched_sync",
+        fake_ensure_dispatch,
+    )
+    monkeypatch.setattr(session_bootstrap, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    payload = session_bootstrap.build_session_bootstrap_payload()
+
+    assert payload.dispatch_id == "dispatch-retry"
+    assert payload.dispatch_worker_id == "worker-ready"
+    assert attempts == 3
+    assert sleep_calls == [0.25, 0.5]
+
+
+def test_build_session_bootstrap_payload_does_not_retry_non_retryable_twirp_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(
+        session_bootstrap,
+        "create_room_token",
+        lambda *, room_name: LiveKitToken(
+            token=f"token-{room_name}",
+            room_name=room_name,
+            identity="web-fail",
+        ),
+    )
+
+    def fake_ensure_dispatch(**_: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        raise livekit_api.TwirpError(
+            code=livekit_api.TwirpErrorCode.UNAUTHENTICATED,
+            msg="invalid api key",
+            status=401,
+        )
+
+    monkeypatch.setattr(
+        session_bootstrap,
+        "ensure_agent_dispatched_sync",
+        fake_ensure_dispatch,
+    )
+    monkeypatch.setattr(session_bootstrap, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    with pytest.raises(livekit_api.TwirpError):
+        session_bootstrap.build_session_bootstrap_payload()
+
+    assert attempts == 1
+    assert sleep_calls == []

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import streamlit as st
 
 from src.api.session_bootstrap import ensure_session_bootstrap_server
+from src.api.streamlit_routes import build_session_bootstrap_path
 from src.core.settings import settings
 
 UI_DIR = Path(__file__).parent / "ui"
@@ -105,11 +107,18 @@ def main() -> None:
         st.error("LIVEKIT_API_KEY or LIVEKIT_API_SECRET is not set.")
         st.stop()
 
-    try:
-        session_bootstrap_url = ensure_session_bootstrap_server()
-    except Exception as exc:
-        st.error(f"Failed to start session bootstrap service: {exc}")
-        st.stop()
+    use_streamlit_route = os.getenv(
+        "OPEN_VOICE_USE_STREAMLIT_BOOTSTRAP_ROUTE", "0"
+    ).lower() in {"1", "true", "yes"}
+
+    if use_streamlit_route:
+        session_bootstrap_url = build_session_bootstrap_path()
+    else:
+        try:
+            session_bootstrap_url = ensure_session_bootstrap_server()
+        except Exception as exc:
+            st.error(f"Failed to start session bootstrap service: {exc}")
+            st.stop()
 
     render_client(
         livekit_url=settings.livekit.LIVEKIT_URL,
