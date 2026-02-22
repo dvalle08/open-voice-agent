@@ -119,6 +119,22 @@ class VoiceSettings(CoreSettings):
         le=1.0,
         description="VAD activation threshold (higher = less sensitive, 0.5 is Silero default)",
     )
+    MIN_ENDPOINTING_DELAY: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=10.0,
+        description="Minimum endpointing delay (seconds) before committing user turn",
+    )
+    MAX_ENDPOINTING_DELAY: float = Field(
+        default=1.0,
+        ge=0.1,
+        le=10.0,
+        description="Maximum endpointing delay (seconds) when turn detector expects continuation",
+    )
+    PREEMPTIVE_GENERATION: bool = Field(
+        default=True,
+        description="Enable speculative LLM/TTS generation before final turn commit",
+    )
 
 
 class STTSettings(CoreSettings):
@@ -185,6 +201,11 @@ class LiveKitSettings(CoreSettings):
     LIVEKIT_API_SECRET: Optional[str] = Field(default=None)
     LIVEKIT_AGENT_NAME: str = Field(default="open-voice-agent")
     LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=1, ge=0)
+    LIVEKIT_JOB_MEMORY_WARN_MB: float = Field(
+        default=1024,
+        gt=0,
+        description="Per-job memory warning threshold in MB",
+    )
 
 
 class LangfuseSettings(CoreSettings):

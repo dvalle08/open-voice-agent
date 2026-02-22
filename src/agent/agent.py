@@ -20,12 +20,14 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from livekit.agents.types import  NOT_GIVEN
 
 from src.agent.graph import create_graph, create_stt
 from src.agent.metrics_collector import MetricsCollector
 from src.plugins.pocket_tts import PocketTTS
 from src.core.settings import settings
 from src.core.logger import logger
+from livekit.agents.metrics import LLMMetrics, STTMetrics, TTSMetrics, VADMetrics, EOUMetrics, AgentMetrics
 
 _langfuse_tracer_provider: TracerProvider | None = None
 
@@ -143,14 +145,86 @@ class Assistant(Agent):
                 )
             )
 
+        async def log_metrics_event(metrics: AgentMetrics) -> None:
+            if isinstance(metrics, VADMetrics):
+                logger.info("\n--- VAD Metrics ---")
+                logger.info("Idle Time: %.4fs", metrics.idle_time)
+                logger.info("Inference Count: %s", metrics.inference_count)
+                logger.info("Inference Duration Total: %.4fs", metrics.inference_duration_total)
+                
+                logger.info("--------------------------------\n")
+                return
+
+            if isinstance(metrics, EOUMetrics):
+                decision_overhead = max(
+                    metrics.end_of_utterance_delay - metrics.transcription_delay,
+                    0.0,
+                )
+                logger.info("\n--- End of Utterance Metrics ---")
+                logger.info("Speech ID: %s", metrics.speech_id or "n/a")
+    
+                logger.info("User Turn Completed Delay: %.4fs", metrics.on_user_turn_completed_delay)
+                logger.info("End of Utterance Delay: %.4fs", metrics.end_of_utterance_delay)
+                logger.info("Transcription Delay: %.4fs", metrics.transcription_delay)
+                logger.info(
+                    "Decision Overhead (EOU - STT Finalization): %.4fs",
+                    decision_overhead,
+                )
+
+                logger.info("--------------------------------\n")
+                return
+
+            if isinstance(metrics, STTMetrics):
+                logger.info("\n--- STT Metrics ---")
+                logger.info("Request ID: %s", metrics.request_id)
+                logger.info("Duration: %.4fs", metrics.duration)
+                logger.info("Audio Duration: %.4fs", metrics.audio_duration)
+                logger.info("Streamed: %s", "Yes" if metrics.streamed else "No")
+                logger.info("------------------\n")
+                return
+
+            if isinstance(metrics, LLMMetrics):
+                logger.info("\n--- LLM Metrics ---")
+                logger.info("Speech ID: %s", metrics.speech_id or "n/a")
+                logger.info("Request ID: %s", metrics.request_id)
+                logger.info("Prompt Tokens: %s", metrics.prompt_tokens)
+                logger.info("Completion Tokens: %s", metrics.completion_tokens)
+                logger.info("Tokens per second: %.4f", metrics.tokens_per_second)
+                logger.info("TTFT: %.4fs", metrics.ttft)
+                logger.info("------------------\n")
+                return
+
+            if isinstance(metrics, TTSMetrics):
+                logger.info("\n--- TTS Metrics ---")
+                logger.info("Speech ID: %s", metrics.speech_id or "n/a")
+                logger.info("Request ID: %s", metrics.request_id)
+                logger.info("TTFB: %.4fs", metrics.ttfb)
+                logger.info("Duration: %.4fs", metrics.duration)
+                logger.info("Audio Duration: %.4fs", metrics.audio_duration)
+                logger.info("Streamed: %s", "Yes" if metrics.streamed else "No")
+                logger.info("------------------\n")
+
+                return
+
+            metric_type = getattr(metrics, "type", type(metrics).__name__)
+            logger.info("Unhandled metrics event type=%s payload=%s", metric_type, metrics)
+
+        # def metrics_log_wrapper(event: MetricsCollectedEvent) -> None:
+        #     asyncio.create_task(log_metrics_event(event.metrics))
+            
         self.session.on("metrics_collected", metrics_wrapper)
+        #self.session.on("metrics_collected", metrics_log_wrapper)
         self.session.on("user_input_transcribed", transcript_wrapper)
         self.session.on("conversation_item_added", conversation_item_wrapper)
         self.session.on("speech_created", speech_created_wrapper)
         self.session.on("agent_state_changed", agent_state_changed_wrapper)
 
 
-server = AgentServer(num_idle_processes=settings.livekit.LIVEKIT_NUM_IDLE_PROCESSES)
+
+server = AgentServer(
+    num_idle_processes=settings.livekit.LIVEKIT_NUM_IDLE_PROCESSES,
+    job_memory_warn_mb=settings.livekit.LIVEKIT_JOB_MEMORY_WARN_MB,
+)
 
 
 @server.rtc_session(agent_name=settings.livekit.LIVEKIT_AGENT_NAME)
@@ -225,6 +299,9 @@ async def session_handler(ctx: agents.JobContext) -> None:
             activation_threshold=settings.voice.VAD_THRESHOLD,
         ),
         turn_detection=MultilingualModel(),
+        min_endpointing_delay=settings.voice.MIN_ENDPOINTING_DELAY,
+        max_endpointing_delay=settings.voice.MAX_ENDPOINTING_DELAY,
+        preemptive_generation=settings.voice.PREEMPTIVE_GENERATION,
     )
 
     await session.start(
