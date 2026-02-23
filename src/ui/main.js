@@ -11,6 +11,7 @@ const ctx = canvas.getContext("2d");
 
 let room = null;
 let localTrack = null;
+let remoteAudioTrack = null;
 let analyser = null;
 let audioContext = null;
 let animationId = null;
@@ -20,6 +21,7 @@ let currentSessionId = null;
 let currentRoomName = null;
 let activeConnectionSeq = 0;
 let connectionState = "idle";
+const AUDIO_DIAGNOSTICS = false;
 
 const CONNECTION_STATES = Object.freeze({
   IDLE: "idle",
@@ -89,6 +91,76 @@ function clearRemoteAudio() {
   remoteAudio.pause();
   remoteAudio.srcObject = null;
   remoteAudio.removeAttribute("src");
+  remoteAudio.load();
+}
+
+function getMediaTrackSettings(track) {
+  const mediaTrack = track && track.mediaStreamTrack;
+  if (!mediaTrack || typeof mediaTrack.getSettings !== "function") {
+    return {};
+  }
+  try {
+    return mediaTrack.getSettings() || {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function logAudioDiagnostics(eventName, details = {}) {
+  if (!AUDIO_DIAGNOSTICS) return;
+  console.info("[audio-diagnostics]", eventName, {
+    timestamp: new Date().toISOString(),
+    sessionId: currentSessionId,
+    roomName: currentRoomName,
+    ...details,
+  });
+}
+
+function detachRemoteAudioTrack(track, reason) {
+  if (!track || track.kind !== Track.Kind.Audio) return;
+
+  try {
+    track.detach(remoteAudio);
+  } catch (error) {
+    console.warn("Failed to detach remote audio track:", error);
+  }
+
+  if (remoteAudioTrack === track) {
+    remoteAudioTrack = null;
+  }
+  clearRemoteAudio();
+  logAudioDiagnostics("remote_track_detached", {
+    reason,
+    trackSid: track.sid || null,
+  });
+}
+
+function attachRemoteAudioTrack(track, participant) {
+  if (!track || track.kind !== Track.Kind.Audio) return;
+
+  if (remoteAudioTrack && remoteAudioTrack !== track) {
+    detachRemoteAudioTrack(remoteAudioTrack, "replaced_by_new_track");
+  }
+
+  remoteAudioTrack = track;
+  track.attach(remoteAudio);
+
+  const trackSettings = getMediaTrackSettings(track);
+  logAudioDiagnostics("remote_track_subscribed", {
+    participantIdentity: participant && participant.identity ? participant.identity : null,
+    trackSid: track.sid || null,
+    trackSampleRate: trackSettings.sampleRate ?? null,
+    trackSettings,
+    remotePlaybackRate: remoteAudio.playbackRate,
+    remoteDefaultPlaybackRate: remoteAudio.defaultPlaybackRate,
+  });
+
+  const playPromise = remoteAudio.play();
+  if (playPromise && typeof playPromise.catch === "function") {
+    playPromise.catch((error) => {
+      console.warn("Remote audio playback did not auto-start:", error);
+    });
+  }
 }
 
 function clearWave() {
@@ -200,6 +272,13 @@ function setupAnalyser(track) {
   const source = audioContext.createMediaStreamSource(stream);
   source.connect(analyser);
 
+  const localTrackSettings = getMediaTrackSettings(track);
+  logAudioDiagnostics("local_analyser_ready", {
+    localTrackSampleRate: localTrackSettings.sampleRate ?? null,
+    localTrackSettings,
+    audioContextSampleRate: audioContext.sampleRate,
+  });
+
   drawWave();
 }
 
@@ -256,14 +335,28 @@ async function connectToRoom() {
     nextRoom = new Room();
     room = nextRoom;
     resetMetrics();
-    clearRemoteAudio();
+    if (remoteAudioTrack) {
+      detachRemoteAudioTrack(remoteAudioTrack, "before_new_room_connect");
+    } else {
+      clearRemoteAudio();
+    }
 
-    nextRoom.on(RoomEvent.TrackSubscribed, (track) => {
+    nextRoom.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
       if (room !== nextRoom || connectionSeq !== activeConnectionSeq) return;
       if (track.kind === Track.Kind.Audio) {
-        track.attach(remoteAudio);
+        attachRemoteAudioTrack(track, participant);
         setStatus("Agent streaming", "connected");
       }
+    });
+
+    nextRoom.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+      if (room !== nextRoom || connectionSeq !== activeConnectionSeq) return;
+      if (track.kind !== Track.Kind.Audio) return;
+      detachRemoteAudioTrack(track, "track_unsubscribed");
+      logAudioDiagnostics("remote_track_unsubscribed", {
+        participantIdentity: participant && participant.identity ? participant.identity : null,
+        trackSid: track.sid || null,
+      });
     });
 
     nextRoom.on(RoomEvent.Disconnected, () => {
@@ -277,7 +370,11 @@ async function connectToRoom() {
       currentRoomName = null;
       muted = false;
       resetMuteButton();
-      clearRemoteAudio();
+      if (remoteAudioTrack) {
+        detachRemoteAudioTrack(remoteAudioTrack, "room_disconnected");
+      } else {
+        clearRemoteAudio();
+      }
       cleanupWave();
       resetMetrics();
       setConnectionState(CONNECTION_STATES.IDLE);
@@ -341,7 +438,11 @@ async function connectToRoom() {
     currentRoomName = null;
     muted = false;
     resetMuteButton();
-    clearRemoteAudio();
+    if (remoteAudioTrack) {
+      detachRemoteAudioTrack(remoteAudioTrack, "connect_error");
+    } else {
+      clearRemoteAudio();
+    }
     cleanupWave();
     resetMetrics();
     setConnectionState(CONNECTION_STATES.IDLE);
@@ -383,7 +484,11 @@ async function disconnectRoom() {
       localTrack.stop();
       localTrack = null;
     }
-    clearRemoteAudio();
+    if (remoteAudioTrack) {
+      detachRemoteAudioTrack(remoteAudioTrack, "manual_disconnect");
+    } else {
+      clearRemoteAudio();
+    }
     await disconnectingRoom.disconnect();
   } finally {
     if (room === disconnectingRoom) {

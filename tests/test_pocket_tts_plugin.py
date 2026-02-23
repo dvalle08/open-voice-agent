@@ -21,6 +21,7 @@ def pocket_plugin(monkeypatch: pytest.MonkeyPatch) -> Any:
     calls: dict[str, Any] = {
         "num_chunks": 2,
         "chunk_samples": 9600,
+        "generated_chunks": 0,
         "per_chunk_sleep": 0.0,
         "pause_after_first_chunk": False,
         "allow_generation_finish": None,
@@ -61,6 +62,7 @@ def pocket_plugin(monkeypatch: pytest.MonkeyPatch) -> Any:
                     if calls["per_chunk_sleep"] > 0:
                         time.sleep(calls["per_chunk_sleep"])
 
+                    calls["generated_chunks"] += 1
                     yield np.linspace(
                         -0.25 + i * 0.05,
                         0.25 - i * 0.05,
@@ -103,17 +105,26 @@ def test_fallback_voice_and_missing_voice_error(pocket_plugin: Any) -> None:
         module.PocketTTS(voice="missing")
 
 
-def test_tensor_to_pcm_bytes_handles_channel_first_and_last(pocket_plugin: Any) -> None:
+def test_rejects_non_positive_max_concurrent_generations(pocket_plugin: Any) -> None:
     module = pocket_plugin["module"]
 
-    channel_first = np.array(
-        [[1.0, -1.0, 0.5, -0.5], [-1.0, 1.0, -0.5, 0.5]],
-        dtype=np.float32,
-    )
-    channel_last = np.array(
-        [[1.0, -1.0], [-1.0, 1.0], [0.5, -0.5], [-0.5, 0.5]],
-        dtype=np.float32,
-    )
+    with pytest.raises(ValueError, match="max_concurrent_generations must be >= 1"):
+        module.PocketTTS(voice="alba", max_concurrent_generations=0)
+
+
+def test_rejects_non_native_sample_rate(pocket_plugin: Any) -> None:
+    module = pocket_plugin["module"]
+
+    with pytest.raises(ValueError, match="only supports native sample rate"):
+        module.PocketTTS(voice="alba", sample_rate=48000)
+
+
+def test_tensor_to_pcm_bytes_handles_channel_first_and_last(pocket_plugin: Any) -> None:
+    module = pocket_plugin["module"]
+    samples = np.array([1.0, -1.0, 0.5, -0.5] * 3, dtype=np.float32)
+
+    channel_first = np.stack([samples, -samples], axis=0)
+    channel_last = np.stack([samples, -samples], axis=1)
 
     pcm_first = module._tensor_to_pcm_bytes(
         audio_chunk=channel_first,
@@ -126,8 +137,20 @@ def test_tensor_to_pcm_bytes_handles_channel_first_and_last(pocket_plugin: Any) 
         native_sample_rate=24000,
     )
 
-    assert len(pcm_first) == 8
-    assert len(pcm_last) == 8
+    assert len(pcm_first) == 24
+    assert len(pcm_last) == 24
+
+
+def test_tensor_to_pcm_bytes_empty_returns_empty(pocket_plugin: Any) -> None:
+    module = pocket_plugin["module"]
+
+    pcm = module._tensor_to_pcm_bytes(
+        audio_chunk=np.array([], dtype=np.float32),
+        output_sample_rate=24000,
+        native_sample_rate=24000,
+    )
+
+    assert pcm == b""
 
 
 def test_tensor_to_pcm_bytes_rejects_unsupported_shape(pocket_plugin: Any) -> None:
@@ -139,6 +162,30 @@ def test_tensor_to_pcm_bytes_rejects_unsupported_shape(pocket_plugin: Any) -> No
             audio_chunk=invalid,
             output_sample_rate=24000,
             native_sample_rate=24000,
+        )
+
+
+@pytest.mark.parametrize(
+    ("output_sample_rate", "native_sample_rate", "match"),
+    [
+        (0, 24000, "output_sample_rate must be positive"),
+        (48000, 0, "native_sample_rate must be positive"),
+    ],
+)
+def test_tensor_to_pcm_bytes_rejects_non_positive_sample_rates(
+    pocket_plugin: Any,
+    output_sample_rate: int,
+    native_sample_rate: int,
+    match: str,
+) -> None:
+    module = pocket_plugin["module"]
+    src = np.array([0.0, 0.5, -0.5], dtype=np.float32)
+
+    with pytest.raises(ValueError, match=match):
+        module._tensor_to_pcm_bytes(
+            audio_chunk=src,
+            output_sample_rate=output_sample_rate,
+            native_sample_rate=native_sample_rate,
         )
 
 
@@ -156,9 +203,48 @@ def test_tensor_to_pcm_bytes_resamples_to_configured_rate(pocket_plugin: Any) ->
     assert len(pcm) == 20
 
 
+def test_tensor_to_pcm_bytes_clips_before_pcm_conversion(pocket_plugin: Any) -> None:
+    module = pocket_plugin["module"]
+    src = np.array([-1.5, -1.0, 0.0, 1.0, 1.2], dtype=np.float32)
+
+    pcm = module._tensor_to_pcm_bytes(
+        audio_chunk=src,
+        output_sample_rate=24000,
+        native_sample_rate=24000,
+    )
+    pcm_np = np.frombuffer(pcm, dtype=np.int16)
+
+    assert np.array_equal(
+        pcm_np,
+        np.array([-32767, -32767, 0, 32767, 32767], dtype=np.int16),
+    )
+
+
+def test_tensor_to_pcm_bytes_ambiguous_small_2d_defaults_to_samples_channels(
+    pocket_plugin: Any,
+) -> None:
+    module = pocket_plugin["module"]
+    ambiguous = np.array(
+        [
+            [1.0, 1.0, 1.0, 1.0],
+            [-1.0, -1.0, -1.0, -1.0],
+        ],
+        dtype=np.float32,
+    )
+
+    pcm = module._tensor_to_pcm_bytes(
+        audio_chunk=ambiguous,
+        output_sample_rate=24000,
+        native_sample_rate=24000,
+    )
+    pcm_np = np.frombuffer(pcm, dtype=np.int16)
+
+    assert np.array_equal(pcm_np, np.array([32767, -32767], dtype=np.int16))
+
+
 def test_stream_and_chunked_emit_audio_without_synthesize_attribute_error(pocket_plugin: Any) -> None:
     module = pocket_plugin["module"]
-    tts_v = module.PocketTTS(voice="alba", sample_rate=48000)
+    tts_v = module.PocketTTS(voice="alba")
 
     async def _run() -> None:
         async with tts_v.stream() as synth_stream:
@@ -168,7 +254,7 @@ def test_stream_and_chunked_emit_audio_without_synthesize_attribute_error(pocket
 
         assert streamed_events
         assert streamed_events[-1].is_final
-        assert all(event.frame.sample_rate == 48000 for event in streamed_events)
+        assert all(event.frame.sample_rate == 24000 for event in streamed_events)
         assert all(event.frame.num_channels == 1 for event in streamed_events)
         assert streamed_events[0].segment_id.startswith("SEG_")
 
@@ -234,7 +320,7 @@ def test_chunked_generation_serializes_concurrent_requests(pocket_plugin: Any) -
     pocket_plugin["per_chunk_sleep"] = 0.03
     pocket_plugin["num_chunks"] = 3
 
-    tts_v = module.PocketTTS(voice="alba")
+    tts_v = module.PocketTTS(voice="alba", max_concurrent_generations=1)
 
     async def _run() -> None:
         await asyncio.gather(
@@ -244,6 +330,23 @@ def test_chunked_generation_serializes_concurrent_requests(pocket_plugin: Any) -
 
     asyncio.run(_run())
     assert pocket_plugin["max_active_generations"] == 1
+
+
+def test_chunked_generation_allows_configured_concurrency(pocket_plugin: Any) -> None:
+    module = pocket_plugin["module"]
+    pocket_plugin["per_chunk_sleep"] = 0.03
+    pocket_plugin["num_chunks"] = 3
+
+    tts_v = module.PocketTTS(voice="alba", max_concurrent_generations=2)
+
+    async def _run() -> None:
+        await asyncio.gather(
+            _collect_events(tts_v.synthesize("uno")),
+            _collect_events(tts_v.synthesize("dos")),
+        )
+
+    asyncio.run(_run())
+    assert pocket_plugin["max_active_generations"] >= 2
 
 
 def test_generation_errors_are_mapped_to_api_errors(pocket_plugin: Any) -> None:
@@ -277,6 +380,36 @@ def test_generation_timeout_is_mapped_to_api_timeout_error(pocket_plugin: Any) -
         asyncio.run(_run())
     finally:
         gate.set()
+
+
+def test_timeout_stops_producer_soon_after_unblock(pocket_plugin: Any) -> None:
+    module = pocket_plugin["module"]
+    gate = threading.Event()
+    pocket_plugin["pause_after_first_chunk"] = True
+    pocket_plugin["allow_generation_finish"] = gate
+    pocket_plugin["num_chunks"] = 6
+
+    tts_v = module.PocketTTS(voice="alba")
+    conn_options = APIConnectOptions(max_retry=0, timeout=0.1)
+
+    async def _run() -> None:
+        with pytest.raises(APITimeoutError):
+            await _collect_events(tts_v.synthesize("hola", conn_options=conn_options))
+
+    try:
+        asyncio.run(_run())
+    finally:
+        gate.set()
+
+    for _ in range(50):
+        if pocket_plugin["active_generations"] == 0:
+            break
+        time.sleep(0.01)
+
+    assert pocket_plugin["active_generations"] == 0
+    # On timeout, producer may fetch one more chunk before observing cancel,
+    # but it should not continue consuming the full remaining stream.
+    assert 1 <= pocket_plugin["generated_chunks"] <= 2
 
 
 def test_sanitize_tts_text_removes_markdown_noise(pocket_plugin: Any) -> None:

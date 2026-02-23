@@ -70,7 +70,7 @@ Built on [kyutai/pocket-tts](https://huggingface.co/kyutai/pocket-tts).
 - Extends `tts.TTS` with both `stream()` and `synthesize()` support (explicit `ChunkedStream`)
 - Chunk-progressive synthesis: audio is pushed while generation is still running
 - Timeout-aware generation pipeline with API error mapping (`APITimeoutError`, `APIConnectionError`)
-- Automatic resampling from Pocket native 24kHz to configurable `SAMPLE_RATE_OUTPUT`
+- Native 24kHz output path for stable realtime browser playback
 - Multiple voice support with fallback handling (`voice -> alba`)
 - Generation runs in background thread(s) to keep the async event loop responsive
 

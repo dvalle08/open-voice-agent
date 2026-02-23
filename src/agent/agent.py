@@ -20,7 +20,6 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from livekit.agents.types import  NOT_GIVEN
 
 from src.agent.graph import create_graph, create_stt
 from src.agent.metrics_collector import MetricsCollector
@@ -286,7 +285,6 @@ async def session_handler(ctx: agents.JobContext) -> None:
         voice=settings.voice.POCKET_TTS_VOICE,
         temperature=settings.voice.POCKET_TTS_TEMPERATURE,
         lsd_decode_steps=settings.voice.POCKET_TTS_LSD_DECODE_STEPS,
-        sample_rate=settings.voice.SAMPLE_RATE_OUTPUT,
     )
 
     session = AgentSession(

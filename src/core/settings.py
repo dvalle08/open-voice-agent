@@ -61,7 +61,6 @@ class VoiceSettings(CoreSettings):
         default="alba",
         description="Default voice (alba, marius, javert, jean, fantine, cosette, eponine, azelma) or path to audio file",
     )
-    SAMPLE_RATE_OUTPUT: int = Field(default=48000, gt=0)
     POCKET_TTS_TEMPERATURE: float = Field(
         default=0.7,
         ge=0.0,

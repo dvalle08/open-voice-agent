@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import queue
+import math
 import re
+import threading
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 
 class TTSMetricsCallback(Protocol):
+    # duration is end-to-end wall-clock synth time, not model-only compute time.
     def __call__(self, *, ttfb: float, duration: float, audio_duration: float) -> None: ...
 
 
@@ -59,7 +61,8 @@ class PocketTTS(tts.TTS):
         voice: str = DEFAULT_VOICE,
         temperature: float = 0.7,
         lsd_decode_steps: int = 1,
-        sample_rate: int = 48000,
+        sample_rate: int = NATIVE_SAMPLE_RATE,
+        max_concurrent_generations: int = 1,
         metrics_callback: OptionalTTSMetricsCallback = None,
     ) -> None:
         """Create a new instance of Pocket TTS.
@@ -68,9 +71,22 @@ class PocketTTS(tts.TTS):
             voice: Built-in voice name or path to an audio prompt file.
             temperature: Sampling temperature used by Pocket TTS.
             lsd_decode_steps: Number of LSD decode steps.
-            sample_rate: Requested output sample rate.
+            sample_rate: Output sample rate. Only native 24kHz is supported.
+            max_concurrent_generations: Maximum number of concurrent synthesis tasks
+                for this PocketTTS instance.
             metrics_callback: Optional callback for per-segment generation metrics.
         """
+        if max_concurrent_generations < 1:
+            raise ValueError(
+                "max_concurrent_generations must be >= 1: "
+                f"{max_concurrent_generations}"
+            )
+        if sample_rate != NATIVE_SAMPLE_RATE:
+            raise ValueError(
+                "PocketTTS only supports native sample rate "
+                f"{NATIVE_SAMPLE_RATE}Hz; received {sample_rate}Hz"
+            )
+
         self._output_sample_rate = sample_rate
         self._native_sample_rate = NATIVE_SAMPLE_RATE
 
@@ -83,11 +99,18 @@ class PocketTTS(tts.TTS):
         self._voice = voice
         self._temperature = temperature
         self._lsd_decode_steps = lsd_decode_steps
+        self._max_concurrent_generations = max_concurrent_generations
         self._metrics_callback = metrics_callback
 
         self._model: Any = TTSModel.load_model(temp=temperature, lsd_decode_steps=lsd_decode_steps)
         self._voice_state: Any = self._load_voice_state(voice)
-        self._generation_lock = asyncio.Lock()
+        self._generation_semaphore = asyncio.Semaphore(max_concurrent_generations)
+
+        logger.info(
+            "PocketTTS configured: sample_rate=%sHz max_concurrent_generations=%s",
+            self._output_sample_rate,
+            self._max_concurrent_generations,
+        )
 
     @property
     def model(self) -> str:
@@ -141,7 +164,16 @@ class PocketTTS(tts.TTS):
         text: str,
         conn_options: APIConnectOptions,
     ) -> AsyncIterator[bytes]:
-        items: queue.Queue[bytes | _GenerationError | _GenerationDone] = queue.Queue()
+        items: asyncio.Queue[bytes | _GenerationError | _GenerationDone] = asyncio.Queue()
+        stop_event = threading.Event()
+        loop = asyncio.get_running_loop()
+
+        def _put_item(item: bytes | _GenerationError | _GenerationDone) -> None:
+            try:
+                loop.call_soon_threadsafe(items.put_nowait, item)
+            except RuntimeError:
+                # The event loop is shutting down; drop late producer output.
+                return
 
         def _producer() -> None:
             try:
@@ -150,17 +182,23 @@ class PocketTTS(tts.TTS):
                     text,
                     copy_state=True,
                 ):
+                    if stop_event.is_set():
+                        break
+
                     chunk = _tensor_to_pcm_bytes(
                         audio_chunk=audio_chunk,
                         output_sample_rate=self.sample_rate,
                         native_sample_rate=self._native_sample_rate,
                     )
+                    if stop_event.is_set():
+                        break
                     if chunk:
-                        items.put(chunk)
+                        _put_item(chunk)
             except Exception as e:
-                items.put(_GenerationError(error=e))
+                if not stop_event.is_set():
+                    _put_item(_GenerationError(error=e))
             finally:
-                items.put(_GenerationDone())
+                _put_item(_GenerationDone())
 
         producer_task = asyncio.create_task(
             asyncio.to_thread(_producer),
@@ -174,7 +212,7 @@ class PocketTTS(tts.TTS):
             while True:
                 item: bytes | _GenerationError | _GenerationDone
                 if deadline is None:
-                    item = await asyncio.to_thread(items.get)
+                    item = await items.get()
                 else:
                     remaining = deadline - time.perf_counter()
                     if remaining <= 0:
@@ -182,9 +220,7 @@ class PocketTTS(tts.TTS):
                             f"Pocket TTS synthesis timed out after {conn_options.timeout}s"
                         )
                     try:
-                        item = await asyncio.wait_for(
-                            asyncio.to_thread(items.get), timeout=remaining
-                        )
+                        item = await asyncio.wait_for(items.get(), timeout=remaining)
                     except asyncio.TimeoutError as e:
                         raise APITimeoutError(
                             f"Pocket TTS synthesis timed out after {conn_options.timeout}s"
@@ -198,6 +234,7 @@ class PocketTTS(tts.TTS):
 
                 yield item
         finally:
+            stop_event.set()
             if not producer_task.done():
                 producer_task.cancel()
             with contextlib.suppress(BaseException):
@@ -212,18 +249,47 @@ class PocketTTS(tts.TTS):
     ) -> tuple[float, float, float]:
         start_time = time.perf_counter()
         first_chunk_ttfb = -1.0
+        chunk_count = 0
         total_bytes = 0
 
-        async with self._generation_lock:
+        async with self._generation_semaphore:
             async for chunk in self._generate_audio_stream(text=text, conn_options=conn_options):
                 if first_chunk_ttfb < 0:
                     first_chunk_ttfb = time.perf_counter() - start_time
+                chunk_count += 1
                 total_bytes += len(chunk)
                 output_emitter.push(chunk)
 
-        generation_duration = time.perf_counter() - start_time
+        # Wall-clock synth duration (queueing + model generation + conversion + emit).
+        synth_wall_time = time.perf_counter() - start_time
         audio_duration = _bytes_to_duration(total_bytes=total_bytes, sample_rate=self.sample_rate)
-        return first_chunk_ttfb, generation_duration, audio_duration
+        wall_to_audio_ratio = (
+            synth_wall_time / audio_duration if audio_duration > 0 else 0.0
+        )
+
+        logger.debug(
+            "TTS segment telemetry: chars=%s chunks=%s bytes=%s output_sample_rate=%sHz "
+            "native_sample_rate=%sHz audio_duration=%.3fs synth_wall_time=%.3fs "
+            "wall_to_audio_ratio=%.3f",
+            len(text),
+            chunk_count,
+            total_bytes,
+            self.sample_rate,
+            self._native_sample_rate,
+            audio_duration,
+            synth_wall_time,
+            wall_to_audio_ratio,
+        )
+        if audio_duration > 0 and wall_to_audio_ratio > 2.0:
+            logger.warning(
+                "TTS generation slower than realtime: wall_to_audio_ratio=%.3f "
+                "(output_sample_rate=%sHz, native_sample_rate=%sHz)",
+                wall_to_audio_ratio,
+                self.sample_rate,
+                self._native_sample_rate,
+            )
+
+        return first_chunk_ttfb, synth_wall_time, audio_duration
 
     def _prepare_text_segments(self, text: str) -> list[str]:
         """Normalize text for TTS and split into short chunks for lower tail latency."""
@@ -260,12 +326,12 @@ class PocketChunkedStream(tts.ChunkedStream):
             return
 
         first_chunk_ttfb = -1.0
-        generation_duration = 0.0
+        total_synth_wall_time = 0.0
         audio_duration = 0.0
         for text_segment in text_segments:
             (
                 segment_ttfb,
-                segment_duration,
+                segment_synth_wall_time,
                 segment_audio_duration,
             ) = await pocket_tts._push_generated_audio(
                 text=text_segment,
@@ -274,7 +340,7 @@ class PocketChunkedStream(tts.ChunkedStream):
             )
             if first_chunk_ttfb < 0 and segment_ttfb >= 0:
                 first_chunk_ttfb = segment_ttfb
-            generation_duration += segment_duration
+            total_synth_wall_time += segment_synth_wall_time
             audio_duration += segment_audio_duration
 
         output_emitter.flush()
@@ -282,7 +348,7 @@ class PocketChunkedStream(tts.ChunkedStream):
         if pocket_tts._metrics_callback and first_chunk_ttfb >= 0:
             pocket_tts._metrics_callback(
                 ttfb=first_chunk_ttfb,
-                duration=generation_duration,
+                duration=total_synth_wall_time,
                 audio_duration=audio_duration,
             )
 
@@ -325,18 +391,18 @@ class PocketSynthesizeStream(tts.SynthesizeStream):
         # LiveKit expects one segment per flushed text buffer in streaming mode.
         output_emitter.start_segment(segment_id=shortuuid("SEG_"))
         first_chunk_ttfb = -1.0
-        generation_duration = 0.0
+        total_synth_wall_time = 0.0
         audio_duration = 0.0
         try:
             for text_segment in text_segments:
                 (
                     segment_ttfb,
-                    segment_duration,
+                    segment_synth_wall_time,
                     segment_audio_duration,
                 ) = await self._synthesize_segment(text_segment, output_emitter)
                 if first_chunk_ttfb < 0 and segment_ttfb >= 0:
                     first_chunk_ttfb = segment_ttfb
-                generation_duration += segment_duration
+                total_synth_wall_time += segment_synth_wall_time
                 audio_duration += segment_audio_duration
         finally:
             output_emitter.end_segment()
@@ -344,7 +410,7 @@ class PocketSynthesizeStream(tts.SynthesizeStream):
         if pocket_tts._metrics_callback and first_chunk_ttfb >= 0:
             pocket_tts._metrics_callback(
                 ttfb=first_chunk_ttfb,
-                duration=generation_duration,
+                duration=total_synth_wall_time,
                 audio_duration=audio_duration,
             )
 
@@ -449,6 +515,11 @@ def _tensor_to_pcm_bytes(
     output_sample_rate: int,
     native_sample_rate: int,
 ) -> bytes:
+    if output_sample_rate <= 0:
+        raise ValueError(f"output_sample_rate must be positive: {output_sample_rate}")
+    if native_sample_rate <= 0:
+        raise ValueError(f"native_sample_rate must be positive: {native_sample_rate}")
+
     audio = audio_chunk
     if hasattr(audio, "detach"):
         audio = audio.detach()
@@ -464,17 +535,29 @@ def _tensor_to_pcm_bytes(
     if audio_np.ndim > 1:
         if audio_np.ndim != 2:
             raise ValueError(f"unsupported audio tensor shape: {audio_np.shape}")
-        # Common layouts are [channels, samples] or [samples, channels].
-        if audio_np.shape[0] <= audio_np.shape[1]:
-            audio_np = np.mean(audio_np, axis=0)
+        dim0, dim1 = audio_np.shape
+        dim0_looks_like_channels = dim0 <= 8
+        dim1_looks_like_channels = dim1 <= 8
+
+        # Prefer the axis with a "small" channel-like size. For ambiguous cases,
+        # default to [samples, channels]. If neither axis looks channel-like,
+        # pick the smaller axis as channels.
+        if dim0_looks_like_channels and not dim1_looks_like_channels:
+            channel_axis = 0
+        elif dim1_looks_like_channels and not dim0_looks_like_channels:
+            channel_axis = 1
+        elif dim0_looks_like_channels and dim1_looks_like_channels:
+            channel_axis = 1
         else:
-            audio_np = np.mean(audio_np, axis=1)
+            channel_axis = 1 if dim1 < dim0 else 0
+
+        audio_np = np.mean(audio_np, axis=channel_axis)
 
     if output_sample_rate != native_sample_rate:
-        num_samples_output = int(round(len(audio_np) * output_sample_rate / native_sample_rate))
-        if num_samples_output <= 0:
-            return b""
-        audio_np = signal.resample(audio_np, num_samples_output)
+        ratio_gcd = math.gcd(native_sample_rate, output_sample_rate)
+        up = output_sample_rate // ratio_gcd
+        down = native_sample_rate // ratio_gcd
+        audio_np = signal.resample_poly(audio_np, up=up, down=down)
 
     audio_np = np.clip(audio_np, -1.0, 1.0)
     audio_int16 = (audio_np * 32767.0).astype(np.int16, copy=False)
