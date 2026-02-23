@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import math
 import re
 import threading
 import time
@@ -13,7 +12,6 @@ from typing import Any, Protocol, cast
 
 import numpy as np
 from pocket_tts import TTSModel
-from scipy import signal
 
 from livekit.agents import APIConnectionError, APITimeoutError, tts
 from livekit.agents.types import APIConnectOptions, DEFAULT_API_CONNECT_OPTIONS
@@ -87,12 +85,9 @@ class PocketTTS(tts.TTS):
                 f"{NATIVE_SAMPLE_RATE}Hz; received {sample_rate}Hz"
             )
 
-        self._output_sample_rate = sample_rate
-        self._native_sample_rate = NATIVE_SAMPLE_RATE
-
         super().__init__(
             capabilities=tts.TTSCapabilities(streaming=True, aligned_transcript=False),
-            sample_rate=self._output_sample_rate,
+            sample_rate=sample_rate,
             num_channels=1,
         )
 
@@ -108,7 +103,7 @@ class PocketTTS(tts.TTS):
 
         logger.info(
             "PocketTTS configured: sample_rate=%sHz max_concurrent_generations=%s",
-            self._output_sample_rate,
+            self.sample_rate,
             self._max_concurrent_generations,
         )
 
@@ -187,8 +182,6 @@ class PocketTTS(tts.TTS):
 
                     chunk = _tensor_to_pcm_bytes(
                         audio_chunk=audio_chunk,
-                        output_sample_rate=self.sample_rate,
-                        native_sample_rate=self._native_sample_rate,
                     )
                     if stop_event.is_set():
                         break
@@ -268,14 +261,13 @@ class PocketTTS(tts.TTS):
         )
 
         logger.debug(
-            "TTS segment telemetry: chars=%s chunks=%s bytes=%s output_sample_rate=%sHz "
-            "native_sample_rate=%sHz audio_duration=%.3fs synth_wall_time=%.3fs "
+            "TTS segment telemetry: chars=%s chunks=%s bytes=%s sample_rate=%sHz "
+            "audio_duration=%.3fs synth_wall_time=%.3fs "
             "wall_to_audio_ratio=%.3f",
             len(text),
             chunk_count,
             total_bytes,
             self.sample_rate,
-            self._native_sample_rate,
             audio_duration,
             synth_wall_time,
             wall_to_audio_ratio,
@@ -283,10 +275,9 @@ class PocketTTS(tts.TTS):
         if audio_duration > 0 and wall_to_audio_ratio > 2.0:
             logger.warning(
                 "TTS generation slower than realtime: wall_to_audio_ratio=%.3f "
-                "(output_sample_rate=%sHz, native_sample_rate=%sHz)",
+                "(sample_rate=%sHz)",
                 wall_to_audio_ratio,
                 self.sample_rate,
-                self._native_sample_rate,
             )
 
         return first_chunk_ttfb, synth_wall_time, audio_duration
@@ -512,14 +503,7 @@ def _split_overlong_text(text: str, *, max_chars: int) -> list[str]:
 def _tensor_to_pcm_bytes(
     *,
     audio_chunk: Any,
-    output_sample_rate: int,
-    native_sample_rate: int,
 ) -> bytes:
-    if output_sample_rate <= 0:
-        raise ValueError(f"output_sample_rate must be positive: {output_sample_rate}")
-    if native_sample_rate <= 0:
-        raise ValueError(f"native_sample_rate must be positive: {native_sample_rate}")
-
     audio = audio_chunk
     if hasattr(audio, "detach"):
         audio = audio.detach()
@@ -552,12 +536,6 @@ def _tensor_to_pcm_bytes(
             channel_axis = 1 if dim1 < dim0 else 0
 
         audio_np = np.mean(audio_np, axis=channel_axis)
-
-    if output_sample_rate != native_sample_rate:
-        ratio_gcd = math.gcd(native_sample_rate, output_sample_rate)
-        up = output_sample_rate // ratio_gcd
-        down = native_sample_rate // ratio_gcd
-        audio_np = signal.resample_poly(audio_np, up=up, down=down)
 
     audio_np = np.clip(audio_np, -1.0, 1.0)
     audio_int16 = (audio_np * 32767.0).astype(np.int16, copy=False)

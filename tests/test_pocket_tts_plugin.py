@@ -128,13 +128,9 @@ def test_tensor_to_pcm_bytes_handles_channel_first_and_last(pocket_plugin: Any) 
 
     pcm_first = module._tensor_to_pcm_bytes(
         audio_chunk=channel_first,
-        output_sample_rate=24000,
-        native_sample_rate=24000,
     )
     pcm_last = module._tensor_to_pcm_bytes(
         audio_chunk=channel_last,
-        output_sample_rate=24000,
-        native_sample_rate=24000,
     )
 
     assert len(pcm_first) == 24
@@ -146,8 +142,6 @@ def test_tensor_to_pcm_bytes_empty_returns_empty(pocket_plugin: Any) -> None:
 
     pcm = module._tensor_to_pcm_bytes(
         audio_chunk=np.array([], dtype=np.float32),
-        output_sample_rate=24000,
-        native_sample_rate=24000,
     )
 
     assert pcm == b""
@@ -160,47 +154,7 @@ def test_tensor_to_pcm_bytes_rejects_unsupported_shape(pocket_plugin: Any) -> No
     with pytest.raises(ValueError, match="unsupported audio tensor shape"):
         module._tensor_to_pcm_bytes(
             audio_chunk=invalid,
-            output_sample_rate=24000,
-            native_sample_rate=24000,
         )
-
-
-@pytest.mark.parametrize(
-    ("output_sample_rate", "native_sample_rate", "match"),
-    [
-        (0, 24000, "output_sample_rate must be positive"),
-        (48000, 0, "native_sample_rate must be positive"),
-    ],
-)
-def test_tensor_to_pcm_bytes_rejects_non_positive_sample_rates(
-    pocket_plugin: Any,
-    output_sample_rate: int,
-    native_sample_rate: int,
-    match: str,
-) -> None:
-    module = pocket_plugin["module"]
-    src = np.array([0.0, 0.5, -0.5], dtype=np.float32)
-
-    with pytest.raises(ValueError, match=match):
-        module._tensor_to_pcm_bytes(
-            audio_chunk=src,
-            output_sample_rate=output_sample_rate,
-            native_sample_rate=native_sample_rate,
-        )
-
-
-def test_tensor_to_pcm_bytes_resamples_to_configured_rate(pocket_plugin: Any) -> None:
-    module = pocket_plugin["module"]
-    src = np.array([0.0, 0.5, -0.5, 1.0, -1.0], dtype=np.float32)
-
-    pcm = module._tensor_to_pcm_bytes(
-        audio_chunk=src,
-        output_sample_rate=48000,
-        native_sample_rate=24000,
-    )
-
-    # 5 input samples at 24kHz should become 10 output samples at 48kHz.
-    assert len(pcm) == 20
 
 
 def test_tensor_to_pcm_bytes_clips_before_pcm_conversion(pocket_plugin: Any) -> None:
@@ -209,8 +163,6 @@ def test_tensor_to_pcm_bytes_clips_before_pcm_conversion(pocket_plugin: Any) -> 
 
     pcm = module._tensor_to_pcm_bytes(
         audio_chunk=src,
-        output_sample_rate=24000,
-        native_sample_rate=24000,
     )
     pcm_np = np.frombuffer(pcm, dtype=np.int16)
 
@@ -234,8 +186,6 @@ def test_tensor_to_pcm_bytes_ambiguous_small_2d_defaults_to_samples_channels(
 
     pcm = module._tensor_to_pcm_bytes(
         audio_chunk=ambiguous,
-        output_sample_rate=24000,
-        native_sample_rate=24000,
     )
     pcm_np = np.frombuffer(pcm, dtype=np.int16)
 
