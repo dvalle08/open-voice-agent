@@ -217,8 +217,14 @@
       }
       .pipeline-stage-row {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 10px;
+      }
+      .pipeline-stage-row.handoff-visible {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+      .stage-card[hidden] {
+        display: none;
       }
       .metric-card {
         background: var(--bg-card);
@@ -565,10 +571,10 @@
       <div class="live-metrics-row">
         <div class="pipeline-header">
           <span class="pipeline-title">Voice Agent Pipeline</span>
-          <span class="pipeline-subtitle">4 stages from voice input to response</span>
+          <span class="pipeline-subtitle">Core stages from end-of-speech to first assistant audio</span>
         </div>
 
-        <div class="pipeline-stage-row">
+        <div class="pipeline-stage-row" id="pipeline-stage-row">
           <div class="metric-card stage-card">
             <div class="metric-card-top">
               <span class="metric-step">1</span>
@@ -576,12 +582,12 @@
                 <span class="metric-tech">EOU Delay</span>
                 <div class="tooltip">
                   <button type="button" class="tooltip-trigger" aria-label="What is EOU Delay?">i</button>
-                  <span class="tooltip-content" role="tooltip">VAD end-of-utterance delay: time from the user's last speech frame to utterance-end detection.</span>
+                  <span class="tooltip-content" role="tooltip">Time from your last speech frame until the turn is considered complete. In this pipeline it already includes transcription wait.</span>
                 </div>
               </div>
             </div>
             <div class="metric-card-human">Silence Detection</div>
-            <div class="metric-card-desc">Detecting when you stop speaking</div>
+            <div class="metric-card-desc">Deciding that your turn has ended</div>
             <div class="metric-card-value-row">
               <span class="metric-card-value" id="live-eou">--</span>
               <span class="metric-card-avg" id="live-eou-avg"></span>
@@ -595,37 +601,15 @@
             <div class="metric-card-top">
               <span class="metric-step">2</span>
               <div class="metric-tech-wrap">
-                <span class="metric-tech">STT Finalization</span>
-                <div class="tooltip">
-                  <button type="button" class="tooltip-trigger" aria-label="What is STT Finalization?">i</button>
-                  <span class="tooltip-content" role="tooltip">Post-EOU STT finalization delay: time from utterance-end detection until the final transcript is emitted.</span>
-                </div>
-              </div>
-            </div>
-            <div class="metric-card-human">Speech to Text</div>
-            <div class="metric-card-desc">Finalizing transcription</div>
-            <div class="metric-card-value-row">
-              <span class="metric-card-value" id="live-stt-finalization">--</span>
-              <span class="metric-card-avg" id="live-stt-finalization-avg"></span>
-            </div>
-            <div class="metric-card-track">
-              <div class="metric-card-fill" id="live-stt-finalization-bar" style="width: 0%"></div>
-            </div>
-          </div>
-
-          <div class="metric-card stage-card">
-            <div class="metric-card-top">
-              <span class="metric-step">3</span>
-              <div class="metric-tech-wrap">
                 <span class="metric-tech">LLM TTFT</span>
                 <div class="tooltip">
                   <button type="button" class="tooltip-trigger" aria-label="What is LLM TTFT?">i</button>
-                  <span class="tooltip-content" role="tooltip">LLM time-to-first-token: elapsed time from LLM request start to the first generated token.</span>
+                  <span class="tooltip-content" role="tooltip">Thinking time: from LLM request start to the first generated token.</span>
                 </div>
               </div>
             </div>
             <div class="metric-card-human">Thinking</div>
-            <div class="metric-card-desc">Generating first token</div>
+            <div class="metric-card-desc">Generating the first token</div>
             <div class="metric-card-value-row">
               <span class="metric-card-value" id="live-llm-ttft">--</span>
               <span class="metric-card-avg" id="live-llm-ttft-avg"></span>
@@ -635,19 +619,41 @@
             </div>
           </div>
 
+          <div class="metric-card stage-card" id="live-handoff-card" hidden>
+            <div class="metric-card-top">
+              <span class="metric-step">3</span>
+              <div class="metric-tech-wrap">
+                <span class="metric-tech">LLM to TTS Handoff</span>
+                <div class="tooltip">
+                  <button type="button" class="tooltip-trigger" aria-label="What is LLM to TTS Handoff?">i</button>
+                  <span class="tooltip-content" role="tooltip">Residual orchestration gap between LLM output and TTS startup. It is shown only when this gap is measurable and greater than zero.</span>
+                </div>
+              </div>
+            </div>
+            <div class="metric-card-human">Pipeline Handoff</div>
+            <div class="metric-card-desc">Bridging text generation to speech synthesis</div>
+            <div class="metric-card-value-row">
+              <span class="metric-card-value" id="live-handoff">--</span>
+              <span class="metric-card-avg" id="live-handoff-avg"></span>
+            </div>
+            <div class="metric-card-track">
+              <div class="metric-card-fill" id="live-handoff-bar" style="width: 0%"></div>
+            </div>
+          </div>
+
           <div class="metric-card stage-card">
             <div class="metric-card-top">
-              <span class="metric-step">4</span>
+              <span class="metric-step" id="live-voice-generation-step">3</span>
               <div class="metric-tech-wrap">
-                <span class="metric-tech">Voice Generation</span>
+                <span class="metric-tech">TTS TTFB</span>
                 <div class="tooltip">
                   <button type="button" class="tooltip-trigger" aria-label="What is Voice Generation?">i</button>
-                  <span class="tooltip-content" role="tooltip">Time from the model output phase to first audible assistant speech. It includes model-to-TTS handoff time and TTS startup latency (TTFB).</span>
+                  <span class="tooltip-content" role="tooltip">Voice generation startup only: time from TTS request start to the first audio chunk (TTFB).</span>
                 </div>
               </div>
             </div>
             <div class="metric-card-human">Voice Generation</div>
-            <div class="metric-card-desc">Synthesizing assistant voice</div>
+            <div class="metric-card-desc">Starting audio synthesis</div>
             <div class="metric-card-value-row">
               <span class="metric-card-value" id="live-voice-generation">--</span>
               <span class="metric-card-avg" id="live-voice-generation-avg"></span>
@@ -666,7 +672,7 @@
                 <span>End-to-End Latency</span>
                 <div class="tooltip tooltip-right">
                   <button type="button" class="tooltip-trigger" aria-label="What is End-to-End Latency?">i</button>
-                  <span class="tooltip-content" role="tooltip">Full response latency from end of user speech to first assistant audio: EOU delay (inclusive of transcription delay), LLM TTFT, model-to-TTS handoff, and TTS startup.</span>
+                  <span class="tooltip-content" role="tooltip">Total round-trip from end of user speech to first assistant audio: EOU delay + Thinking (LLM TTFT) + optional handoff + Voice Generation (TTS TTFB).</span>
                 </div>
               </div>
             </div>

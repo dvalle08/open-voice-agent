@@ -27,6 +27,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from src.agent.graph import create_graph, create_stt
+from src.agent._langchain_usage_patch import apply_langchain_usage_patch
 from src.agent.metrics_collector import MetricsCollector
 from src.plugins.pocket_tts import PocketTTS
 from src.core.settings import settings
@@ -306,6 +307,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         ctx.job.id,
     )
     trace_provider = setup_langfuse_tracer()
+    apply_langchain_usage_patch()
     if trace_provider:
         async def flush_trace(_: str) -> None:
             try:

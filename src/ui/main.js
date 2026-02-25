@@ -32,25 +32,26 @@ const CONNECTION_STATES = Object.freeze({
 
 let averages = {
   eouDelay: [],
-  sttFinalization: [],
   llmTtft: [],
+  llmToTtsHandoff: [],
   voiceGeneration: [],
   totalLatency: [],
 };
 const LIVE_METRIC_IDS = [
   "eou",
-  "stt-finalization",
   "llm-ttft",
   "voice-generation",
   "total",
 ];
+const pipelineStageRowEl = document.getElementById("pipeline-stage-row");
+const handoffCardEl = document.getElementById("live-handoff-card");
+const voiceGenerationStepEl = document.getElementById("live-voice-generation-step");
 let activeLiveSpeechId = null;
 let liveTurnValues = createEmptyLiveTurnValues();
 
 function createEmptyLiveTurnValues() {
   return {
     eouDelay: null,
-    sttFinalizationDelay: null,
     llmTtft: null,
     llmToTtsHandoff: null,
     ttsTtfb: null,
@@ -512,13 +513,14 @@ function resetMetrics() {
   liveTurnValues = createEmptyLiveTurnValues();
   averages = {
     eouDelay: [],
-    sttFinalization: [],
     llmTtft: [],
+    llmToTtsHandoff: [],
     voiceGeneration: [],
     totalLatency: [],
   };
 
   clearAllLiveMetrics();
+  setHandoffCardVisible(false);
 
   updateLiveMetricAverages();
 }
@@ -529,6 +531,7 @@ function handleLiveTurnBoundary(metricsData) {
   const speechId = metricsData.speech_id;
   if (!speechId) {
     clearAllLiveMetrics();
+    setHandoffCardVisible(false);
     activeLiveSpeechId = null;
     liveTurnValues = createEmptyLiveTurnValues();
     return;
@@ -537,6 +540,7 @@ function handleLiveTurnBoundary(metricsData) {
   if (speechId === activeLiveSpeechId) return;
   activeLiveSpeechId = speechId;
   liveTurnValues = createEmptyLiveTurnValues();
+  setHandoffCardVisible(false);
   setAllLiveMetricsLoading();
 }
 
@@ -555,6 +559,7 @@ async function toggleMute() {
 
 resetMuteButton();
 setConnectionState(CONNECTION_STATES.IDLE);
+setHandoffCardVisible(false);
 
 connectBtn.addEventListener("click", () => {
   connectToRoom().catch((error) => {
@@ -640,11 +645,24 @@ function clearLiveMetric(metricId) {
 
 function clearAllLiveMetrics() {
   LIVE_METRIC_IDS.forEach((id) => clearLiveMetric(id));
+  clearLiveMetric("handoff");
 }
 
 function setAllLiveMetricsLoading() {
   LIVE_METRIC_IDS.forEach((id) => setLiveMetricLoading(id));
   updateLiveMetricAverages();
+}
+
+function setHandoffCardVisible(visible) {
+  if (handoffCardEl) {
+    handoffCardEl.hidden = !visible;
+  }
+  if (pipelineStageRowEl) {
+    pipelineStageRowEl.classList.toggle("handoff-visible", visible);
+  }
+  if (voiceGenerationStepEl) {
+    voiceGenerationStepEl.textContent = visible ? "4" : "3";
+  }
 }
 
 function isFiniteNumber(value) {
@@ -658,8 +676,8 @@ function avg(values) {
 
 function updateLiveMetricAverages() {
   setLiveMetricAverage("eou", avg(averages.eouDelay));
-  setLiveMetricAverage("stt-finalization", avg(averages.sttFinalization));
   setLiveMetricAverage("llm-ttft", avg(averages.llmTtft));
+  setLiveMetricAverage("handoff", avg(averages.llmToTtsHandoff));
   setLiveMetricAverage("voice-generation", avg(averages.voiceGeneration));
   setLiveMetricAverage("total", avg(averages.totalLatency));
 }
@@ -690,18 +708,6 @@ function updateLiveMetrics(turn) {
     setLiveMetric("eou", eouDelay, 4.0, 0.8, 1.2);
   }
 
-  const sttFinalizationDelay = latencies.stt_finalization_delay;
-  if (
-    shouldApplyUserLatency(
-      turn,
-      sttFinalizationDelay,
-      liveTurnValues.sttFinalizationDelay
-    )
-  ) {
-    liveTurnValues.sttFinalizationDelay = sttFinalizationDelay;
-    setLiveMetric("stt-finalization", sttFinalizationDelay, 3.0, 0.4, 0.8);
-  }
-
   const llmTtft = metrics.llm?.ttft;
   if (isFiniteNumber(llmTtft)) {
     liveTurnValues.llmTtft = llmTtft;
@@ -709,13 +715,20 @@ function updateLiveMetrics(turn) {
   }
 
   const llmToTtsHandoff = latencies.llm_to_tts_handoff_latency;
-  if (isFiniteNumber(llmToTtsHandoff)) {
+  if (isFiniteNumber(llmToTtsHandoff) && llmToTtsHandoff > 0) {
     liveTurnValues.llmToTtsHandoff = llmToTtsHandoff;
+    setHandoffCardVisible(true);
+    setLiveMetric("handoff", llmToTtsHandoff, 4.0, 0.35, 0.8);
+  } else if (llmToTtsHandoff === 0) {
+    liveTurnValues.llmToTtsHandoff = 0;
+    setHandoffCardVisible(false);
+    clearLiveMetric("handoff");
   }
 
   const ttsTtfb = metrics.tts?.ttfb;
   if (isFiniteNumber(ttsTtfb)) {
     liveTurnValues.ttsTtfb = ttsTtfb;
+    setLiveMetric("voice-generation", ttsTtfb, 4.0, 0.6, 1.2);
   }
 
   const totalLatency = latencies.total_latency;
@@ -723,23 +736,20 @@ function updateLiveMetrics(turn) {
     liveTurnValues.totalLatency = totalLatency;
   }
 
-  if (isFiniteNumber(liveTurnValues.llmToTtsHandoff) && isFiniteNumber(liveTurnValues.ttsTtfb)) {
-    const voiceGeneration = liveTurnValues.llmToTtsHandoff + liveTurnValues.ttsTtfb;
-    setLiveMetric("voice-generation", voiceGeneration, 8.0, 1.0, 2.2);
-  }
-
   const hasAllStages = (
     isFiniteNumber(liveTurnValues.eouDelay) &&
     isFiniteNumber(liveTurnValues.llmTtft) &&
-    isFiniteNumber(liveTurnValues.llmToTtsHandoff) &&
     isFiniteNumber(liveTurnValues.ttsTtfb)
   );
 
   if (hasAllStages) {
+    const handoff = isFiniteNumber(liveTurnValues.llmToTtsHandoff)
+      ? Math.max(liveTurnValues.llmToTtsHandoff, 0)
+      : 0;
     const computedTotal =
       liveTurnValues.eouDelay +
       liveTurnValues.llmTtft +
-      liveTurnValues.llmToTtsHandoff +
+      handoff +
       liveTurnValues.ttsTtfb;
     const totalValue = isFiniteNumber(liveTurnValues.totalLatency)
       ? liveTurnValues.totalLatency
@@ -755,18 +765,17 @@ function renderTurn(turn) {
   const eouDelay = latencies.eou_delay ?? latencies.vad_detection_delay;
   if (isFiniteNumber(eouDelay) && eouDelay > 0) averages.eouDelay.push(eouDelay);
 
-  const sttFinalization = latencies.stt_finalization_delay;
-  if (isFiniteNumber(sttFinalization) && sttFinalization > 0) {
-    averages.sttFinalization.push(sttFinalization);
-  }
-
   const llmTtft = metrics.llm?.ttft;
   if (isFiniteNumber(llmTtft) && llmTtft > 0) averages.llmTtft.push(llmTtft);
 
   const llmToTtsHandoff = latencies.llm_to_tts_handoff_latency;
+  if (isFiniteNumber(llmToTtsHandoff) && llmToTtsHandoff > 0) {
+    averages.llmToTtsHandoff.push(llmToTtsHandoff);
+  }
+
   const ttsTtfb = metrics.tts?.ttfb;
-  if (isFiniteNumber(llmToTtsHandoff) && llmToTtsHandoff >= 0 && isFiniteNumber(ttsTtfb) && ttsTtfb >= 0) {
-    averages.voiceGeneration.push(llmToTtsHandoff + ttsTtfb);
+  if (isFiniteNumber(ttsTtfb) && ttsTtfb > 0) {
+    averages.voiceGeneration.push(ttsTtfb);
   }
 
   const totalLatency = latencies.total_latency;
