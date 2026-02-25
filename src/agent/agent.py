@@ -87,7 +87,7 @@ def setup_langfuse_tracer() -> TracerProvider | None:
                 {
                     SERVICE_NAME: "open-voice-agent",
                     SERVICE_VERSION: getattr(agents, "__version__", "unknown"),
-                    "deployment.environment": "default",
+                    "deployment.environment": settings.langfuse.LANGFUSE_ENVIRONMENT ,#"default",
                 }
             )
         )

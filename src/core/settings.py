@@ -238,6 +238,7 @@ class LangfuseSettings(CoreSettings):
     )
     LANGFUSE_PUBLIC_KEY: Optional[str] = Field(default=None)
     LANGFUSE_SECRET_KEY: Optional[str] = Field(default=None)
+    LANGFUSE_ENVIRONMENT: str = Field(default="development")
     LANGFUSE_HOST: Optional[str] = Field(
         default=None,
         description="Langfuse host URL, e.g. https://cloud.langfuse.com",
