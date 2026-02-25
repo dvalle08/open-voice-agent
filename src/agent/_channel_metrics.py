@@ -48,7 +48,13 @@ class ChannelPublisher:
                 "speech_id": speech_id,
                 "stage": stage,
                 "role": role,
-                "metrics": {"stt": None, "llm": None, "tts": None, "vad": None},
+                "metrics": {
+                    "stt": None,
+                    "eou": None,
+                    "llm": None,
+                    "tts": None,
+                    "vad": None,
+                },
                 "latencies": None,
                 "diagnostic": diagnostic,
             }
@@ -59,6 +65,8 @@ class ChannelPublisher:
                         **asdict(turn_metrics.stt),
                         "display_duration": _stt_display_duration(turn_metrics.stt),
                     }
+                if turn_metrics.eou:
+                    payload["metrics"]["eou"] = asdict(turn_metrics.eou)
                 if turn_metrics.llm:
                     payload["metrics"]["llm"] = asdict(turn_metrics.llm)
                 if turn_metrics.tts:
@@ -154,7 +162,7 @@ def _build_partial_latencies(
     if not has_signal:
         return None
 
-    baseline = eou_delay + stt_finalization_delay + llm_ttft + tts_ttfb
+    baseline = eou_delay + llm_ttft + tts_ttfb
     total = max(baseline, observed_total_latency if observed_total_latency is not None else 0.0)
     return {
         "total_latency": total,

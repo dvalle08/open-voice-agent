@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import time_ns
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -40,6 +40,7 @@ class TraceTurn:
     stt_duration_ms: Optional[float] = None
     stt_finalization_ms: Optional[float] = None
     stt_total_latency_ms: Optional[float] = None
+    eou_on_user_turn_completed_ms: Optional[float] = None
     llm_duration_ms: Optional[float] = None
     llm_ttft_ms: Optional[float] = None
     llm_total_latency_ms: Optional[float] = None
@@ -47,6 +48,11 @@ class TraceTurn:
     tts_ttfb_ms: Optional[float] = None
     conversational_latency_ms: Optional[float] = None
     llm_to_tts_handoff_ms: Optional[float] = None
+    stt_attributes: dict[str, Any] = field(default_factory=dict)
+    eou_attributes: dict[str, Any] = field(default_factory=dict)
+    vad_attributes: dict[str, Any] = field(default_factory=dict)
+    llm_attributes: dict[str, Any] = field(default_factory=dict)
+    tts_attributes: dict[str, Any] = field(default_factory=dict)
     trace_id: Optional[str] = None
 
 
@@ -195,6 +201,7 @@ class TurnTracer:
         transcript: str,
         duration: float,
         fallback_duration: float,
+        metric_attributes: Optional[dict[str, Any]] = None,
     ) -> Optional[TraceTurn]:
         async with self._trace_lock:
             turn = self._next_turn_where(
@@ -213,14 +220,18 @@ class TurnTracer:
             else:
                 turn.stt_duration_ms = measured_ms
                 turn.stt_status = "measured"
+            turn.stt_attributes = _sanitize_component_attributes(metric_attributes)
             _recompute_conversational_latency(turn)
             return turn
 
-    async def attach_vad(
+    async def attach_eou(
         self,
         *,
         duration: float,
         transcription_delay: float,
+        on_user_turn_completed_delay: float = 0.0,
+        metric_attributes: Optional[dict[str, Any]] = None,
+        vad_metric_attributes: Optional[dict[str, Any]] = None,
     ) -> Optional[TraceTurn]:
         async with self._trace_lock:
             turn = self._next_turn_where(
@@ -232,10 +243,15 @@ class TurnTracer:
             turn.vad_duration_ms = eou_delay_ms
             turn.stt_finalization_ms = _duration_to_ms(transcription_delay, 0.0)
             turn.stt_total_latency_ms = eou_delay_ms + (turn.stt_finalization_ms or 0.0)
+            turn.eou_on_user_turn_completed_ms = _duration_to_ms(
+                on_user_turn_completed_delay, 0.0
+            )
             if turn.stt_total_latency_ms > 0:
                 turn.stt_status = "measured"
                 if turn.stt_duration_ms is None:
                     turn.stt_duration_ms = turn.stt_total_latency_ms
+            turn.eou_attributes = _sanitize_component_attributes(metric_attributes)
+            turn.vad_attributes = _sanitize_component_attributes(vad_metric_attributes)
             _recompute_conversational_latency(turn)
             return turn
 
@@ -244,6 +260,7 @@ class TurnTracer:
         *,
         duration: float,
         ttft: float,
+        metric_attributes: Optional[dict[str, Any]] = None,
     ) -> Optional[TraceTurn]:
         async with self._trace_lock:
             turn = self._next_turn_where(
@@ -255,6 +272,7 @@ class TurnTracer:
             turn.llm_duration_ms = _duration_to_ms(duration, 0.0)
             turn.llm_total_latency_ms = turn.llm_duration_ms
             turn.llm_ttft_ms = _duration_to_ms(ttft, 0.0)
+            turn.llm_attributes = _sanitize_component_attributes(metric_attributes)
             _recompute_conversational_latency(turn)
             return turn
 
@@ -265,6 +283,7 @@ class TurnTracer:
         fallback_duration: float,
         ttfb: float,
         observed_total_latency: Optional[float],
+        metric_attributes: Optional[dict[str, Any]] = None,
     ) -> Optional[TraceTurn]:
         async with self._trace_lock:
             turn = self._next_turn_where(
@@ -276,6 +295,7 @@ class TurnTracer:
                 return None
             turn.tts_duration_ms = _duration_to_ms(duration, fallback_duration)
             turn.tts_ttfb_ms = _duration_to_ms(ttfb, 0.0)
+            turn.tts_attributes = _sanitize_component_attributes(metric_attributes)
             _recompute_conversational_latency(turn)
             if observed_total_latency is not None:
                 observed_ms = observed_total_latency * 1000.0
@@ -287,7 +307,6 @@ class TurnTracer:
             turn.llm_to_tts_handoff_ms = _compute_llm_to_tts_handoff_ms(
                 total_latency_ms=turn.conversational_latency_ms,
                 vad_duration_ms=turn.vad_duration_ms,
-                stt_finalization_ms=turn.stt_finalization_ms,
                 llm_ttft_ms=turn.llm_ttft_ms,
                 tts_ttfb_ms=turn.tts_ttfb_ms,
             )
@@ -508,23 +527,46 @@ class TurnTracer:
                     attributes={"user_transcript": turn.user_transcript},
                     observation_input=turn.user_transcript,
                 )
-                vad_start_ns = cursor_ns
-                cursor_ns = _emit_component_span(
+                speech_end_start_ns = cursor_ns
+                _emit_component_span(
                     _tracer,
-                    name="vad",
+                    name="VADMetrics",
                     context=ctx,
-                    start_ns=cursor_ns,
+                    start_ns=speech_end_start_ns,
+                    duration_ms=vals["vad_metrics_duration_ms"],
+                    attributes=_merge_component_attributes(
+                        turn.vad_attributes,
+                        {
+                            "eou_delay_ms": vals["vad_duration_ms"],
+                        },
+                    ),
+                )
+                eou_end_ns = _emit_component_span(
+                    _tracer,
+                    name="EOUMetrics",
+                    context=ctx,
+                    start_ns=speech_end_start_ns,
                     duration_ms=vals["vad_duration_ms"],
-                    attributes={"eou_delay_ms": vals["vad_duration_ms"]},
+                    attributes=_merge_component_attributes(
+                        turn.eou_attributes,
+                        {
+                            "end_of_utterance_delay_ms": vals["vad_duration_ms"],
+                            "transcription_delay_ms": vals["stt_finalization_ms"],
+                            "on_user_turn_completed_delay_ms": vals[
+                                "eou_on_user_turn_completed_ms"
+                            ],
+                        },
+                    ),
                     observation_output=str(vals["vad_duration_ms"]),
                 )
                 stt_end_ns = _emit_component_span(
                     _tracer,
-                    name="stt",
+                    name="STTMetrics",
                     context=ctx,
-                    start_ns=vad_start_ns,
+                    start_ns=speech_end_start_ns,
                     duration_ms=vals["stt_span_duration_ms"],
                     attributes={
+                        **turn.stt_attributes,
                         "user_transcript": turn.user_transcript,
                         "stt_status": turn.stt_status,
                         "stt_processing_ms": vals["stt_processing_ms"],
@@ -533,33 +575,39 @@ class TurnTracer:
                     },
                     observation_output=turn.user_transcript,
                 )
-                cursor_ns = max(cursor_ns, stt_end_ns)
+                cursor_ns = max(cursor_ns, eou_end_ns, stt_end_ns)
                 cursor_ns = _emit_component_span(
                     _tracer,
-                    name="llm",
+                    name="LLMMetrics",
                     context=ctx,
                     start_ns=cursor_ns,
                     duration_ms=vals["llm_duration_ms"],
-                    attributes={
-                        "prompt_text": turn.prompt_text,
-                        "response_text": turn.response_text,
-                        "ttft_ms": vals["llm_ttft_ms"],
-                        "llm_total_latency_ms": vals["llm_total_latency_ms"],
-                    },
+                    attributes=_merge_component_attributes(
+                        turn.llm_attributes,
+                        {
+                            "prompt_text": turn.prompt_text,
+                            "response_text": turn.response_text,
+                            "ttft_ms": vals["llm_ttft_ms"],
+                            "llm_total_latency_ms": vals["llm_total_latency_ms"],
+                        },
+                    ),
                     observation_input=turn.prompt_text,
                     observation_output=turn.response_text,
                 )
                 cursor_ns = _emit_component_span(
                     _tracer,
-                    name="tts",
+                    name="TTSMetrics",
                     context=ctx,
                     start_ns=cursor_ns,
                     duration_ms=vals["tts_duration_ms"],
-                    attributes={
-                        "assistant_text": turn.assistant_text,
-                        "assistant_text_missing": turn.assistant_text_missing,
-                        "ttfb_ms": vals["tts_ttfb_ms"],
-                    },
+                    attributes=_merge_component_attributes(
+                        turn.tts_attributes,
+                        {
+                            "assistant_text": turn.assistant_text,
+                            "assistant_text_missing": turn.assistant_text_missing,
+                            "ttfb_ms": vals["tts_ttfb_ms"],
+                        },
+                    ),
                     observation_input=turn.assistant_text,
                     observation_output=turn.assistant_text,
                 )
@@ -569,12 +617,11 @@ class TurnTracer:
                         _tracer,
                         name="conversation_latency",
                         context=ctx,
-                        start_ns=vad_start_ns,
+                        start_ns=speech_end_start_ns,
                         duration_ms=conv_ms,
                         attributes={
                             "speech_end_to_assistant_speech_start_ms": conv_ms,
                             "eou_delay_ms": vals["vad_duration_ms"],
-                            "stt_finalization_ms": vals["stt_finalization_ms"],
                             "llm_ttft_ms": vals["llm_ttft_ms"],
                             "llm_to_tts_handoff_ms": vals["llm_to_tts_handoff_ms"],
                             "tts_ttfb_ms": vals["tts_ttfb_ms"],
@@ -583,9 +630,8 @@ class TurnTracer:
                     )
                 handoff_ms = vals["llm_to_tts_handoff_ms"]
                 if handoff_ms is not None and handoff_ms > 0:
-                    handoff_start_ns = vad_start_ns + _ms_to_ns(
+                    handoff_start_ns = speech_end_start_ns + _ms_to_ns(
                         max(vals["vad_duration_ms"], 0.0)
-                        + max(vals["stt_finalization_ms"] or 0.0, 0.0)
                         + max(vals["llm_ttft_ms"], 0.0)
                     )
                     _emit_component_span(
@@ -598,7 +644,6 @@ class TurnTracer:
                             "llm_to_tts_handoff_ms": handoff_ms,
                             "speech_end_to_assistant_speech_start_ms": conv_ms,
                             "eou_delay_ms": vals["vad_duration_ms"],
-                            "stt_finalization_ms": vals["stt_finalization_ms"],
                             "llm_ttft_ms": vals["llm_ttft_ms"],
                             "tts_ttfb_ms": vals["tts_ttfb_ms"],
                         },
@@ -662,7 +707,6 @@ def _ms_to_ns(ms: float) -> int:
 def _recompute_conversational_latency(turn: TraceTurn) -> None:
     turn.conversational_latency_ms = _compute_conversational_latency_ms(
         vad_duration_ms=turn.vad_duration_ms,
-        stt_finalization_ms=turn.stt_finalization_ms,
         llm_ttft_ms=turn.llm_ttft_ms,
         tts_ttfb_ms=turn.tts_ttfb_ms,
     )
@@ -671,11 +715,10 @@ def _recompute_conversational_latency(turn: TraceTurn) -> None:
 def _compute_conversational_latency_ms(
     *,
     vad_duration_ms: Optional[float],
-    stt_finalization_ms: Optional[float],
     llm_ttft_ms: Optional[float],
     tts_ttfb_ms: Optional[float],
 ) -> Optional[float]:
-    components = (vad_duration_ms, stt_finalization_ms, llm_ttft_ms, tts_ttfb_ms)
+    components = (vad_duration_ms, llm_ttft_ms, tts_ttfb_ms)
     if any(c is None for c in components):
         return None
     return sum(c for c in components if c is not None)
@@ -685,7 +728,6 @@ def _compute_llm_to_tts_handoff_ms(
     *,
     total_latency_ms: Optional[float],
     vad_duration_ms: Optional[float],
-    stt_finalization_ms: Optional[float],
     llm_ttft_ms: Optional[float],
     tts_ttfb_ms: Optional[float],
 ) -> Optional[float]:
@@ -693,7 +735,6 @@ def _compute_llm_to_tts_handoff_ms(
         return None
     baseline = _compute_conversational_latency_ms(
         vad_duration_ms=vad_duration_ms,
-        stt_finalization_ms=stt_finalization_ms,
         llm_ttft_ms=llm_ttft_ms,
         tts_ttfb_ms=tts_ttfb_ms,
     )
@@ -703,18 +744,14 @@ def _compute_llm_to_tts_handoff_ms(
 
 
 def _total_duration_ms(turn: TraceTurn) -> float:
-    stt = (
-        turn.stt_finalization_ms
-        if turn.stt_finalization_ms is not None
-        else (turn.stt_duration_ms if turn.stt_duration_ms is not None else 0.0)
-    )
     llm = (
         turn.llm_total_latency_ms
         if turn.llm_total_latency_ms is not None
         else (turn.llm_duration_ms or 0.0)
     )
+    handoff = turn.llm_to_tts_handoff_ms or 0.0
     calculated = (
-        (turn.vad_duration_ms or 0.0) + stt + llm + (turn.tts_duration_ms or 0.0)
+        (turn.vad_duration_ms or 0.0) + llm + handoff + (turn.tts_duration_ms or 0.0)
     )
     if turn.conversational_latency_ms is not None:
         calculated = max(calculated, turn.conversational_latency_ms)
@@ -725,6 +762,9 @@ def _prepare_span_values(turn: TraceTurn) -> dict[str, Any]:
     """Pre-compute derived values used by span emission."""
     user_input_duration_ms = 0.0 if turn.user_transcript else None
     vad_duration_ms = max(turn.vad_duration_ms or 0.0, 0.0)
+    vad_metrics_duration_ms = _duration_attribute_to_ms(
+        turn.vad_attributes.get("inference_duration_total")
+    )
     stt_processing_ms = (
         max(turn.stt_duration_ms, 0.0) if turn.stt_duration_ms is not None else None
     )
@@ -739,12 +779,12 @@ def _prepare_span_values(turn: TraceTurn) -> dict[str, Any]:
         else None
     )
     stt_span_duration_ms: Optional[float] = None
-    if stt_total_latency_ms is not None and stt_total_latency_ms > 0:
-        stt_span_duration_ms = stt_total_latency_ms
+    if stt_processing_ms is not None and stt_processing_ms > 0:
+        stt_span_duration_ms = stt_processing_ms
     elif stt_finalization_ms is not None and stt_finalization_ms > 0:
         stt_span_duration_ms = stt_finalization_ms
     else:
-        stt_span_duration_ms = stt_processing_ms
+        stt_span_duration_ms = stt_total_latency_ms
 
     llm_duration_ms = max(turn.llm_duration_ms or 0.0, 0.0)
     llm_ttft_ms = max(turn.llm_ttft_ms or 0.0, 0.0)
@@ -765,13 +805,20 @@ def _prepare_span_values(turn: TraceTurn) -> dict[str, Any]:
         if turn.llm_to_tts_handoff_ms is not None
         else None
     )
+    eou_on_user_turn_completed_ms = (
+        max(turn.eou_on_user_turn_completed_ms, 0.0)
+        if turn.eou_on_user_turn_completed_ms is not None
+        else None
+    )
     return {
         "user_input_duration_ms": user_input_duration_ms,
         "vad_duration_ms": vad_duration_ms,
+        "vad_metrics_duration_ms": vad_metrics_duration_ms,
         "stt_processing_ms": stt_processing_ms,
         "stt_finalization_ms": stt_finalization_ms,
         "stt_total_latency_ms": stt_total_latency_ms,
         "stt_span_duration_ms": stt_span_duration_ms,
+        "eou_on_user_turn_completed_ms": eou_on_user_turn_completed_ms,
         "llm_duration_ms": llm_duration_ms,
         "llm_ttft_ms": llm_ttft_ms,
         "llm_total_latency_ms": llm_total_latency_ms,
@@ -814,6 +861,9 @@ def _set_root_attributes(
         "latency_ms.stt_processing": vals["stt_processing_ms"],
         "latency_ms.stt_finalization": vals["stt_finalization_ms"],
         "latency_ms.stt_total": vals["stt_total_latency_ms"],
+        "latency_ms.eou_on_user_turn_completed": vals[
+            "eou_on_user_turn_completed_ms"
+        ],
         "latency_ms.llm": vals["llm_duration_ms"],
         "latency_ms.llm_ttft": vals["llm_ttft_ms"],
         "latency_ms.llm_total": vals["llm_total_latency_ms"],
@@ -829,6 +879,45 @@ def _set_root_attributes(
     for key, value in attrs.items():
         if value is not None:
             span.set_attribute(key, value)
+
+
+def _sanitize_component_attributes(
+    attributes: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    if not attributes:
+        return {}
+    sanitized: dict[str, Any] = {}
+    for key, value in attributes.items():
+        if value is None:
+            continue
+        sanitized[key] = _safe_attribute_value(value)
+    return sanitized
+
+
+def _merge_component_attributes(
+    existing: dict[str, Any],
+    extra: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(existing)
+    for key, value in extra.items():
+        if value is None:
+            continue
+        merged[key] = _safe_attribute_value(value)
+    return merged
+
+
+def _safe_attribute_value(value: Any) -> Any:
+    if isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_safe_attribute_value(v) for v in value]
+    return str(value)
+
+
+def _duration_attribute_to_ms(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return max(float(value), 0.0) * 1000.0
+    return None
 
 
 def _emit_component_span(

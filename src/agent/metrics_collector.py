@@ -29,37 +29,80 @@ from src.core.settings import settings
 class STTMetrics:
     """Speech-to-text metrics."""
 
+    type: str
+    label: str
+    request_id: str
+    timestamp: float
     model_name: str
-    audio_duration: float
     duration: float
+    audio_duration: float
+    streamed: bool
+    metadata: Optional[dict[str, Any]] = None
 
 
 @dataclass
 class LLMMetrics:
     """Language model metrics."""
 
-    ttft: float
+    type: str
+    label: str
+    request_id: str
+    timestamp: float
     duration: float
-    tokens: int
+    ttft: float
+    cancelled: bool
+    completion_tokens: int
+    prompt_tokens: int
+    prompt_cached_tokens: int
+    total_tokens: int
     tokens_per_second: float
+    speech_id: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
 
 
 @dataclass
 class TTSMetrics:
     """Text-to-speech metrics."""
 
-    ttfb: float
+    type: str
+    label: str
+    request_id: str
+    timestamp: float
     duration: float
+    ttfb: float
     audio_duration: float
+    cancelled: bool
+    characters_count: int
+    streamed: bool
+    segment_id: Optional[str] = None
+    speech_id: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
 
 
 @dataclass
 class VADMetrics:
     """Voice activity detection metrics."""
 
+    type: str
+    label: str
+    timestamp: float
     idle_time: float
     inference_duration_total: float
     inference_count: int
+    metadata: Optional[dict[str, Any]] = None
+
+
+@dataclass
+class EOUMetrics:
+    """End-of-utterance metrics."""
+
+    type: str
+    timestamp: float
+    end_of_utterance_delay: float
+    transcription_delay: float
+    on_user_turn_completed_delay: float
+    speech_id: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -84,6 +127,7 @@ class TurnMetrics:
     role: str
     transcript: str = ""
     stt: Optional[STTMetrics] = None
+    eou: Optional[EOUMetrics] = None
     llm: Optional[LLMMetrics] = None
     tts: Optional[TTSMetrics] = None
     vad: Optional[VADMetrics] = None
@@ -97,7 +141,7 @@ class TurnMetrics:
     ) -> None:
         llm_ttft = self.llm.ttft if self.llm else 0.0
         tts_ttfb = self.tts.ttfb if self.tts else 0.0
-        baseline = eou_delay + stt_finalization_delay + llm_ttft + tts_ttfb
+        baseline = eou_delay + llm_ttft + tts_ttfb
         observed = observed_total_latency if observed_total_latency is not None else 0.0
         total = max(baseline, observed)
         self.latencies = Latencies(
@@ -129,6 +173,7 @@ class TurnMetrics:
             "transcript": self.transcript,
             "metrics": {
                 "stt": stt_metrics,
+                "eou": asdict(self.eou) if self.eou else None,
                 "llm": asdict(self.llm) if self.llm else None,
                 "tts": asdict(self.tts) if self.tts else None,
                 "vad": asdict(self.vad) if self.vad else None,
@@ -150,6 +195,7 @@ class TurnState:
     """Per-speech-id state consolidating turn metrics and timing data."""
 
     metrics: Optional[TurnMetrics] = None
+    eou_metrics: Optional[EOUMetrics] = None
     eou_delay: float = 0.0
     stt_finalization_delay: float = 0.0
     speech_end_monotonic: Optional[float] = None
@@ -202,6 +248,8 @@ class MetricsCollector:
         self._turns: dict[str, TurnState] = {}
         self._pending_llm_watchdog_ids: deque[str] = deque()
         self._llm_stall_tasks: dict[str, asyncio.Task[None]] = {}
+        self._latest_vad_metrics: Optional[VADMetrics] = None
+        self._latest_vad_metric_attributes: Optional[dict[str, Any]] = None
         self._llm_stall_timeout_sec = max(
             float(
                 getattr(
@@ -362,7 +410,17 @@ class MetricsCollector:
         speech_id = self._latest_agent_speech_id or f"tts-{uuid.uuid4()}"
         turn_metrics = self._get_or_create_turn(speech_id, role="agent")
         turn_metrics.tts = TTSMetrics(
-            ttfb=ttfb, duration=duration, audio_duration=audio_duration
+            type="tts_metrics",
+            label="tts_fallback",
+            request_id=f"fallback-{speech_id}",
+            timestamp=time(),
+            duration=duration,
+            ttfb=ttfb,
+            audio_duration=audio_duration,
+            cancelled=False,
+            characters_count=0,
+            streamed=True,
+            speech_id=speech_id,
         )
         await self._publish_live_update(speech_id=speech_id, stage="tts", turn_metrics=turn_metrics)
         logger.debug("TTS fallback metrics collected: speech_id=%s, ttfb=%.3fs", speech_id, ttfb)
@@ -373,6 +431,19 @@ class MetricsCollector:
             fallback_duration=audio_duration,
             ttfb=ttfb,
             observed_total_latency=self._observed_total_latency(speech_id),
+            metric_attributes={
+                "type": "tts_metrics",
+                "label": "tts_fallback",
+                "request_id": f"fallback-{speech_id}",
+                "timestamp": time(),
+                "duration": duration,
+                "ttfb": ttfb,
+                "audio_duration": audio_duration,
+                "cancelled": False,
+                "characters_count": 0,
+                "streamed": True,
+                "speech_id": speech_id,
+            },
         )
         await self._tracer.maybe_finalize(trace_turn)
 
@@ -396,9 +467,15 @@ class MetricsCollector:
             if self._pending_transcripts:
                 turn_metrics.transcript = self._pending_transcripts.popleft()
             turn_metrics.stt = STTMetrics(
+                type=collected_metrics.type,
+                label=collected_metrics.label,
+                request_id=collected_metrics.request_id,
+                timestamp=collected_metrics.timestamp,
                 model_name=self._model_name,
-                audio_duration=collected_metrics.audio_duration,
                 duration=collected_metrics.duration,
+                audio_duration=collected_metrics.audio_duration,
+                streamed=collected_metrics.streamed,
+                metadata=_metric_metadata_to_dict(collected_metrics.metadata),
             )
             await self._publish_live_update(speech_id=speech_id, stage="stt", turn_metrics=turn_metrics)
             logger.debug("STT metrics collected: request_id=%s, duration=%.3fs", speech_id, collected_metrics.duration)
@@ -406,6 +483,7 @@ class MetricsCollector:
                 transcript=turn_metrics.transcript,
                 duration=collected_metrics.duration,
                 fallback_duration=collected_metrics.audio_duration,
+                metric_attributes=_stt_metric_attributes(collected_metrics),
             )
 
         elif isinstance(collected_metrics, metrics.LLMMetrics):
@@ -416,29 +494,46 @@ class MetricsCollector:
             if self._pending_agent_transcripts and not turn_metrics.transcript:
                 turn_metrics.transcript = self._pending_agent_transcripts.popleft()
             turn_metrics.llm = LLMMetrics(
-                ttft=collected_metrics.ttft,
+                type=collected_metrics.type,
+                label=collected_metrics.label,
+                request_id=collected_metrics.request_id,
+                timestamp=collected_metrics.timestamp,
                 duration=collected_metrics.duration,
-                tokens=collected_metrics.completion_tokens,
-                tokens_per_second=(
-                    collected_metrics.completion_tokens / collected_metrics.duration
-                    if collected_metrics.duration > 0
-                    else 0.0
-                ),
+                ttft=collected_metrics.ttft,
+                cancelled=collected_metrics.cancelled,
+                completion_tokens=collected_metrics.completion_tokens,
+                prompt_tokens=collected_metrics.prompt_tokens,
+                prompt_cached_tokens=collected_metrics.prompt_cached_tokens,
+                total_tokens=collected_metrics.total_tokens,
+                tokens_per_second=collected_metrics.tokens_per_second,
+                speech_id=collected_metrics.speech_id,
+                metadata=_metric_metadata_to_dict(collected_metrics.metadata),
             )
             await self._publish_live_update(speech_id=speech_id, stage="llm", turn_metrics=turn_metrics)
             logger.debug("LLM metrics collected: speech_id=%s, ttft=%.3fs", speech_id, collected_metrics.ttft)
             trace_turn = await self._tracer.attach_llm(
                 duration=collected_metrics.duration,
                 ttft=collected_metrics.ttft,
+                metric_attributes=_llm_metric_attributes(collected_metrics),
             )
 
         elif isinstance(collected_metrics, metrics.TTSMetrics):
             speech_id = collected_metrics.speech_id or collected_metrics.request_id
             turn_metrics = self._get_or_create_turn(speech_id, role="agent")
             turn_metrics.tts = TTSMetrics(
-                ttfb=collected_metrics.ttfb,
+                type=collected_metrics.type,
+                label=collected_metrics.label,
+                request_id=collected_metrics.request_id,
+                timestamp=collected_metrics.timestamp,
                 duration=collected_metrics.duration,
+                ttfb=collected_metrics.ttfb,
                 audio_duration=collected_metrics.audio_duration,
+                cancelled=collected_metrics.cancelled,
+                characters_count=collected_metrics.characters_count,
+                streamed=collected_metrics.streamed,
+                segment_id=collected_metrics.segment_id,
+                speech_id=collected_metrics.speech_id,
+                metadata=_metric_metadata_to_dict(collected_metrics.metadata),
             )
             await self._publish_live_update(speech_id=speech_id, stage="tts", turn_metrics=turn_metrics)
             logger.debug("TTS metrics collected: speech_id=%s, ttfb=%.3fs", speech_id, collected_metrics.ttfb)
@@ -447,6 +542,7 @@ class MetricsCollector:
                 fallback_duration=collected_metrics.audio_duration,
                 ttfb=collected_metrics.ttfb,
                 observed_total_latency=self._observed_total_latency(speech_id),
+                metric_attributes=_tts_metric_attributes(collected_metrics),
             )
 
         elif isinstance(collected_metrics, metrics.EOUMetrics):
@@ -457,39 +553,57 @@ class MetricsCollector:
                     state.speech_end_monotonic = monotonic()
                 state.eou_delay = collected_metrics.end_of_utterance_delay
                 state.stt_finalization_delay = collected_metrics.transcription_delay
+                state.eou_metrics = EOUMetrics(
+                    type=collected_metrics.type,
+                    timestamp=collected_metrics.timestamp,
+                    end_of_utterance_delay=collected_metrics.end_of_utterance_delay,
+                    transcription_delay=collected_metrics.transcription_delay,
+                    on_user_turn_completed_delay=collected_metrics.on_user_turn_completed_delay,
+                    speech_id=collected_metrics.speech_id,
+                    metadata=_metric_metadata_to_dict(collected_metrics.metadata),
+                )
                 turn_metrics = state.metrics
+                if turn_metrics:
+                    turn_metrics.eou = state.eou_metrics
+                    if self._latest_vad_metrics and turn_metrics.vad is None:
+                        turn_metrics.vad = self._latest_vad_metrics
                 await self._publish_live_update(
                     speech_id=speech_id,
                     stage="eou",
                     turn_metrics=turn_metrics,
                 )
                 logger.debug("EOU metrics collected: speech_id=%s, delay=%.3fs", speech_id, collected_metrics.end_of_utterance_delay)
-                trace_turn = await self._tracer.attach_vad(
+                trace_turn = await self._tracer.attach_eou(
                     duration=collected_metrics.end_of_utterance_delay,
                     transcription_delay=collected_metrics.transcription_delay,
+                    on_user_turn_completed_delay=collected_metrics.on_user_turn_completed_delay,
+                    metric_attributes=_eou_metric_attributes(collected_metrics),
+                    vad_metric_attributes=self._latest_vad_metric_attributes,
                 )
 
         elif isinstance(collected_metrics, metrics.VADMetrics):
             speech_id = getattr(collected_metrics, "speech_id", None)
+            self._latest_vad_metrics = VADMetrics(
+                type=collected_metrics.type,
+                label=collected_metrics.label,
+                timestamp=collected_metrics.timestamp,
+                idle_time=collected_metrics.idle_time,
+                inference_duration_total=collected_metrics.inference_duration_total,
+                inference_count=collected_metrics.inference_count,
+                metadata=_metric_metadata_to_dict(collected_metrics.metadata),
+            )
+            self._latest_vad_metric_attributes = _vad_metric_attributes(collected_metrics)
             if speech_id:
                 state = self._turns.get(speech_id)
                 turn_metrics = state.metrics if state else None
             if speech_id and turn_metrics:
-                turn_metrics.vad = VADMetrics(
-                    idle_time=collected_metrics.idle_time,
-                    inference_duration_total=collected_metrics.inference_duration_total,
-                    inference_count=collected_metrics.inference_count,
-                )
+                turn_metrics.vad = self._latest_vad_metrics
             await self._publisher.publish_live_update(
                 speech_id=speech_id,
                 stage="vad",
                 role=turn_metrics.role if turn_metrics else None,
                 turn_metrics=turn_metrics,
-                vad_metrics=VADMetrics(
-                    idle_time=collected_metrics.idle_time,
-                    inference_duration_total=collected_metrics.inference_duration_total,
-                    inference_count=collected_metrics.inference_count,
-                ),
+                vad_metrics=self._latest_vad_metrics,
                 diagnostic=not bool(speech_id and turn_metrics),
                 eou_delay=self._turns[speech_id].eou_delay if speech_id and speech_id in self._turns else 0.0,
                 stt_finalization_delay=self._turns[speech_id].stt_finalization_delay if speech_id and speech_id in self._turns else 0.0,
@@ -741,3 +855,127 @@ def _extract_text_from_chat_items(chat_items: Any) -> str:
         if text.strip():
             parts.append(text.strip())
     return parts[-1] if parts else ""
+
+
+def _metric_metadata_to_dict(metadata: Any) -> Optional[dict[str, Any]]:
+    if metadata is None:
+        return None
+    if hasattr(metadata, "model_dump"):
+        dumped = metadata.model_dump(exclude_none=True)
+        if isinstance(dumped, dict):
+            return dumped
+        return {"value": dumped}
+    if isinstance(metadata, dict):
+        return metadata
+    return {"value": str(metadata)}
+
+
+def _metadata_attributes(metadata: Any) -> dict[str, Any]:
+    data = _metric_metadata_to_dict(metadata)
+    if not data:
+        return {}
+    return _flatten_attributes(data, prefix="metadata")
+
+
+def _flatten_attributes(
+    data: dict[str, Any], *, prefix: str = ""
+) -> dict[str, Any]:
+    flattened: dict[str, Any] = {}
+    for key, value in data.items():
+        full_key = f"{prefix}.{key}" if prefix else str(key)
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            flattened.update(_flatten_attributes(value, prefix=full_key))
+            continue
+        if isinstance(value, (list, tuple)):
+            serialized = [_safe_attr_value(v) for v in value]
+            flattened[full_key] = serialized
+            continue
+        flattened[full_key] = _safe_attr_value(value)
+    return flattened
+
+
+def _safe_attr_value(value: Any) -> Any:
+    if isinstance(value, (str, bool, int, float)):
+        return value
+    return str(value)
+
+
+def _stt_metric_attributes(collected_metrics: metrics.STTMetrics) -> dict[str, Any]:
+    attrs = {
+        "type": collected_metrics.type,
+        "label": collected_metrics.label,
+        "request_id": collected_metrics.request_id,
+        "timestamp": collected_metrics.timestamp,
+        "duration": collected_metrics.duration,
+        "audio_duration": collected_metrics.audio_duration,
+        "streamed": collected_metrics.streamed,
+    }
+    attrs.update(_metadata_attributes(collected_metrics.metadata))
+    return attrs
+
+
+def _eou_metric_attributes(collected_metrics: metrics.EOUMetrics) -> dict[str, Any]:
+    attrs = {
+        "type": collected_metrics.type,
+        "timestamp": collected_metrics.timestamp,
+        "end_of_utterance_delay": collected_metrics.end_of_utterance_delay,
+        "transcription_delay": collected_metrics.transcription_delay,
+        "on_user_turn_completed_delay": collected_metrics.on_user_turn_completed_delay,
+        "speech_id": collected_metrics.speech_id,
+    }
+    attrs.update(_metadata_attributes(collected_metrics.metadata))
+    return attrs
+
+
+def _vad_metric_attributes(collected_metrics: metrics.VADMetrics) -> dict[str, Any]:
+    attrs = {
+        "type": collected_metrics.type,
+        "label": collected_metrics.label,
+        "timestamp": collected_metrics.timestamp,
+        "idle_time": collected_metrics.idle_time,
+        "inference_duration_total": collected_metrics.inference_duration_total,
+        "inference_count": collected_metrics.inference_count,
+    }
+    attrs.update(_metadata_attributes(collected_metrics.metadata))
+    return attrs
+
+
+def _llm_metric_attributes(collected_metrics: metrics.LLMMetrics) -> dict[str, Any]:
+    attrs = {
+        "type": collected_metrics.type,
+        "label": collected_metrics.label,
+        "request_id": collected_metrics.request_id,
+        "timestamp": collected_metrics.timestamp,
+        "duration": collected_metrics.duration,
+        "ttft": collected_metrics.ttft,
+        "cancelled": collected_metrics.cancelled,
+        "completion_tokens": collected_metrics.completion_tokens,
+        "prompt_tokens": collected_metrics.prompt_tokens,
+        "prompt_cached_tokens": collected_metrics.prompt_cached_tokens,
+        "total_tokens": collected_metrics.total_tokens,
+        "tokens_per_second": collected_metrics.tokens_per_second,
+        "speech_id": collected_metrics.speech_id,
+    }
+    attrs.update(_metadata_attributes(collected_metrics.metadata))
+    return attrs
+
+
+def _tts_metric_attributes(collected_metrics: metrics.TTSMetrics) -> dict[str, Any]:
+    attrs = {
+        "type": collected_metrics.type,
+        "label": collected_metrics.label,
+        "request_id": collected_metrics.request_id,
+        "timestamp": collected_metrics.timestamp,
+        "ttfb": collected_metrics.ttfb,
+        "duration": collected_metrics.duration,
+        "audio_duration": collected_metrics.audio_duration,
+        "cancelled": collected_metrics.cancelled,
+        "characters_count": collected_metrics.characters_count,
+        "streamed": collected_metrics.streamed,
+        "segment_id": collected_metrics.segment_id,
+        "speech_id": collected_metrics.speech_id,
+    }
+    attrs.update(_metadata_attributes(collected_metrics.metadata))
+    return attrs

@@ -730,7 +730,6 @@ function updateLiveMetrics(turn) {
 
   const hasAllStages = (
     isFiniteNumber(liveTurnValues.eouDelay) &&
-    isFiniteNumber(liveTurnValues.sttFinalizationDelay) &&
     isFiniteNumber(liveTurnValues.llmTtft) &&
     isFiniteNumber(liveTurnValues.llmToTtsHandoff) &&
     isFiniteNumber(liveTurnValues.ttsTtfb)
@@ -739,7 +738,6 @@ function updateLiveMetrics(turn) {
   if (hasAllStages) {
     const computedTotal =
       liveTurnValues.eouDelay +
-      liveTurnValues.sttFinalizationDelay +
       liveTurnValues.llmTtft +
       liveTurnValues.llmToTtsHandoff +
       liveTurnValues.ttsTtfb;
