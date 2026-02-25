@@ -192,6 +192,30 @@ class LLMSettings(CoreSettings):
     # Common LLM parameters
     LLM_TEMPERATURE: float = Field(default=0.7, ge=0.0, le=2.0)
     LLM_MAX_TOKENS: int = Field(default=1024, gt=0)
+    LLM_CONN_TIMEOUT_SEC: float = Field(
+        default=12.0,
+        gt=0.0,
+        le=120.0,
+        description="LLM API timeout in seconds for one request attempt",
+    )
+    LLM_CONN_MAX_RETRY: int = Field(
+        default=1,
+        ge=0,
+        le=10,
+        description="Maximum LLM retry attempts on transient failures",
+    )
+    LLM_CONN_RETRY_INTERVAL_SEC: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=30.0,
+        description="Delay in seconds between LLM retries",
+    )
+    TURN_LLM_STALL_TIMEOUT_SEC: float = Field(
+        default=8.0,
+        gt=0.0,
+        le=120.0,
+        description="Warn when a finalized user turn does not reach LLM stage within this timeout",
+    )
 
 
 class LiveKitSettings(CoreSettings):
@@ -201,7 +225,7 @@ class LiveKitSettings(CoreSettings):
     LIVEKIT_AGENT_NAME: str = Field(default="open-voice-agent")
     LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=1, ge=0)
     LIVEKIT_JOB_MEMORY_WARN_MB: float = Field(
-        default=1024,
+        default=6144,
         gt=0,
         description="Per-job memory warning threshold in MB",
     )

@@ -2,13 +2,18 @@ import asyncio
 import base64
 import json
 import sys
+from typing import Any
 
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, Agent, room_io
+from livekit.agents.types import APIConnectOptions
 from livekit.agents.telemetry import set_tracer_provider
+from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.agents.voice.events import (
     AgentStateChangedEvent,
+    CloseEvent,
     ConversationItemAddedEvent,
+    ErrorEvent,
     MetricsCollectedEvent,
     SpeechCreatedEvent,
     UserInputTranscribedEvent,
@@ -25,7 +30,7 @@ from src.agent.graph import create_graph, create_stt
 from src.agent.metrics_collector import MetricsCollector
 from src.plugins.pocket_tts import PocketTTS
 from src.core.settings import settings
-from src.core.logger import logger
+from src.core.logger import detach_default_root_handler, logger
 from livekit.agents.metrics import LLMMetrics, STTMetrics, TTSMetrics, VADMetrics, EOUMetrics, AgentMetrics
 
 _langfuse_tracer_provider: TracerProvider | None = None
@@ -95,8 +100,32 @@ def setup_langfuse_tracer() -> TracerProvider | None:
         return None
 
 
+def _error_type_name(error_obj: Any) -> str:
+    return getattr(error_obj, "type", type(error_obj).__name__)
+
+
+def _error_recoverable(error_obj: Any) -> str:
+    recoverable = getattr(error_obj, "recoverable", None)
+    if recoverable is None:
+        return "unknown"
+    return str(bool(recoverable)).lower()
+
+
+def _error_detail(error_obj: Any) -> str:
+    nested_error = getattr(error_obj, "error", None)
+    if nested_error:
+        return str(nested_error)
+    return str(error_obj)
+
+
 class Assistant(Agent):
-    def __init__(self, metrics_collector: MetricsCollector) -> None:
+    def __init__(
+        self,
+        metrics_collector: MetricsCollector,
+        *,
+        room_name: str,
+        job_id: str,
+    ) -> None:
         super().__init__(
             instructions="""You are a helpful voice AI assistant.
             You eagerly assist users with their questions by providing information from your extensive knowledge.
@@ -104,6 +133,8 @@ class Assistant(Agent):
             You are curious, friendly, and have a sense of humor.""",
         )
         self._metrics_collector = metrics_collector
+        self._room_name = room_name
+        self._job_id = job_id
 
     async def on_enter(self) -> None:
         """Called when the agent enters the session. Set up metrics listeners."""
@@ -142,6 +173,45 @@ class Assistant(Agent):
                     old_state=event.old_state,
                     new_state=event.new_state,
                 )
+            )
+
+        def error_wrapper(event: ErrorEvent) -> None:
+            source = type(event.source).__name__
+            error_type = _error_type_name(event.error)
+            recoverable = _error_recoverable(event.error)
+            detail = _error_detail(event.error)
+            logger.error(
+                "Agent session pipeline error: room=%s job_id=%s source=%s error_type=%s recoverable=%s detail=%s",
+                self._room_name,
+                self._job_id,
+                source,
+                error_type,
+                recoverable,
+                detail,
+            )
+
+        def close_wrapper(event: CloseEvent) -> None:
+            reason = event.reason.value
+            if event.error is None:
+                logger.info(
+                    "Agent session closed: room=%s job_id=%s reason=%s",
+                    self._room_name,
+                    self._job_id,
+                    reason,
+                )
+                return
+
+            error_type = _error_type_name(event.error)
+            recoverable = _error_recoverable(event.error)
+            detail = _error_detail(event.error)
+            logger.warning(
+                "Agent session closed with error: room=%s job_id=%s reason=%s error_type=%s recoverable=%s detail=%s",
+                self._room_name,
+                self._job_id,
+                reason,
+                error_type,
+                recoverable,
+                detail,
             )
 
         async def log_metrics_event(metrics: AgentMetrics) -> None:
@@ -217,6 +287,8 @@ class Assistant(Agent):
         self.session.on("conversation_item_added", conversation_item_wrapper)
         self.session.on("speech_created", speech_created_wrapper)
         self.session.on("agent_state_changed", agent_state_changed_wrapper)
+        self.session.on("error", error_wrapper)
+        self.session.on("close", close_wrapper)
 
 
 
@@ -286,6 +358,12 @@ async def session_handler(ctx: agents.JobContext) -> None:
         temperature=settings.voice.POCKET_TTS_TEMPERATURE,
         lsd_decode_steps=settings.voice.POCKET_TTS_LSD_DECODE_STEPS,
     )
+    llm_conn_options = APIConnectOptions(
+        max_retry=settings.llm.LLM_CONN_MAX_RETRY,
+        retry_interval=settings.llm.LLM_CONN_RETRY_INTERVAL_SEC,
+        timeout=settings.llm.LLM_CONN_TIMEOUT_SEC,
+    )
+    session_conn_options = SessionConnectOptions(llm_conn_options=llm_conn_options)
 
     session = AgentSession(
         stt=create_stt(),
@@ -300,11 +378,17 @@ async def session_handler(ctx: agents.JobContext) -> None:
         min_endpointing_delay=settings.voice.MIN_ENDPOINTING_DELAY,
         max_endpointing_delay=settings.voice.MAX_ENDPOINTING_DELAY,
         preemptive_generation=settings.voice.PREEMPTIVE_GENERATION,
+        conn_options=session_conn_options,
     )
 
     await session.start(
         room=ctx.room,
-        agent=Assistant(metrics_collector=metrics_collector),
+        record=False,
+        agent=Assistant(
+            metrics_collector=metrics_collector,
+            room_name=ctx.room.name,
+            job_id=ctx.job.id,
+        ),
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
                 sample_rate=settings.voice.LIVEKIT_SAMPLE_RATE,
@@ -322,4 +406,5 @@ async def session_handler(ctx: agents.JobContext) -> None:
 
 
 if __name__ == "__main__":
+    detach_default_root_handler()
     agents.cli.run_app(server)

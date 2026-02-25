@@ -143,6 +143,29 @@ LANGFUSE_SECRET_KEY=sk-lf-...
 Each finalized user transcript creates a new trace with spans `stt`, `llm`, and `tts`.
 The Streamlit client generates a new `session_id` on each Connect click and sends it to the agent.
 
+### LLM runtime resilience (NVIDIA provider)
+
+When `LLM_PROVIDER=nvidia`, tune request behavior with:
+
+```bash
+LLM_CONN_TIMEOUT_SEC=12.0
+LLM_CONN_MAX_RETRY=1
+LLM_CONN_RETRY_INTERVAL_SEC=1.0
+TURN_LLM_STALL_TIMEOUT_SEC=8.0
+```
+
+- `LLM_CONN_*` controls timeout/retry behavior for LLM requests.
+- `TURN_LLM_STALL_TIMEOUT_SEC` emits a backend warning if a finalized user turn never reaches the LLM stage.
+
+### Troubleshooting: STT works but no voice reply
+
+If the UI only shows silence/STT activity and never reaches LLM/TTS:
+
+- Check backend logs for `Turn stalled before LLM stage`.
+- Check backend logs for `Agent session pipeline error` with `source=...` and `error_type=...`.
+- Verify NVIDIA credentials and model access; the agent logs which STT key source is used.
+- If local memory warnings are noisy, raise `LIVEKIT_JOB_MEMORY_WARN_MB` (for local setups, `6144` is a practical baseline).
+
 ## Project Structure
 
 ```

@@ -45,8 +45,22 @@ def create_stt():
             f"Initializing NVIDIA STT: {settings.stt.NVIDIA_STT_MODEL} "
             f"(language: {settings.stt.NVIDIA_STT_LANGUAGE_CODE})"
         )
-        # Use NVIDIA_STT_API_KEY if set, otherwise fall back to NVIDIA_API_KEY
-        api_key = settings.stt.NVIDIA_STT_API_KEY or settings.llm.NVIDIA_API_KEY
+        if settings.stt.NVIDIA_STT_API_KEY:
+            api_key = settings.stt.NVIDIA_STT_API_KEY
+            key_source = "NVIDIA_STT_API_KEY"
+        elif settings.llm.NVIDIA_API_KEY:
+            api_key = settings.llm.NVIDIA_API_KEY
+            key_source = "NVIDIA_API_KEY"
+        else:
+            api_key = None
+            key_source = "not_set"
+
+        logger.info("NVIDIA STT auth source: %s", key_source)
+        if not api_key:
+            logger.warning(
+                "NVIDIA STT is configured but no API key is set (NVIDIA_STT_API_KEY/NVIDIA_API_KEY)"
+            )
+
         return nvidia.STT(
             language_code=settings.stt.NVIDIA_STT_LANGUAGE_CODE,
             model=settings.stt.NVIDIA_STT_MODEL,

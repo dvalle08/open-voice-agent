@@ -22,6 +22,7 @@ from opentelemetry import trace  # noqa: F401
 from src.agent._channel_metrics import ChannelPublisher
 from src.agent._turn_tracer import TraceTurn, TurnTracer
 from src.core.logger import logger
+from src.core.settings import settings
 
 
 @dataclass
@@ -199,6 +200,18 @@ class MetricsCollector:
         self._pending_speech_ids_for_first_audio: deque[str] = deque()
         self._latest_agent_speech_id: Optional[str] = None
         self._turns: dict[str, TurnState] = {}
+        self._pending_llm_watchdog_ids: deque[str] = deque()
+        self._llm_stall_tasks: dict[str, asyncio.Task[None]] = {}
+        self._llm_stall_timeout_sec = max(
+            float(
+                getattr(
+                    settings.llm,
+                    "TURN_LLM_STALL_TIMEOUT_SEC",
+                    8.0,
+                )
+            ),
+            0.0,
+        )
 
         self._tracer = TurnTracer(
             publisher=self._publisher,
@@ -249,6 +262,7 @@ class MetricsCollector:
         if not normalized:
             return
         self._pending_transcripts.append(normalized)
+        self._start_llm_stall_watchdog(transcript=normalized)
         room_id = await self._resolve_room_id()
         await self._tracer.create_turn(user_transcript=normalized, room_id=room_id)
 
@@ -395,6 +409,7 @@ class MetricsCollector:
             )
 
         elif isinstance(collected_metrics, metrics.LLMMetrics):
+            self._mark_llm_stage_reached()
             speech_id = collected_metrics.speech_id or collected_metrics.request_id
             turn_metrics = self._get_or_create_turn(speech_id, role="agent")
             self._latest_agent_speech_id = speech_id
@@ -576,6 +591,61 @@ class MetricsCollector:
             return
         self._pending_speech_ids_for_first_audio = deque(
             s for s in self._pending_speech_ids_for_first_audio if s != speech_id
+        )
+
+    def _start_llm_stall_watchdog(self, *, transcript: str) -> None:
+        if self._llm_stall_timeout_sec <= 0:
+            return
+
+        watchdog_id = str(uuid.uuid4())
+        self._pending_llm_watchdog_ids.append(watchdog_id)
+        task = asyncio.create_task(
+            self._warn_if_turn_stalled_before_llm(
+                watchdog_id=watchdog_id,
+                transcript=transcript,
+            ),
+            name=f"llm-stall-watchdog-{watchdog_id}",
+        )
+        self._llm_stall_tasks[watchdog_id] = task
+
+        def _on_done(_: asyncio.Task[None]) -> None:
+            self._llm_stall_tasks.pop(watchdog_id, None)
+
+        task.add_done_callback(_on_done)
+
+    def _mark_llm_stage_reached(self) -> None:
+        while self._pending_llm_watchdog_ids:
+            watchdog_id = self._pending_llm_watchdog_ids.popleft()
+            task = self._llm_stall_tasks.pop(watchdog_id, None)
+            if task:
+                task.cancel()
+                return
+
+    async def _warn_if_turn_stalled_before_llm(
+        self,
+        *,
+        watchdog_id: str,
+        transcript: str,
+    ) -> None:
+        try:
+            await asyncio.sleep(self._llm_stall_timeout_sec)
+        except asyncio.CancelledError:
+            return
+
+        if watchdog_id not in self._pending_llm_watchdog_ids:
+            return
+
+        self._pending_llm_watchdog_ids = deque(
+            wid for wid in self._pending_llm_watchdog_ids if wid != watchdog_id
+        )
+
+        preview = transcript[:80]
+        logger.warning(
+            "Turn stalled before LLM stage: timeout=%.2fs room=%s transcript_chars=%s transcript_preview=%r",
+            self._llm_stall_timeout_sec,
+            self._room_name,
+            len(transcript),
+            preview,
         )
 
     async def _resolve_room_id(self) -> str:

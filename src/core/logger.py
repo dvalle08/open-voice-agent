@@ -8,12 +8,49 @@ log_level = getattr(logging, log_level_value.upper(), logging.INFO)
 
 log_format = "%(asctime)s - %(levelname)s - %(name)s - [%(process)d] %(message)s"
 
-logging.basicConfig(
-    level=log_level,
-    format=log_format,
-    stream=sys.stdout,
-    force=True,
-)
+_default_root_handler: logging.Handler | None = None
+
+
+def _is_agent_cli_invocation() -> bool:
+    script = os.path.basename(sys.argv[0]).lower()
+    if script != "agent.py":
+        return False
+    return any(arg in {"start", "console", "download-files", "dev"} for arg in sys.argv[1:])
+
+
+def _configure_default_root_handler() -> None:
+    """Configure root logging only when no handler is already installed."""
+    global _default_root_handler
+
+    if _is_agent_cli_invocation():
+        return
+
+    root = logging.getLogger()
+    if root.handlers:
+        root.setLevel(log_level)
+        return
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(log_format))
+    root.addHandler(handler)
+    root.setLevel(log_level)
+    _default_root_handler = handler
+
+
+def detach_default_root_handler() -> None:
+    """Detach the handler installed by this module, if present."""
+    global _default_root_handler
+
+    if _default_root_handler is None:
+        return
+
+    root = logging.getLogger()
+    if _default_root_handler in root.handlers:
+        root.removeHandler(_default_root_handler)
+    _default_root_handler = None
+
+
+_configure_default_root_handler()
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
