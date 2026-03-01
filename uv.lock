@@ -730,16 +730,29 @@ wheels = [
 
 [[package]]
 name = "langchain-nvidia-ai-endpoints"
-version = "1.0.3"
+version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "filetype" },
     { name = "langchain-core" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5a/9e/30814da280f7a79b168f83180f6a0396c166f86a566e56bb9877bf562611/langchain_nvidia_ai_endpoints-1.0.3.tar.gz", hash = "sha256:11c48fd24e4a9d4c86c65bcef943400f4e709497c93254c7dc97c43f68c2be89", size = 46526, upload-time = "2026-01-28T22:04:33.93Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/d1/f72ec11097694e24d93268ab031c7ec56ab4bec1c43ef7814c659f3e2493/langchain_nvidia_ai_endpoints-1.1.0.tar.gz", hash = "sha256:048a3e6d7231365fdb9fff7bcff18ce6a516b25500681f51dcb69c39e82512a0", size = 47433, upload-time = "2026-02-25T21:48:16.87Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/67/04/c83f61106a245b74de11c1e075c1cc1e70462ece1dd9fc0584ad992a776d/langchain_nvidia_ai_endpoints-1.0.3-py3-none-any.whl", hash = "sha256:e5f170ad0a335637298bb90fb3df119793821e316355f61ab82f0106913eebbf", size = 50130, upload-time = "2026-01-28T22:04:33.065Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/22/5f07957028f7fa8c3d695934af8e7309bfd5ab43f2a7a756d3c3d6ce44f3/langchain_nvidia_ai_endpoints-1.1.0-py3-none-any.whl", hash = "sha256:eb04251b2b21facf9d6f2e6e7fa593b89e4f5023ebe3af1e02813512d1cd9687", size = 51514, upload-time = "2026-02-25T21:48:15.695Z" },
+]
+
+[[package]]
+name = "langchain-ollama"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "langchain-core" },
+    { name = "ollama" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/73/51/72cd04d74278f3575f921084f34280e2f837211dc008c9671c268c578afe/langchain_ollama-1.0.1.tar.gz", hash = "sha256:e37880c2f41cdb0895e863b1cfd0c2c840a117868b3f32e44fef42569e367443", size = 153850, upload-time = "2025-12-12T21:48:28.68Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e3/46/f2907da16dc5a5a6c679f83b7de21176178afad8d2ca635a581429580ef6/langchain_ollama-1.0.1-py3-none-any.whl", hash = "sha256:37eb939a4718a0255fe31e19fbb0def044746c717b01b97d397606ebc3e9b440", size = 29207, upload-time = "2025-12-12T21:48:27.832Z" },
 ]
 
 [[package]]
@@ -877,8 +890,18 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+codecs = [
+    { name = "av" },
+    { name = "numpy" },
+]
+images = [
+    { name = "pillow" },
+]
 mcp = [
     { name = "mcp" },
+]
+openai = [
+    { name = "livekit-plugins-openai" },
 ]
 silero = [
     { name = "livekit-plugins-silero" },
@@ -955,6 +978,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b1/15/a493e7207f258e027e61b67a3fb6950b16bed78e28fedd6352aed41cb43c/livekit_plugins_nvidia-1.3.3.tar.gz", hash = "sha256:f1439789099e4a69329b13de4460b233a167a621922e85cff63ae7aa17bb0fa5", size = 7446, upload-time = "2025-11-19T21:21:24.156Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/af/da/b26c148e99dd111c45f71f1fb1ae9d4c93820986787858a1cc9927248b06/livekit_plugins_nvidia-1.3.3-py3-none-any.whl", hash = "sha256:99f1e3624f62ba9893fab0124dc0e38b90af60eb2bfcce47f1ada131e111bcb1", size = 8637, upload-time = "2025-11-19T21:21:23.323Z" },
+]
+
+[[package]]
+name = "livekit-plugins-openai"
+version = "1.3.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "livekit-agents", extra = ["codecs", "images"] },
+    { name = "openai", extra = ["realtime"] },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/de/13/25cbbf86a7e7e6ecfb8cd3e51e2a72d20c65c5ca9701883eaee83c685aac/livekit_plugins_openai-1.3.3.tar.gz", hash = "sha256:4c43bc37a4854fccd545d1b502c5b52dee53b37a40dbe41343ff33b46b55ffc1", size = 45471, upload-time = "2025-11-19T21:21:25.837Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1d/66/7ae04029ab9a65f96f6bd35f161c47044af2e3dedfe1404e28cebe43d7e3/livekit_plugins_openai-1.3.3-py3-none-any.whl", hash = "sha256:d7840dca3e68a22cbbc18ef720308bed917ba88180e163aa2a4849996c0a4ea7", size = 52280, upload-time = "2025-11-19T21:21:24.913Z" },
 ]
 
 [[package]]
@@ -1296,6 +1332,19 @@ wheels = [
 ]
 
 [[package]]
+name = "ollama"
+version = "0.6.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9d/5a/652dac4b7affc2b37b95386f8ae78f22808af09d720689e3d7a86b6ed98e/ollama-0.6.1.tar.gz", hash = "sha256:478c67546836430034b415ed64fa890fd3d1ff91781a9d548b3325274e69d7c6", size = 51620, upload-time = "2025-11-13T23:02:17.416Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/47/4f/4a617ee93d8208d2bcf26b2d8b9402ceaed03e3853c754940e2290fed063/ollama-0.6.1-py3-none-any.whl", hash = "sha256:fc4c984b345735c5486faeee67d8a265214a31cbb828167782dc642ce0a2bf8c", size = 14354, upload-time = "2025-11-13T23:02:16.292Z" },
+]
+
+[[package]]
 name = "onnxruntime"
 version = "1.23.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1321,8 +1370,9 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "langchain-nvidia-ai-endpoints" },
+    { name = "langchain-ollama" },
     { name = "langgraph" },
-    { name = "livekit-agents", extra = ["mcp", "silero", "turn-detector"] },
+    { name = "livekit-agents", extra = ["mcp", "openai", "silero", "turn-detector"] },
     { name = "livekit-api" },
     { name = "livekit-plugins-langchain" },
     { name = "livekit-plugins-noise-cancellation" },
@@ -1341,9 +1391,10 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "langchain-nvidia-ai-endpoints", specifier = ">=1.0.3" },
+    { name = "langchain-nvidia-ai-endpoints", specifier = ">=1.1.0" },
+    { name = "langchain-ollama", specifier = ">=1.0.1" },
     { name = "langgraph", specifier = ">=1.0.8" },
-    { name = "livekit-agents", extras = ["silero", "turn-detector", "mcp"], specifier = ">=1.3.3,<1.4" },
+    { name = "livekit-agents", extras = ["silero", "turn-detector", "mcp", "openai"], specifier = ">=1.3.3,<1.4" },
     { name = "livekit-api", specifier = "==1.1.0" },
     { name = "livekit-plugins-langchain", specifier = ">=1.3.3" },
     { name = "livekit-plugins-noise-cancellation", specifier = "~=0.2" },
@@ -1377,6 +1428,11 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/9c/a2/677f22c4b487effb8a09439fb6134034b5f0a39ca27df8b95fac23a93720/openai-2.17.0.tar.gz", hash = "sha256:47224b74bd20f30c6b0a6a329505243cb2f26d5cf84d9f8d0825ff8b35e9c999", size = 631445, upload-time = "2026-02-05T16:27:40.953Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/44/97/284535aa75e6e84ab388248b5a323fc296b1f70530130dee37f7f4fbe856/openai-2.17.0-py3-none-any.whl", hash = "sha256:4f393fd886ca35e113aac7ff239bcd578b81d8f104f5aedc7d3693eb2af1d338", size = 1069524, upload-time = "2026-02-05T16:27:38.941Z" },
+]
+
+[package.optional-dependencies]
+realtime = [
+    { name = "websockets" },
 ]
 
 [[package]]
