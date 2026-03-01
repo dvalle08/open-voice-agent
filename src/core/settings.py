@@ -125,7 +125,7 @@ class VoiceSettings(CoreSettings):
         description="Minimum endpointing delay (seconds) before committing user turn",
     )
     MAX_ENDPOINTING_DELAY: float = Field(
-        default=1.0,
+        default=1.5,
         ge=0.1,
         le=10.0,
         description="Maximum endpointing delay (seconds) when turn detector expects continuation",

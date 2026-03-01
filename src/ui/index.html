@@ -582,12 +582,12 @@
                 <span class="metric-tech">EOU Delay</span>
                 <div class="tooltip">
                   <button type="button" class="tooltip-trigger" aria-label="What is EOU Delay?">i</button>
-                  <span class="tooltip-content" role="tooltip">Time from your last speech frame until the turn is considered complete. In this pipeline it already includes transcription wait.</span>
+                  <span class="tooltip-content" role="tooltip">Seconds from detected end of speech (VAD) until your turn is finalized, including transcription delay.</span>
                 </div>
               </div>
             </div>
-            <div class="metric-card-human">Silence Detection</div>
-            <div class="metric-card-desc">Deciding that your turn has ended</div>
+            <div class="metric-card-human">Turn Detection</div>
+            <div class="metric-card-desc">Finalizing when your turn is complete</div>
             <div class="metric-card-value-row">
               <span class="metric-card-value" id="live-eou">--</span>
               <span class="metric-card-avg" id="live-eou-avg"></span>
