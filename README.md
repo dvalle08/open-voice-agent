@@ -130,6 +130,19 @@ NVIDIA_MODEL=meta/llama-3.1-8b-instruct
 
 See `.env.example` for all available options.
 
+### MCP runtime (default on)
+
+```bash
+MCP_ENABLED=true
+LLM_PROVIDER=nvidia
+NVIDIA_API_KEY=nvapi-xxx
+```
+
+- MCP endpoint is hardcoded to `https://huggingface.co/mcp` (no auth configured).
+- When MCP mode is active, the agent uses a tool-capable NVIDIA model (`meta/llama-3.1-8b-instruct`) for autonomous MCP tool calling.
+- In MCP mode, startup greeting is sent with `session.say(...)` and manual `session.generate_reply(...)` calls are disabled by policy.
+- If MCP prerequisites are missing (for example, non-NVIDIA provider or missing API key), the agent logs a warning and falls back to the legacy LangGraph runtime.
+
 ### Langfuse tracing (one trace per turn)
 
 ```bash

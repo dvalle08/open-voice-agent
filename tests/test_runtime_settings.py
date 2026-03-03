@@ -9,6 +9,7 @@ from src.core.settings import LLMSettings
 def test_llm_runtime_tuning_defaults_are_declared() -> None:
     fields = LLMSettings.model_fields
 
+    assert fields["MCP_ENABLED"].default is True
     assert fields["LLM_CONN_TIMEOUT_SEC"].default == 12.0
     assert fields["LLM_CONN_MAX_RETRY"].default == 1
     assert fields["LLM_CONN_RETRY_INTERVAL_SEC"].default == 1.0

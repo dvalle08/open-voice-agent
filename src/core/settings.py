@@ -174,6 +174,13 @@ class LLMSettings(CoreSettings):
         default="huggingface",
         description="LLM provider: 'nvidia' or 'huggingface'"
     )
+    MCP_ENABLED: bool = Field(
+        default=True,
+        description=(
+            "Enable LiveKit MCP runtime (hardcoded to https://huggingface.co/mcp). "
+            "When disabled or unavailable, the agent falls back to the legacy LangGraph runtime."
+        ),
+    )
 
     # NVIDIA settings (existing)
     NVIDIA_API_KEY: Optional[str] = Field(default=None)
