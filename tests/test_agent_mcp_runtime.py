@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import re
+from typing import Any
 
 import pytest
 
 from src.agent.agent import (
     ASSISTANT_INSTRUCTIONS,
     _cancel_task_for_shutdown,
+    _run_llm_warmup,
+    _schedule_llm_warmup_task,
     _monitor_startup_greeting_handle,
     _schedule_startup_greeting_task,
 )
@@ -58,6 +61,54 @@ class _FailingSaySession(_FakeSession):
     def say(self, text: str, **kwargs: object) -> _FakeSpeechHandle:
         self.say_calls.append({"text": text, "kwargs": kwargs})
         raise RuntimeError("say failed")
+
+
+class _FakeLLMStream:
+    def __init__(
+        self,
+        *,
+        chunks: list[object] | None = None,
+        iter_error: Exception | None = None,
+        block_forever: bool = False,
+    ) -> None:
+        self._chunks = list(chunks or [])
+        self._iter_error = iter_error
+        self._block_forever = block_forever
+        self._idx = 0
+        self._blocked = asyncio.Event()
+        self.aclose_calls = 0
+        self.iterations = 0
+        self.closed = False
+
+    def __aiter__(self) -> "_FakeLLMStream":
+        return self
+
+    async def __anext__(self) -> object:
+        if self._block_forever:
+            await self._blocked.wait()
+        if self._iter_error is not None:
+            raise self._iter_error
+        if self._idx >= len(self._chunks):
+            raise StopAsyncIteration
+        chunk = self._chunks[self._idx]
+        self._idx += 1
+        self.iterations += 1
+        return chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
+        self.aclose_calls += 1
+        self._blocked.set()
+
+
+class _FakeLLMClient:
+    def __init__(self, stream: _FakeLLMStream) -> None:
+        self._stream = stream
+        self.chat_calls: list[dict[str, object]] = []
+
+    def chat(self, **kwargs: object) -> _FakeLLMStream:
+        self.chat_calls.append(kwargs)
+        return self._stream
 
 
 def test_resolve_mcp_runtime_mode_enables_mcp_with_supported_config() -> None:
@@ -285,3 +336,64 @@ def test_assistant_instructions_restrict_tool_usage_to_clear_intent() -> None:
 def test_assistant_instructions_enforce_ultra_short_answers() -> None:
     assert "answer with the fewest words possible" in ASSISTANT_INSTRUCTIONS
     assert "Keep most responses to one short sentence." in ASSISTANT_INSTRUCTIONS
+
+
+def test_run_llm_warmup_consumes_first_chunk_and_closes_stream() -> None:
+    stream = _FakeLLMStream(chunks=[{"delta": "OK"}, {"delta": "ignored"}])
+    llm_client = _FakeLLMClient(stream)
+
+    asyncio.run(
+        _run_llm_warmup(
+            llm_client=llm_client,
+            conn_options=object(),  # type: ignore[arg-type]
+            provider="nvidia",
+            model="test-model",
+        )
+    )
+
+    assert len(llm_client.chat_calls) == 1
+    call = llm_client.chat_calls[0]
+    assert "chat_ctx" in call
+    assert call["tools"] is None
+    assert stream.iterations == 1
+    assert stream.closed is True
+    assert stream.aclose_calls == 1
+
+
+def test_run_llm_warmup_swallows_stream_errors_and_closes() -> None:
+    stream = _FakeLLMStream(iter_error=RuntimeError("warmup boom"))
+    llm_client = _FakeLLMClient(stream)
+
+    asyncio.run(
+        _run_llm_warmup(
+            llm_client=llm_client,
+            conn_options=object(),  # type: ignore[arg-type]
+            provider="nvidia",
+            model="test-model",
+        )
+    )
+
+    assert len(llm_client.chat_calls) == 1
+    assert stream.closed is True
+    assert stream.aclose_calls == 1
+
+
+def test_schedule_llm_warmup_task_is_shutdown_safe() -> None:
+    async def _run() -> tuple[asyncio.Task[Any], _FakeLLMStream]:
+        stream = _FakeLLMStream(block_forever=True)
+        llm_client = _FakeLLMClient(stream)
+        task = _schedule_llm_warmup_task(
+            llm_client=llm_client,
+            conn_options=object(),  # type: ignore[arg-type]
+            provider="nvidia",
+            model="test-model",
+        )
+        assert not task.done()
+        await asyncio.sleep(0)
+        await _cancel_task_for_shutdown(task, task_name="llm warm-up", timeout_sec=0.1)
+        return task, stream
+
+    task, stream = asyncio.run(_run())
+    assert task.done()
+    assert stream.closed is True
+    assert stream.aclose_calls == 1

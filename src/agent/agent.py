@@ -2,10 +2,11 @@ import asyncio
 import base64
 import json
 import sys
+from time import monotonic
 from typing import Any
 
 from livekit import agents, rtc
-from livekit.agents import AgentServer, AgentSession, Agent, room_io
+from livekit.agents import AgentServer, AgentSession, Agent, llm, room_io
 from livekit.agents.types import APIConnectOptions
 from livekit.agents.telemetry import set_tracer_provider
 from livekit.agents.voice.agent_session import SessionConnectOptions
@@ -211,6 +212,83 @@ def _schedule_startup_greeting_task(
     return task
 
 
+async def _run_llm_warmup(
+    *,
+    llm_client: Any,
+    conn_options: APIConnectOptions,
+    provider: str,
+    model: str,
+) -> None:
+    started = monotonic()
+    stream: Any | None = None
+    got_first_chunk = False
+
+    try:
+        chat_ctx = llm.ChatContext.empty()
+        chat_ctx.add_message(role="user", content="Reply with OK.")
+        stream = llm_client.chat(
+            chat_ctx=chat_ctx,
+            tools=None,
+            conn_options=conn_options,
+        )
+        async for _ in stream:
+            got_first_chunk = True
+            break
+    except asyncio.CancelledError:
+        logger.info("LLM warm-up cancelled: provider=%s model=%s", provider, model)
+    except Exception as exc:
+        logger.warning("LLM warm-up failed: provider=%s model=%s detail=%s", provider, model, exc)
+    finally:
+        if stream is not None:
+            aclose = getattr(stream, "aclose", None)
+            if callable(aclose):
+                try:
+                    await aclose()
+                except Exception:
+                    pass
+
+        elapsed_ms = max((monotonic() - started) * 1000.0, 0.0)
+        logger.info(
+            "LLM warm-up completed: provider=%s model=%s first_chunk=%s elapsed_ms=%.1f",
+            provider,
+            model,
+            got_first_chunk,
+            elapsed_ms,
+        )
+
+
+def _schedule_llm_warmup_task(
+    *,
+    llm_client: Any,
+    conn_options: APIConnectOptions,
+    provider: str,
+    model: str,
+) -> asyncio.Task[Any]:
+    logger.info("Scheduling LLM warm-up task: provider=%s model=%s", provider, model)
+    task = asyncio.create_task(
+        _run_llm_warmup(
+            llm_client=llm_client,
+            conn_options=conn_options,
+            provider=provider,
+            model=model,
+        ),
+        name="llm-warmup",
+    )
+
+    def _on_done(completed_task: asyncio.Task[Any]) -> None:
+        if completed_task.cancelled():
+            return
+        try:
+            exc = completed_task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.warning(f"LLM warm-up task failed: {exc}")
+
+    task.add_done_callback(_on_done)
+    return task
+
+
 async def _cancel_task_for_shutdown(
     task: asyncio.Task[Any] | None,
     *,
@@ -366,6 +444,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
     )
     trace_provider = setup_langfuse_tracer()
     startup_greeting_task: asyncio.Task[Any] | None = None
+    llm_warmup_task: asyncio.Task[Any] | None = None
 
     if trace_provider:
         async def flush_trace(_: str) -> None:
@@ -383,6 +462,14 @@ async def session_handler(ctx: agents.JobContext) -> None:
         )
 
     ctx.add_shutdown_callback(cancel_startup_greeting)
+
+    async def cancel_llm_warmup(_: str) -> None:
+        await _cancel_task_for_shutdown(
+            llm_warmup_task,
+            task_name="llm warm-up",
+        )
+
+    ctx.add_shutdown_callback(cancel_llm_warmup)
 
     # Create metrics collector
     participant = getattr(ctx.job, "participant", None)
@@ -447,6 +534,12 @@ async def session_handler(ctx: agents.JobContext) -> None:
         mcp_server_url=settings.llm.MCP_SERVER_URL,
     )
     mcp_runtime_active = llm_runtime.mcp_runtime_active
+    llm_warmup_task = _schedule_llm_warmup_task(
+        llm_client=llm_runtime.llm,
+        conn_options=llm_conn_options,
+        provider=llm_runtime.provider,
+        model=llm_runtime.model,
+    )
 
     session_kwargs: dict[str, Any] = dict(
         stt=create_stt(),

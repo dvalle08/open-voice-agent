@@ -208,7 +208,7 @@ class LLMSettings(CoreSettings):
     LLM_TEMPERATURE: float = Field(default=0.7, ge=0.0, le=2.0)
     LLM_MAX_TOKENS: int = Field(default=1024, gt=0)
     LLM_CONN_TIMEOUT_SEC: float = Field(
-        default=12.0,
+        default=20.0,
         gt=0.0,
         le=120.0,
         description="LLM API timeout in seconds for one request attempt",
@@ -226,7 +226,7 @@ class LLMSettings(CoreSettings):
         description="Delay in seconds between LLM retries",
     )
     TURN_LLM_STALL_TIMEOUT_SEC: float = Field(
-        default=8.0,
+        default=12.0,
         gt=0.0,
         le=120.0,
         description="Warn when a finalized user turn does not reach LLM stage within this timeout",
