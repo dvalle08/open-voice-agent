@@ -171,29 +171,37 @@ class STTSettings(CoreSettings):
 class LLMSettings(CoreSettings):
     # Provider selection
     LLM_PROVIDER: str = Field(
-        default="huggingface",
-        description="LLM provider: 'nvidia' or 'huggingface'"
+        default="nvidia",
+        description="LLM provider: 'nvidia' or 'ollama'"
     )
     MCP_ENABLED: bool = Field(
         default=True,
         description=(
-            "Enable LiveKit MCP runtime (hardcoded to https://huggingface.co/mcp). "
-            "When disabled or unavailable, the agent falls back to the legacy LangGraph runtime."
+            "Enable LiveKit MCP runtime. "
+            "When enabled, agent sessions expose tools from MCP_SERVER_URL for supported providers."
         ),
     )
-
-    # NVIDIA settings (existing)
-    NVIDIA_API_KEY: Optional[str] = Field(default=None)
-    NVIDIA_MODEL: str = Field(default="qwen/qwen2.5-7b-instruct")
-
-    # HuggingFace settings (new)
-    HUGGINGFACE_MODEL_ID: str = Field(
-        default="Qwen/Qwen2.5-3B-Instruct",
-        description="HuggingFace model repository ID"
+    MCP_SERVER_URL: str = Field(
+        default="https://huggingface.co/mcp",
+        description="MCP server URL used by the LiveKit MCP runtime",
     )
-    HUGGINGFACE_DEVICE: Optional[str] = Field(
-        default=None,
-        description="Device for inference: 'cuda', 'cpu', or None for auto-detect"
+
+    # NVIDIA settings
+    NVIDIA_API_KEY: Optional[str] = Field(default=None)
+    NVIDIA_MODEL: str = Field(default="qwen/qwen3-next-80b-a3b-instruct")
+
+    # Ollama settings
+    OLLAMA_BASE_URL: str = Field(
+        default="http://localhost:11434/v1",
+        description="OpenAI-compatible Ollama endpoint",
+    )
+    OLLAMA_MODEL: str = Field(
+        default="qwen2.5:7b",
+        description="Ollama model tag",
+    )
+    OLLAMA_API_KEY: Optional[str] = Field(
+        default="ollama",
+        description="Dummy API key for OpenAI-compatible clients (Ollama ignores auth by default)",
     )
 
     # Common LLM parameters

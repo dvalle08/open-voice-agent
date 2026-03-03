@@ -2,12 +2,10 @@ import asyncio
 import base64
 import json
 import sys
-from dataclasses import dataclass
 from typing import Any
 
-import httpx
 from livekit import agents, rtc
-from livekit.agents import AgentServer, AgentSession, Agent, room_io, mcp
+from livekit.agents import AgentServer, AgentSession, Agent, room_io
 from livekit.agents.types import APIConnectOptions
 from livekit.agents.telemetry import set_tracer_provider
 from livekit.agents.voice.agent_session import SessionConnectOptions
@@ -22,28 +20,23 @@ from livekit.agents.voice.events import (
 )
 from livekit.plugins import noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
-from livekit.plugins import langchain, openai as openai_plugin
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-from src.agent.graph import create_graph, create_stt
-from src.agent._langchain_usage_patch import apply_langchain_usage_patch
+from src.agent.llm_runtime import (
+    _install_mcp_generate_reply_guard,
+    _run_startup_greeting,
+    build_llm_runtime,
+)
 from src.agent.metrics_collector import MetricsCollector
+from src.agent.stt_factory import create_stt
 from src.plugins.pocket_tts import PocketTTS
-from src.core.settings import settings
 from src.core.logger import detach_default_root_handler, logger
-from livekit.agents.metrics import LLMMetrics, STTMetrics, TTSMetrics, VADMetrics, EOUMetrics, AgentMetrics
+from src.core.settings import settings
 
 _langfuse_tracer_provider: TracerProvider | None = None
-MCP_SERVER_URL = "https://huggingface.co/mcp"
-NVIDIA_OPENAI_BASE_URL = "https://integrate.api.nvidia.com/v1"
-MCP_NVIDIA_TOOL_MODEL = "qwen/qwen3-next-80b-a3b-instruct"#"meta/llama-3.1-8b-instruct" #"meta/llama-4-scout-17b-16e-instruct" #"nvidia/llama-3.1-nemotron-nano-8b-v1" #"meta/llama-3.1-8b-instruct"
-MCP_STARTUP_GREETING = "Hi, I am Open Voice Agent. How can I help you today?"
-MCP_GENERATE_REPLY_BLOCK_MESSAGE = (
-    "Manual generate_reply is disabled in MCP mode; use session.say(...) instead."
-)
 ASSISTANT_INSTRUCTIONS = """You are Open Voice Agent, a helpful voice AI assistant.
 You run as a real-time pipeline: LiveKit transports user audio, STT converts speech to text, the LLM reasons and may call MCP tools, and TTS generates spoken audio responses.
 Default behavior: answer with the fewest words possible while still being correct and helpful.
@@ -54,105 +47,6 @@ If tool usage is uncertain, ask one short clarification question before calling 
 Only call tools that are explicitly available in the current session; never invent tool or function names.
 If a user asks how you work, explain the pipeline and component roles in one to two short sentences.
 Use plain voice-friendly text only; no markdown, emojis, bullets, or decorative punctuation."""
-
-
-@dataclass(frozen=True)
-class MCPRuntimeDecision:
-    enabled: bool
-    reason: str
-
-
-def resolve_mcp_runtime_mode(
-    *,
-    mcp_enabled: bool,
-    llm_provider: str,
-    nvidia_api_key: str | None,
-) -> MCPRuntimeDecision:
-    provider = (llm_provider or "").strip().lower()
-    if not mcp_enabled:
-        return MCPRuntimeDecision(enabled=False, reason="mcp_disabled")
-    if provider != "nvidia":
-        return MCPRuntimeDecision(enabled=False, reason=f"provider_not_supported:{provider}")
-    if not nvidia_api_key:
-        return MCPRuntimeDecision(enabled=False, reason="missing_nvidia_api_key")
-    return MCPRuntimeDecision(enabled=True, reason="mcp_enabled")
-
-
-def _build_llm_runtime() -> tuple[Any, list[mcp.MCPServerHTTP] | None]:
-    decision = resolve_mcp_runtime_mode(
-        mcp_enabled=settings.llm.MCP_ENABLED,
-        llm_provider=settings.llm.LLM_PROVIDER,
-        nvidia_api_key=settings.llm.NVIDIA_API_KEY,
-    )
-    if decision.enabled:
-        llm_timeout = _build_mcp_http_timeout(settings.llm.LLM_CONN_TIMEOUT_SEC)
-        logger.info(
-            "MCP runtime enabled: mcp_server=%s llm_provider=nvidia llm_model=%s llm_timeout_sec=%.2f",
-            MCP_SERVER_URL,
-            MCP_NVIDIA_TOOL_MODEL,
-            settings.llm.LLM_CONN_TIMEOUT_SEC,
-        )
-        return (
-            openai_plugin.LLM(
-                model=MCP_NVIDIA_TOOL_MODEL,
-                api_key=settings.llm.NVIDIA_API_KEY,
-                base_url=NVIDIA_OPENAI_BASE_URL,
-                temperature=settings.llm.LLM_TEMPERATURE,
-                timeout=llm_timeout,
-                _strict_tool_schema=False,
-            ),
-            [mcp.MCPServerHTTP(url=MCP_SERVER_URL)],
-        )
-
-    if settings.llm.MCP_ENABLED:
-        logger.warning(
-            "MCP runtime requested but unavailable; falling back to legacy LangGraph runtime: reason=%s",
-            decision.reason,
-        )
-    else:
-        logger.info("MCP runtime disabled (MCP_ENABLED=false); using legacy LangGraph runtime")
-    return langchain.LLMAdapter(create_graph()), None
-
-
-def _build_mcp_http_timeout(timeout_seconds: float) -> httpx.Timeout:
-    bounded_timeout = max(timeout_seconds, 1.0)
-    return httpx.Timeout(
-        connect=bounded_timeout,
-        read=bounded_timeout,
-        write=bounded_timeout,
-        pool=bounded_timeout,
-    )
-
-
-def _is_mcp_runtime_active(mcp_servers: list[mcp.MCPServerHTTP] | None) -> bool:
-    return mcp_servers is not None
-
-
-def _install_mcp_generate_reply_guard(
-    session: AgentSession,
-    *,
-    mcp_runtime_active: bool,
-) -> None:
-    if not mcp_runtime_active:
-        return
-    if getattr(session, "_open_voice_mcp_generate_reply_guard_installed", False):
-        return
-
-    def _blocked_generate_reply(*_: Any, **__: Any) -> Any:
-        raise RuntimeError(MCP_GENERATE_REPLY_BLOCK_MESSAGE)
-
-    setattr(session, "_open_voice_mcp_generate_reply_guard_installed", True)
-    setattr(session, "_open_voice_original_generate_reply", session.generate_reply)
-    setattr(session, "generate_reply", _blocked_generate_reply)
-    logger.info("MCP runtime policy active: manual generate_reply disabled")
-
-
-async def _run_startup_greeting(session: AgentSession, *, mcp_runtime_active: bool) -> None:
-    if mcp_runtime_active:
-        logger.info("MCP runtime startup greeting via session.say")
-        await session.say(MCP_STARTUP_GREETING)
-        return
-    session.generate_reply(instructions="Greet the user and offer your assistance.")
 
 
 def _normalize_langfuse_host() -> str | None:
@@ -205,7 +99,7 @@ def setup_langfuse_tracer() -> TracerProvider | None:
                 {
                     SERVICE_NAME: "open-voice-agent",
                     SERVICE_VERSION: getattr(agents, "__version__", "unknown"),
-                    "deployment.environment": settings.langfuse.LANGFUSE_ENVIRONMENT ,#"default",
+                    "deployment.environment": settings.langfuse.LANGFUSE_ENVIRONMENT,
                 }
             )
         )
@@ -329,7 +223,7 @@ class Assistant(Agent):
                 recoverable,
                 detail,
             )
-            
+
         self.session.on("metrics_collected", metrics_wrapper)
         self.session.on("user_input_transcribed", transcript_wrapper)
         self.session.on("conversation_item_added", conversation_item_wrapper)
@@ -337,8 +231,6 @@ class Assistant(Agent):
         self.session.on("agent_state_changed", agent_state_changed_wrapper)
         self.session.on("error", error_wrapper)
         self.session.on("close", close_wrapper)
-
-
 
 server = AgentServer(
     num_idle_processes=settings.livekit.LIVEKIT_NUM_IDLE_PROCESSES,
@@ -354,7 +246,6 @@ async def session_handler(ctx: agents.JobContext) -> None:
         ctx.job.id,
     )
     trace_provider = setup_langfuse_tracer()
-    apply_langchain_usage_patch()
     if trace_provider:
         async def flush_trace(_: str) -> None:
             try:
@@ -413,12 +304,24 @@ async def session_handler(ctx: agents.JobContext) -> None:
         timeout=settings.llm.LLM_CONN_TIMEOUT_SEC,
     )
     session_conn_options = SessionConnectOptions(llm_conn_options=llm_conn_options)
-    llm_runtime, mcp_servers = _build_llm_runtime()
-    mcp_runtime_active = _is_mcp_runtime_active(mcp_servers)
+    llm_runtime = build_llm_runtime(
+        llm_provider=settings.llm.LLM_PROVIDER,
+        llm_temperature=settings.llm.LLM_TEMPERATURE,
+        llm_max_tokens=settings.llm.LLM_MAX_TOKENS,
+        llm_timeout_sec=settings.llm.LLM_CONN_TIMEOUT_SEC,
+        nvidia_api_key=settings.llm.NVIDIA_API_KEY,
+        nvidia_model=settings.llm.NVIDIA_MODEL,
+        ollama_base_url=settings.llm.OLLAMA_BASE_URL,
+        ollama_model=settings.llm.OLLAMA_MODEL,
+        ollama_api_key=settings.llm.OLLAMA_API_KEY,
+        mcp_enabled=settings.llm.MCP_ENABLED,
+        mcp_server_url=settings.llm.MCP_SERVER_URL,
+    )
+    mcp_runtime_active = llm_runtime.mcp_runtime_active
 
     session_kwargs: dict[str, Any] = dict(
         stt=create_stt(),
-        llm=llm_runtime,
+        llm=llm_runtime.llm,
         tts=tts_engine,
         vad=silero.VAD.load(
             min_speech_duration=settings.voice.VAD_MIN_SPEECH_DURATION,
@@ -431,8 +334,8 @@ async def session_handler(ctx: agents.JobContext) -> None:
         preemptive_generation=settings.voice.PREEMPTIVE_GENERATION,
         conn_options=session_conn_options,
     )
-    if mcp_servers is not None:
-        session_kwargs["mcp_servers"] = mcp_servers
+    if llm_runtime.mcp_servers is not None:
+        session_kwargs["mcp_servers"] = llm_runtime.mcp_servers
 
     session = AgentSession(**session_kwargs)
     _install_mcp_generate_reply_guard(session, mcp_runtime_active=mcp_runtime_active)

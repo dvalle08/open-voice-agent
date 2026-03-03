@@ -5,13 +5,14 @@ import re
 
 import pytest
 
-from src.agent.agent import (
-    ASSISTANT_INSTRUCTIONS,
+from src.agent.agent import ASSISTANT_INSTRUCTIONS
+from src.agent.llm_runtime import (
     MCP_GENERATE_REPLY_BLOCK_MESSAGE,
     MCP_STARTUP_GREETING,
     _build_mcp_http_timeout,
     _install_mcp_generate_reply_guard,
     _run_startup_greeting,
+    build_llm_runtime,
     resolve_mcp_runtime_mode,
 )
 
@@ -52,15 +53,26 @@ def test_resolve_mcp_runtime_mode_respects_disabled_flag() -> None:
     assert decision.reason == "mcp_disabled"
 
 
-def test_resolve_mcp_runtime_mode_requires_nvidia_provider() -> None:
+def test_resolve_mcp_runtime_mode_rejects_unsupported_provider() -> None:
     decision = resolve_mcp_runtime_mode(
         mcp_enabled=True,
-        llm_provider="huggingface",
+        llm_provider="unknown-provider",
         nvidia_api_key="nvapi-test",
     )
 
     assert decision.enabled is False
-    assert decision.reason == "provider_not_supported:huggingface"
+    assert decision.reason == "provider_not_supported:unknown-provider"
+
+
+def test_resolve_mcp_runtime_mode_supports_ollama_provider() -> None:
+    decision = resolve_mcp_runtime_mode(
+        mcp_enabled=True,
+        llm_provider="ollama",
+        nvidia_api_key=None,
+    )
+
+    assert decision.enabled is True
+    assert decision.reason == "mcp_enabled"
 
 
 def test_resolve_mcp_runtime_mode_requires_nvidia_api_key() -> None:
@@ -128,6 +140,44 @@ def test_build_mcp_http_timeout_enforces_positive_minimum() -> None:
     assert timeout.read == 1.0
     assert timeout.write == 1.0
     assert timeout.pool == 1.0
+
+
+def test_build_llm_runtime_supports_ollama_with_mcp() -> None:
+    runtime = build_llm_runtime(
+        llm_provider="ollama",
+        llm_temperature=0.7,
+        llm_max_tokens=1024,
+        llm_timeout_sec=12.0,
+        nvidia_api_key=None,
+        nvidia_model="meta/llama-3.1-8b-instruct",
+        ollama_base_url="http://localhost:11434/v1",
+        ollama_model="qwen2.5:7b",
+        ollama_api_key=None,
+        mcp_enabled=True,
+        mcp_server_url="https://huggingface.co/mcp",
+    )
+
+    assert runtime.provider == "ollama"
+    assert runtime.model == "qwen2.5:7b"
+    assert runtime.mcp_runtime_active is True
+    assert runtime.mcp_servers is not None
+
+
+def test_build_llm_runtime_requires_nvidia_key() -> None:
+    with pytest.raises(ValueError, match="NVIDIA_API_KEY is required"):
+        build_llm_runtime(
+            llm_provider="nvidia",
+            llm_temperature=0.7,
+            llm_max_tokens=1024,
+            llm_timeout_sec=12.0,
+            nvidia_api_key=None,
+            nvidia_model="meta/llama-3.1-8b-instruct",
+            ollama_base_url="http://localhost:11434/v1",
+            ollama_model="qwen2.5:7b",
+            ollama_api_key="ollama",
+            mcp_enabled=False,
+            mcp_server_url="https://huggingface.co/mcp",
+        )
 
 
 def test_assistant_instructions_discourage_tools_for_small_talk() -> None:

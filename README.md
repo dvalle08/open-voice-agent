@@ -20,21 +20,21 @@ pinned: false
 ---
 
 ## Description
-A real-time conversational voice agent built with open-source components, deployable on consumer hardware (8GB VRAM)
+A real-time conversational voice agent built with open-source components, deployable on consumer hardware (8GB VRAM).
 
-The core value is in the **custom LiveKit plugins** — reusable integrations that let you plug any HuggingFace model into LiveKit's agent framework.
+The core value is in the **custom LiveKit plugins** for STT/TTS and a clean runtime layer for MCP-enabled LLM providers.
 
 ## Architecture
 
 ```
-User Audio → Moonshine STT → Qwen2.5-3B / NVIDIA LLM → Pocket TTS → Audio Response
+User Audio → Moonshine STT → Ollama / NVIDIA LLM (+ optional MCP tools) → Pocket TTS → Audio Response
                           ↕ LiveKit (WebRTC) ↕
 ```
 
 | Component | Model | Why this one |
 |-----------|-------|-------------|
 | **STT** | [Moonshine](https://huggingface.co/usefulsensors/moonshine-streaming-medium) (61M params) | Edge-optimized, streaming, open-source |
-| **LLM** | [Qwen2.5-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct) or [NVIDIA NIM](https://build.nvidia.com/) | Fits 8GB VRAM / flexible fallback |
+| **LLM** | [Ollama](https://ollama.com/) or [NVIDIA NIM](https://build.nvidia.com/) | Local or hosted OpenAI-compatible backends |
 | **TTS** | [Pocket TTS](https://huggingface.co/kyutai/pocket-tts) (Kyutai) | Local inference, streaming, no API needed |
 | **VAD** | Silero VAD | Industry standard voice activity detection |
 | **Transport** | [LiveKit](https://livekit.io) | WebRTC, open-source, low-latency |
@@ -42,7 +42,7 @@ User Audio → Moonshine STT → Qwen2.5-3B / NVIDIA LLM → Pocket TTS → Audi
 
 ## Custom LiveKit Plugins
 
-**This is the most reusable part of the project.** The `src/plugins/` directory contains custom LiveKit agent plugins that integrate HuggingFace models into LiveKit's streaming pipeline:
+**This is the most reusable part of the project.** The `src/plugins/` directory contains custom LiveKit agent plugins for the realtime voice pipeline:
 
 ```
 src/plugins/
@@ -113,12 +113,12 @@ docker run -p 8501:8501 --env-file .env open-voice-agent
 
 ### LLM Provider (choose one)
 
-**Local (HuggingFace):**
+**Local (Ollama):**
 ```bash
-LLM_PROVIDER=huggingface
-HUGGINGFACE_MODEL_ID=Qwen/Qwen2.5-3B-Instruct
-HUGGINGFACE_DEVICE=cuda
-HF_TOKEN=hf_xxx  # optional, for gated models
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_MODEL=qwen2.5:7b
+OLLAMA_API_KEY=ollama
 ```
 
 **API (NVIDIA NIM):**
@@ -134,14 +134,16 @@ See `.env.example` for all available options.
 
 ```bash
 MCP_ENABLED=true
-LLM_PROVIDER=nvidia
-NVIDIA_API_KEY=nvapi-xxx
+MCP_SERVER_URL=https://huggingface.co/mcp
+# Works with either provider:
+LLM_PROVIDER=ollama
+# or LLM_PROVIDER=nvidia (+ NVIDIA_API_KEY)
 ```
 
-- MCP endpoint is hardcoded to `https://huggingface.co/mcp` (no auth configured).
-- When MCP mode is active, the agent uses a tool-capable NVIDIA model (`meta/llama-3.1-8b-instruct`) for autonomous MCP tool calling.
+- MCP endpoint defaults to `https://huggingface.co/mcp` (no auth configured).
+- MCP tools are available when `MCP_ENABLED=true` and `LLM_PROVIDER` is `nvidia` or `ollama`.
 - In MCP mode, startup greeting is sent with `session.say(...)` and manual `session.generate_reply(...)` calls are disabled by policy.
-- If MCP prerequisites are missing (for example, non-NVIDIA provider or missing API key), the agent logs a warning and falls back to the legacy LangGraph runtime.
+- There is no legacy LangGraph fallback path.
 
 ### Langfuse tracing (one trace per turn)
 
@@ -156,9 +158,9 @@ LANGFUSE_SECRET_KEY=sk-lf-...
 Each finalized user transcript creates a new trace with spans `stt`, `llm`, and `tts`.
 The Streamlit client generates a new `session_id` on each Connect click and sends it to the agent.
 
-### LLM runtime resilience (NVIDIA provider)
+### LLM runtime resilience
 
-When `LLM_PROVIDER=nvidia`, tune request behavior with:
+Tune request behavior with:
 
 ```bash
 LLM_CONN_TIMEOUT_SEC=12.0
@@ -176,7 +178,10 @@ If the UI only shows silence/STT activity and never reaches LLM/TTS:
 
 - Check backend logs for `Turn stalled before LLM stage`.
 - Check backend logs for `Agent session pipeline error` with `source=...` and `error_type=...`.
-- Verify NVIDIA credentials and model access; the agent logs which STT key source is used.
+- Verify your selected LLM provider config:
+  - `nvidia`: `NVIDIA_API_KEY` and `NVIDIA_MODEL`
+  - `ollama`: local server reachable at `OLLAMA_BASE_URL` and model pulled in Ollama
+- Verify NVIDIA STT credentials when using `STT_PROVIDER=nvidia`; the agent logs which STT key source is used.
 - If local memory warnings are noisy, raise `LIVEKIT_JOB_MEMORY_WARN_MB` (for local setups, `6144` is a practical baseline).
 
 ## Project Structure
@@ -186,7 +191,8 @@ open-voice-agent/
 ├── src/
 │   ├── agent/
 │   │   ├── agent.py              # LiveKit agent entry point
-│   │   └── graph.py              # LangGraph conversation graph
+│   │   ├── llm_runtime.py        # LLM provider + MCP runtime builder
+│   │   └── stt_factory.py        # STT provider factory
 │   ├── plugins/                  # ← Custom LiveKit plugins
 │   │   ├── moonshine_stt/        # Moonshine streaming STT
 │   │   └── pocket_tts/           # Pocket TTS streaming synthesis

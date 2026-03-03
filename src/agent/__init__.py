@@ -1,6 +1,5 @@
-"""LiveKit voice agent using LangGraph."""
+"""LiveKit voice agent runtime."""
 
-from src.agent.graph import create_graph
 from src.agent.agent import Assistant
 
-__all__ = ["create_graph", "Assistant"]
+__all__ = ["Assistant"]
