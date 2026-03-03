@@ -27,6 +27,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from src.agent.llm_runtime import (
+    MCP_STARTUP_GREETING_TIMEOUT_SEC,
     _install_mcp_generate_reply_guard,
     _run_startup_greeting,
     build_llm_runtime,
@@ -130,6 +131,113 @@ def _error_detail(error_obj: Any) -> str:
     if nested_error:
         return str(nested_error)
     return str(error_obj)
+
+
+async def _monitor_startup_greeting_handle(
+    greeting_handle: Any,
+    *,
+    timeout_sec: float = MCP_STARTUP_GREETING_TIMEOUT_SEC,
+) -> None:
+    speech_id = getattr(greeting_handle, "id", None)
+    wait_for_playout = getattr(greeting_handle, "wait_for_playout", None)
+    interrupt = getattr(greeting_handle, "interrupt", None)
+
+    if not callable(wait_for_playout):
+        logger.warning(
+            "Startup greeting handle missing wait_for_playout; speech_id=%s",
+            speech_id,
+        )
+        return
+
+    try:
+        await asyncio.wait_for(wait_for_playout(), timeout=timeout_sec)
+    except TimeoutError:
+        logger.warning(
+            "MCP startup greeting timed out after %.2fs; interrupting speech_id=%s",
+            timeout_sec,
+            speech_id,
+        )
+        if callable(interrupt):
+            try:
+                interrupt(force=True)
+            except Exception as exc:
+                logger.warning("Failed to interrupt timed out startup greeting: %s", exc)
+    except asyncio.CancelledError:
+        if callable(interrupt):
+            try:
+                interrupt(force=True)
+            except Exception as exc:
+                logger.warning("Failed to interrupt cancelled startup greeting: %s", exc)
+        logger.info("MCP startup greeting monitor cancelled: speech_id=%s", speech_id)
+    except Exception as exc:
+        logger.warning("MCP startup greeting monitor failed: %s", exc)
+
+
+def _schedule_startup_greeting_task(
+    session: AgentSession,
+    *,
+    mcp_runtime_active: bool,
+) -> asyncio.Task[Any] | None:
+    greeting_handle = _run_startup_greeting(
+        session,
+        mcp_runtime_active=mcp_runtime_active,
+    )
+    if greeting_handle is None:
+        return None
+
+    speech_id = getattr(greeting_handle, "id", None)
+    logger.info(
+        "Scheduling startup greeting monitor task: mcp_runtime_active=%s speech_id=%s",
+        mcp_runtime_active,
+        speech_id,
+    )
+    task = asyncio.create_task(
+        _monitor_startup_greeting_handle(greeting_handle),
+        name="startup-greeting-monitor",
+    )
+    setattr(task, "_open_voice_startup_greeting_handle", greeting_handle)
+
+    def _on_done(completed_task: asyncio.Task[Any]) -> None:
+        if completed_task.cancelled():
+            return
+        try:
+            exc = completed_task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.warning(f"Startup greeting monitor task failed: {exc}")
+
+    task.add_done_callback(_on_done)
+    return task
+
+
+async def _cancel_task_for_shutdown(
+    task: asyncio.Task[Any] | None,
+    *,
+    task_name: str,
+    timeout_sec: float = 0.5,
+) -> None:
+    if task is None or task.done():
+        return
+
+    greeting_handle = getattr(task, "_open_voice_startup_greeting_handle", None)
+    if greeting_handle is not None:
+        interrupt = getattr(greeting_handle, "interrupt", None)
+        if callable(interrupt):
+            try:
+                interrupt(force=True)
+            except Exception as exc:
+                logger.warning("%s handle interrupt failed during shutdown: %s", task_name, exc)
+
+    task.cancel()
+    try:
+        await asyncio.wait_for(task, timeout=timeout_sec)
+    except asyncio.CancelledError:
+        logger.info("%s task cancelled during shutdown", task_name)
+    except TimeoutError:
+        logger.warning("%s task did not cancel within %.2fs", task_name, timeout_sec)
+    except Exception as exc:
+        logger.warning("%s task raised during shutdown cancellation: %s", task_name, exc)
 
 
 class Assistant(Agent):
@@ -257,6 +365,8 @@ async def session_handler(ctx: agents.JobContext) -> None:
         ctx.job.id,
     )
     trace_provider = setup_langfuse_tracer()
+    startup_greeting_task: asyncio.Task[Any] | None = None
+
     if trace_provider:
         async def flush_trace(_: str) -> None:
             try:
@@ -265,6 +375,14 @@ async def session_handler(ctx: agents.JobContext) -> None:
                 logger.warning(f"Failed to flush Langfuse traces: {exc}")
 
         ctx.add_shutdown_callback(flush_trace)
+
+    async def cancel_startup_greeting(_: str) -> None:
+        await _cancel_task_for_shutdown(
+            startup_greeting_task,
+            task_name="startup greeting",
+        )
+
+    ctx.add_shutdown_callback(cancel_startup_greeting)
 
     # Create metrics collector
     participant = getattr(ctx.job, "participant", None)
@@ -372,7 +490,13 @@ async def session_handler(ctx: agents.JobContext) -> None:
             ),
         ),
     )
-    await _run_startup_greeting(session, mcp_runtime_active=mcp_runtime_active)
+    if mcp_runtime_active:
+        startup_greeting_task = _schedule_startup_greeting_task(
+            session,
+            mcp_runtime_active=mcp_runtime_active,
+        )
+    else:
+        _run_startup_greeting(session, mcp_runtime_active=mcp_runtime_active)
 
 
 if __name__ == "__main__":

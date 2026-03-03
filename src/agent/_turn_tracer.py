@@ -570,12 +570,11 @@ class TurnTracer:
                     attributes={"user_transcript": turn.user_transcript},
                     observation_input=turn.user_transcript,
                 )
-                speech_end_start_ns = cursor_ns
-                _emit_component_span(
+                cursor_ns = _emit_component_span(
                     _tracer,
                     name="VADMetrics",
                     context=ctx,
-                    start_ns=speech_end_start_ns,
+                    start_ns=cursor_ns,
                     duration_ms=vals["vad_metrics_duration_ms"],
                     attributes=_merge_component_attributes(
                         turn.vad_attributes,
@@ -584,11 +583,27 @@ class TurnTracer:
                         },
                     ),
                 )
-                eou_end_ns = _emit_component_span(
+                cursor_ns = _emit_component_span(
+                    _tracer,
+                    name="STTMetrics",
+                    context=ctx,
+                    start_ns=cursor_ns,
+                    duration_ms=vals["stt_span_duration_ms"],
+                    attributes={
+                        **turn.stt_attributes,
+                        "user_transcript": turn.user_transcript,
+                        "stt_status": turn.stt_status,
+                        "stt_processing_ms": vals["stt_processing_ms"],
+                        "stt_finalization_ms": vals["stt_finalization_ms"],
+                        "stt_total_latency_ms": vals["stt_total_latency_ms"],
+                    },
+                    observation_output=turn.user_transcript,
+                )
+                cursor_ns = _emit_component_span(
                     _tracer,
                     name="EOUMetrics",
                     context=ctx,
-                    start_ns=speech_end_start_ns,
+                    start_ns=cursor_ns,
                     duration_ms=vals["vad_duration_ms"],
                     attributes=_merge_component_attributes(
                         turn.eou_attributes,
@@ -602,23 +617,6 @@ class TurnTracer:
                     ),
                     observation_output=str(vals["vad_duration_ms"]),
                 )
-                stt_end_ns = _emit_component_span(
-                    _tracer,
-                    name="STTMetrics",
-                    context=ctx,
-                    start_ns=speech_end_start_ns,
-                    duration_ms=vals["stt_span_duration_ms"],
-                    attributes={
-                        **turn.stt_attributes,
-                        "user_transcript": turn.user_transcript,
-                        "stt_status": turn.stt_status,
-                        "stt_processing_ms": vals["stt_processing_ms"],
-                        "stt_finalization_ms": vals["stt_finalization_ms"],
-                        "stt_total_latency_ms": vals["stt_total_latency_ms"],
-                    },
-                    observation_output=turn.user_transcript,
-                )
-                cursor_ns = max(cursor_ns, eou_end_ns, stt_end_ns)
                 cursor_ns = _emit_component_span(
                     _tracer,
                     name="LLMMetrics",
@@ -654,6 +652,26 @@ class TurnTracer:
                         observation_input=tool_call.arguments,
                         observation_output=tool_call.output,
                     )
+                handoff_ms = vals["llm_to_tts_handoff_ms"]
+                if handoff_ms is not None and handoff_ms > 0:
+                    cursor_ns = _emit_component_span(
+                        _tracer,
+                        name="llm_to_tts_handoff",
+                        context=ctx,
+                        start_ns=cursor_ns,
+                        duration_ms=handoff_ms,
+                        attributes={
+                            "llm_to_tts_handoff_ms": handoff_ms,
+                            "speech_end_to_assistant_speech_start_ms": vals[
+                                "conversational_latency_ms"
+                            ],
+                            "eou_delay_ms": vals["vad_duration_ms"],
+                            "llm_ttft_ms": vals["llm_ttft_ms"],
+                            "tool_calls_total_ms": vals["tool_calls_total_ms"],
+                            "tts_ttfb_ms": vals["tts_ttfb_ms"],
+                        },
+                        observation_output=str(handoff_ms),
+                    )
                 cursor_ns = _emit_component_span(
                     _tracer,
                     name="TTSMetrics",
@@ -673,11 +691,11 @@ class TurnTracer:
                 )
                 conv_ms = vals["conversational_latency_ms"]
                 if conv_ms is not None:
-                    _emit_component_span(
+                    cursor_ns = _emit_component_span(
                         _tracer,
                         name="conversation_latency",
                         context=ctx,
-                        start_ns=speech_end_start_ns,
+                        start_ns=cursor_ns,
                         duration_ms=conv_ms,
                         attributes={
                             "speech_end_to_assistant_speech_start_ms": conv_ms,
@@ -688,28 +706,6 @@ class TurnTracer:
                             "tts_ttfb_ms": vals["tts_ttfb_ms"],
                         },
                         observation_output=str(conv_ms),
-                    )
-                handoff_ms = vals["llm_to_tts_handoff_ms"]
-                if handoff_ms is not None and handoff_ms > 0:
-                    handoff_start_ns = speech_end_start_ns + _ms_to_ns(
-                        max(vals["vad_duration_ms"], 0.0)
-                        + max(vals["llm_ttft_ms"], 0.0)
-                    )
-                    _emit_component_span(
-                        _tracer,
-                        name="llm_to_tts_handoff",
-                        context=ctx,
-                        start_ns=handoff_start_ns,
-                        duration_ms=handoff_ms,
-                        attributes={
-                            "llm_to_tts_handoff_ms": handoff_ms,
-                            "speech_end_to_assistant_speech_start_ms": conv_ms,
-                            "eou_delay_ms": vals["vad_duration_ms"],
-                            "llm_ttft_ms": vals["llm_ttft_ms"],
-                            "tool_calls_total_ms": vals["tool_calls_total_ms"],
-                            "tts_ttfb_ms": vals["tts_ttfb_ms"],
-                        },
-                        observation_output=str(handoff_ms),
                     )
             finally:
                 total_ns = _ms_to_ns(_total_duration_ms(turn))

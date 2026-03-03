@@ -5,7 +5,12 @@ import re
 
 import pytest
 
-from src.agent.agent import ASSISTANT_INSTRUCTIONS
+from src.agent.agent import (
+    ASSISTANT_INSTRUCTIONS,
+    _cancel_task_for_shutdown,
+    _monitor_startup_greeting_handle,
+    _schedule_startup_greeting_task,
+)
 from src.agent.llm_runtime import (
     MCP_GENERATE_REPLY_BLOCK_MESSAGE,
     MCP_STARTUP_GREETING,
@@ -17,18 +22,42 @@ from src.agent.llm_runtime import (
 )
 
 
+class _FakeSpeechHandle:
+    def __init__(self, *, speech_id: str = "speech-greeting", block: bool = False) -> None:
+        self.id = speech_id
+        self.interrupt_calls: list[bool] = []
+        self._done = asyncio.Event()
+        if not block:
+            self._done.set()
+
+    async def wait_for_playout(self) -> None:
+        await self._done.wait()
+
+    def interrupt(self, *, force: bool = False) -> "_FakeSpeechHandle":
+        self.interrupt_calls.append(force)
+        self._done.set()
+        return self
+
+
 class _FakeSession:
-    def __init__(self) -> None:
+    def __init__(self, *, greeting_handle: _FakeSpeechHandle | None = None) -> None:
         self.say_calls: list[dict[str, object]] = []
         self.generate_reply_calls: list[dict[str, object]] = []
+        self.greeting_handle = greeting_handle or _FakeSpeechHandle()
 
-    async def say(self, text: str, **kwargs: object) -> str:
+    def say(self, text: str, **kwargs: object) -> _FakeSpeechHandle:
         self.say_calls.append({"text": text, "kwargs": kwargs})
-        return "say-handle"
+        return self.greeting_handle
 
     def generate_reply(self, **kwargs: object) -> str:
         self.generate_reply_calls.append(kwargs)
         return "reply-handle"
+
+
+class _FailingSaySession(_FakeSession):
+    def say(self, text: str, **kwargs: object) -> _FakeSpeechHandle:
+        self.say_calls.append({"text": text, "kwargs": kwargs})
+        raise RuntimeError("say failed")
 
 
 def test_resolve_mcp_runtime_mode_enables_mcp_with_supported_config() -> None:
@@ -107,21 +136,84 @@ def test_install_mcp_generate_reply_guard_is_noop_when_mcp_disabled() -> None:
 def test_run_startup_greeting_uses_say_in_mcp_mode() -> None:
     session = _FakeSession()
 
-    asyncio.run(_run_startup_greeting(session, mcp_runtime_active=True))  # type: ignore[arg-type]
+    handle = _run_startup_greeting(session, mcp_runtime_active=True)  # type: ignore[arg-type]
 
-    assert session.say_calls == [{"text": MCP_STARTUP_GREETING, "kwargs": {}}]
+    assert handle is session.greeting_handle
+    assert session.say_calls == [
+        {
+            "text": MCP_STARTUP_GREETING,
+            "kwargs": {
+                "allow_interruptions": True,
+                "add_to_chat_ctx": True,
+            },
+        }
+    ]
     assert session.generate_reply_calls == []
 
 
 def test_run_startup_greeting_uses_generate_reply_without_mcp() -> None:
     session = _FakeSession()
 
-    asyncio.run(_run_startup_greeting(session, mcp_runtime_active=False))  # type: ignore[arg-type]
+    handle = _run_startup_greeting(session, mcp_runtime_active=False)  # type: ignore[arg-type]
 
+    assert handle is None
     assert session.generate_reply_calls == [
         {"instructions": "Greet the user and offer your assistance."}
     ]
     assert session.say_calls == []
+
+
+def test_startup_greeting_monitor_times_out_and_interrupts() -> None:
+    session = _FakeSession(greeting_handle=_FakeSpeechHandle(block=True))
+    handle = _run_startup_greeting(session, mcp_runtime_active=True)  # type: ignore[arg-type]
+
+    assert handle is not None
+    asyncio.run(_monitor_startup_greeting_handle(handle, timeout_sec=0.01))
+
+    assert handle.interrupt_calls == [True]
+
+
+def test_run_startup_greeting_swallows_say_exception() -> None:
+    session = _FailingSaySession()
+
+    handle = _run_startup_greeting(session, mcp_runtime_active=True)  # type: ignore[arg-type]
+
+    assert handle is None
+    assert session.say_calls == [{"text": MCP_STARTUP_GREETING, "kwargs": {"allow_interruptions": True, "add_to_chat_ctx": True}}]
+    assert session.generate_reply_calls == []
+
+
+def test_startup_greeting_monitor_handles_cancellation() -> None:
+    async def _run() -> _FakeSpeechHandle:
+        handle = _FakeSpeechHandle(block=True)
+        task = asyncio.create_task(
+            _monitor_startup_greeting_handle(handle, timeout_sec=10.0)
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        await task
+        return handle
+
+    handle = asyncio.run(_run())
+    assert handle.interrupt_calls == [True]
+
+
+def test_schedule_startup_greeting_task_is_shutdown_safe() -> None:
+    async def _run() -> tuple[asyncio.Task[Any], _FakeSpeechHandle]:
+        handle = _FakeSpeechHandle(block=True)
+        session = _FakeSession(greeting_handle=handle)
+        task = _schedule_startup_greeting_task(  # type: ignore[arg-type]
+            session,
+            mcp_runtime_active=True,
+        )
+        assert task is not None
+        assert not task.done()
+        await _cancel_task_for_shutdown(task, task_name="startup greeting", timeout_sec=0.1)
+        return task, handle
+
+    task, handle = asyncio.run(_run())
+    assert task.done()
+    assert handle.interrupt_calls == [True]
 
 
 def test_build_mcp_http_timeout_uses_runtime_timeout_for_all_phases() -> None:

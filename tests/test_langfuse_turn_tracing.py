@@ -309,8 +309,8 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
         "turn",
         "user_input",
         "VADMetrics",
-        "EOUMetrics",
         "STTMetrics",
+        "EOUMetrics",
         "LLMMetrics",
         "TTSMetrics",
         "conversation_latency",
@@ -320,8 +320,8 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
         root,
         user_input_span,
         vad_span,
-        eou_span,
         stt_span,
+        eou_span,
         llm_span,
         tts_span,
         conversational_span,
@@ -465,8 +465,8 @@ def test_turn_trace_includes_tool_spans_between_llm_and_tts(
         "turn",
         "user_input",
         "VADMetrics",
-        "EOUMetrics",
         "STTMetrics",
+        "EOUMetrics",
         "LLMMetrics",
         "ToolCall",
         "TTSMetrics",
@@ -767,12 +767,12 @@ def test_trace_emits_without_stt_metrics(monkeypatch: pytest.MonkeyPatch) -> Non
         "turn",
         "user_input",
         "VADMetrics",
-        "EOUMetrics",
         "STTMetrics",
+        "EOUMetrics",
         "LLMMetrics",
         "TTSMetrics",
     ]
-    stt_span = fake_tracer.spans[4]
+    stt_span = fake_tracer.spans[3]
     assert stt_span.attributes["user_transcript"] == "turn without stt metrics"
     assert stt_span.attributes["stt_status"] == "missing"
     assert "duration_ms" not in stt_span.attributes
@@ -1033,6 +1033,12 @@ def test_long_response_latency_accounts_for_llm_to_tts_handoff(
     turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
     assert len(turn_spans) == 1
     root = turn_spans[0]
+    span_names = [span.name for span in fake_tracer.spans]
+    assert span_names.index("STTMetrics") < span_names.index("EOUMetrics")
+    assert span_names.index("LLMMetrics") < span_names.index("llm_to_tts_handoff")
+    assert span_names.index("llm_to_tts_handoff") < span_names.index("TTSMetrics")
+    if "conversation_latency" in span_names:
+        assert span_names.index("TTSMetrics") < span_names.index("conversation_latency")
 
     assert root.attributes["latency_ms.conversational"] > 200.0
     assert root.attributes["latency_ms.llm_to_tts_handoff"] > 150.0

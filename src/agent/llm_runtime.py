@@ -11,6 +11,7 @@ from src.core.logger import logger
 
 NVIDIA_OPENAI_BASE_URL = "https://integrate.api.nvidia.com/v1"
 MCP_STARTUP_GREETING = "Hi, I am Open Voice Agent. How can I help you today?"
+MCP_STARTUP_GREETING_TIMEOUT_SEC = 4.0
 MCP_GENERATE_REPLY_BLOCK_MESSAGE = (
     "Manual generate_reply is disabled in MCP mode; use session.say(...) instead."
 )
@@ -164,9 +165,25 @@ def _install_mcp_generate_reply_guard(
     logger.info("MCP runtime policy active: manual generate_reply disabled")
 
 
-async def _run_startup_greeting(session: AgentSession, *, mcp_runtime_active: bool) -> None:
+def _run_startup_greeting(
+    session: AgentSession,
+    *,
+    mcp_runtime_active: bool,
+) -> Any | None:
     if mcp_runtime_active:
         logger.info("MCP runtime startup greeting via session.say")
-        await session.say(MCP_STARTUP_GREETING)
-        return
-    session.generate_reply(instructions="Greet the user and offer your assistance.")
+        try:
+            return session.say(
+                MCP_STARTUP_GREETING,
+                allow_interruptions=True,
+                add_to_chat_ctx=True,
+            )
+        except Exception as exc:
+            logger.warning(f"MCP startup greeting could not start: {exc}")
+            return None
+
+    try:
+        session.generate_reply(instructions="Greet the user and offer your assistance.")
+    except Exception as exc:
+        logger.warning(f"Startup greeting via generate_reply failed: {exc}")
+    return None
