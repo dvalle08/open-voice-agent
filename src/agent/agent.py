@@ -14,6 +14,7 @@ from livekit.agents.voice.events import (
     CloseEvent,
     ConversationItemAddedEvent,
     ErrorEvent,
+    FunctionToolsExecutedEvent,
     MetricsCollectedEvent,
     SpeechCreatedEvent,
     UserInputTranscribedEvent,
@@ -177,6 +178,15 @@ class Assistant(Agent):
                 self._metrics_collector.on_speech_created(event.speech_handle)
             )
 
+        def function_tools_executed_wrapper(event: FunctionToolsExecutedEvent) -> None:
+            asyncio.create_task(
+                self._metrics_collector.on_function_tools_executed(
+                    function_calls=event.function_calls,
+                    function_call_outputs=event.function_call_outputs,
+                    created_at=event.created_at,
+                )
+            )
+
         def agent_state_changed_wrapper(event: AgentStateChangedEvent) -> None:
             asyncio.create_task(
                 self._metrics_collector.on_agent_state_changed(
@@ -228,6 +238,7 @@ class Assistant(Agent):
         self.session.on("user_input_transcribed", transcript_wrapper)
         self.session.on("conversation_item_added", conversation_item_wrapper)
         self.session.on("speech_created", speech_created_wrapper)
+        self.session.on("function_tools_executed", function_tools_executed_wrapper)
         self.session.on("agent_state_changed", agent_state_changed_wrapper)
         self.session.on("error", error_wrapper)
         self.session.on("close", close_wrapper)

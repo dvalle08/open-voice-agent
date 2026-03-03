@@ -53,7 +53,22 @@ class TraceTurn:
     vad_attributes: dict[str, Any] = field(default_factory=dict)
     llm_attributes: dict[str, Any] = field(default_factory=dict)
     tts_attributes: dict[str, Any] = field(default_factory=dict)
+    tool_calls: list["ToolCallTrace"] = field(default_factory=list)
     trace_id: Optional[str] = None
+
+
+@dataclass
+class ToolCallTrace:
+    """Per-tool call trace payload."""
+
+    name: str
+    call_id: str
+    arguments: str
+    output: str
+    is_error: bool
+    created_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    duration_ms: Optional[float] = None
 
 
 _DEFAULT_TRACE_FINALIZE_TIMEOUT_MS = 8000.0
@@ -322,6 +337,34 @@ class TurnTracer:
                 return None
             turn.assistant_text = assistant_text
             turn.response_text = assistant_text
+            return turn
+
+    async def attach_function_tools_executed(
+        self,
+        *,
+        function_calls: list[Any],
+        function_call_outputs: list[Any],
+        created_at: float,
+    ) -> Optional[TraceTurn]:
+        async with self._trace_lock:
+            turn = self._next_turn_where(
+                lambda c: c.llm_duration_ms is not None and c.tts_duration_ms is None
+            )
+            if not turn:
+                return None
+
+            event_created_at = _to_optional_float(created_at)
+            for function_call, function_call_output in zip(
+                function_calls, function_call_outputs, strict=False
+            ):
+                turn.tool_calls.append(
+                    _build_tool_call_trace(
+                        function_call=function_call,
+                        function_call_output=function_call_output,
+                        event_created_at=event_created_at,
+                    )
+                )
+
             return turn
 
     # ------------------------------------------------------------------
@@ -594,6 +637,23 @@ class TurnTracer:
                     observation_input=turn.prompt_text,
                     observation_output=turn.response_text,
                 )
+                for tool_call in turn.tool_calls:
+                    cursor_ns = _emit_component_span(
+                        _tracer,
+                        name="ToolCall",
+                        context=ctx,
+                        start_ns=cursor_ns,
+                        duration_ms=tool_call.duration_ms,
+                        attributes={
+                            "tool.name": tool_call.name,
+                            "tool.call_id": tool_call.call_id,
+                            "tool.is_error": tool_call.is_error,
+                            "tool.created_at": tool_call.created_at,
+                            "tool.completed_at": tool_call.completed_at,
+                        },
+                        observation_input=tool_call.arguments,
+                        observation_output=tool_call.output,
+                    )
                 cursor_ns = _emit_component_span(
                     _tracer,
                     name="TTSMetrics",
@@ -623,6 +683,7 @@ class TurnTracer:
                             "speech_end_to_assistant_speech_start_ms": conv_ms,
                             "eou_delay_ms": vals["vad_duration_ms"],
                             "llm_ttft_ms": vals["llm_ttft_ms"],
+                            "tool_calls_total_ms": vals["tool_calls_total_ms"],
                             "llm_to_tts_handoff_ms": vals["llm_to_tts_handoff_ms"],
                             "tts_ttfb_ms": vals["tts_ttfb_ms"],
                         },
@@ -645,6 +706,7 @@ class TurnTracer:
                             "speech_end_to_assistant_speech_start_ms": conv_ms,
                             "eou_delay_ms": vals["vad_duration_ms"],
                             "llm_ttft_ms": vals["llm_ttft_ms"],
+                            "tool_calls_total_ms": vals["tool_calls_total_ms"],
                             "tts_ttfb_ms": vals["tts_ttfb_ms"],
                         },
                         observation_output=str(handoff_ms),
@@ -686,6 +748,55 @@ class TurnTracer:
 # ------------------------------------------------------------------
 # Pure helpers (module-level)
 # ------------------------------------------------------------------
+
+
+def _to_optional_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _build_tool_call_trace(
+    *,
+    function_call: Any,
+    function_call_output: Any,
+    event_created_at: Optional[float],
+) -> ToolCallTrace:
+    name = _stringify_observation(getattr(function_call, "name", None))
+    call_id = _stringify_observation(getattr(function_call, "call_id", None))
+    arguments = _stringify_observation(getattr(function_call, "arguments", None))
+
+    output_text = ""
+    is_error = False
+    completed_at = event_created_at
+
+    if function_call_output is not None:
+        output_text = _stringify_observation(getattr(function_call_output, "output", None))
+        is_error = bool(getattr(function_call_output, "is_error", False))
+        completed_at = _to_optional_float(getattr(function_call_output, "created_at", None)) or event_created_at
+
+    created_at = _to_optional_float(getattr(function_call, "created_at", None)) or event_created_at
+    duration_ms: Optional[float] = None
+    if created_at is not None and completed_at is not None:
+        duration_ms = max((completed_at - created_at) * 1000.0, 0.0)
+
+    return ToolCallTrace(
+        name=name,
+        call_id=call_id,
+        arguments=arguments,
+        output=output_text,
+        is_error=is_error,
+        created_at=created_at,
+        completed_at=completed_at,
+        duration_ms=duration_ms,
+    )
 
 
 def _duration_to_ms(duration: float, fallback: float) -> float:
@@ -744,6 +855,7 @@ def _compute_llm_to_tts_handoff_ms(
 
 
 def _total_duration_ms(turn: TraceTurn) -> float:
+    tool_calls_total = _tool_calls_total_duration_ms(turn.tool_calls)
     llm = (
         turn.llm_total_latency_ms
         if turn.llm_total_latency_ms is not None
@@ -751,7 +863,11 @@ def _total_duration_ms(turn: TraceTurn) -> float:
     )
     handoff = turn.llm_to_tts_handoff_ms or 0.0
     calculated = (
-        (turn.vad_duration_ms or 0.0) + llm + handoff + (turn.tts_duration_ms or 0.0)
+        (turn.vad_duration_ms or 0.0)
+        + llm
+        + tool_calls_total
+        + handoff
+        + (turn.tts_duration_ms or 0.0)
     )
     if turn.conversational_latency_ms is not None:
         calculated = max(calculated, turn.conversational_latency_ms)
@@ -800,11 +916,14 @@ def _prepare_span_values(turn: TraceTurn) -> dict[str, Any]:
         if turn.conversational_latency_ms is not None
         else None
     )
+    tool_calls_total_ms = _tool_calls_total_duration_ms(turn.tool_calls)
     llm_to_tts_handoff_ms = (
-        max(turn.llm_to_tts_handoff_ms, 0.0)
+        max((turn.llm_to_tts_handoff_ms or 0.0) - tool_calls_total_ms, 0.0)
         if turn.llm_to_tts_handoff_ms is not None
         else None
     )
+    tool_call_count = len(turn.tool_calls)
+    tool_error_count = sum(1 for call in turn.tool_calls if call.is_error)
     eou_on_user_turn_completed_ms = (
         max(turn.eou_on_user_turn_completed_ms, 0.0)
         if turn.eou_on_user_turn_completed_ms is not None
@@ -825,6 +944,9 @@ def _prepare_span_values(turn: TraceTurn) -> dict[str, Any]:
         "tts_duration_ms": tts_duration_ms,
         "tts_ttfb_ms": tts_ttfb_ms,
         "conversational_latency_ms": conversational_latency_ms,
+        "tool_calls_total_ms": tool_calls_total_ms,
+        "tool_call_count": tool_call_count,
+        "tool_error_count": tool_error_count,
         "llm_to_tts_handoff_ms": llm_to_tts_handoff_ms,
     }
 
@@ -869,11 +991,14 @@ def _set_root_attributes(
         "latency_ms.llm_total": vals["llm_total_latency_ms"],
         "latency_ms.tts": vals["tts_duration_ms"],
         "latency_ms.tts_ttfb": vals["tts_ttfb_ms"],
+        "latency_ms.tool_calls_total": vals["tool_calls_total_ms"],
         "latency_ms.llm_to_tts_handoff": vals["llm_to_tts_handoff_ms"],
         "latency_ms.conversational": vals["conversational_latency_ms"],
         "latency_ms.speech_end_to_assistant_speech_start": vals[
             "conversational_latency_ms"
         ],
+        "tool.call_count": vals["tool_call_count"],
+        "tool.error_count": vals["tool_error_count"],
         "stt_status": turn.stt_status,
     }
     for key, value in attrs.items():
@@ -918,6 +1043,25 @@ def _duration_attribute_to_ms(value: Any) -> Optional[float]:
     if isinstance(value, (int, float)):
         return max(float(value), 0.0) * 1000.0
     return None
+
+
+def _tool_calls_total_duration_ms(tool_calls: list[ToolCallTrace]) -> float:
+    total = 0.0
+    for call in tool_calls:
+        if call.duration_ms is None:
+            continue
+        total += max(call.duration_ms, 0.0)
+    return total
+
+
+def _stringify_observation(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", errors="ignore")
+    return str(value)
 
 
 def _emit_component_span(

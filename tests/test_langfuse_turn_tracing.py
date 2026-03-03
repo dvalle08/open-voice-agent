@@ -256,6 +256,21 @@ class _FakeSpeechHandle:
             callback(self)
 
 
+@dataclass
+class _FakeFunctionCall:
+    name: str
+    call_id: str
+    arguments: str
+    created_at: float
+
+
+@dataclass
+class _FakeFunctionCallOutput:
+    output: str
+    is_error: bool
+    created_at: float
+
+
 def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.agent.metrics_collector as metrics_collector_module
 
@@ -393,6 +408,251 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
     assert len(trace_updates) == 1
     assert trace_updates[0]["session_id"] == "session-abc"
     assert trace_updates[0]["trace_id"]
+
+
+def test_turn_trace_includes_tool_spans_between_llm_and_tts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-tools",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("find papers", is_final=True)
+        await collector.on_metrics_collected(_make_stt_metrics("stt-tools"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-tools"))
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="paper_search",
+                    call_id="call-1",
+                    arguments='{"query":"transformers"}',
+                    created_at=100.0,
+                )
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output='{"results":[{"title":"Attention Is All You Need"}]}',
+                    is_error=False,
+                    created_at=100.4,
+                )
+            ],
+            created_at=100.4,
+        )
+        await collector.on_conversation_item_added(role="assistant", content="I found relevant papers.")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-tools"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    span_names = [span.name for span in fake_tracer.spans]
+    assert span_names == [
+        "turn",
+        "user_input",
+        "VADMetrics",
+        "EOUMetrics",
+        "STTMetrics",
+        "LLMMetrics",
+        "ToolCall",
+        "TTSMetrics",
+    ]
+
+    tool_span = next(span for span in fake_tracer.spans if span.name == "ToolCall")
+    assert tool_span.attributes["tool.name"] == "paper_search"
+    assert tool_span.attributes["tool.call_id"] == "call-1"
+    assert tool_span.attributes["tool.is_error"] is False
+    assert tool_span.attributes["duration_ms"] == pytest.approx(400.0)
+    assert tool_span.attributes["input"] == '{"query":"transformers"}'
+    assert tool_span.attributes["output"] == '{"results":[{"title":"Attention Is All You Need"}]}'
+    assert tool_span.attributes["langfuse.observation.input"] == '{"query":"transformers"}'
+    assert tool_span.attributes["langfuse.observation.output"] == '{"results":[{"title":"Attention Is All You Need"}]}'
+
+    root = fake_tracer.spans[0]
+    assert root.attributes["tool.call_count"] == 1
+    assert root.attributes["tool.error_count"] == 0
+    assert root.attributes["latency_ms.tool_calls_total"] == pytest.approx(400.0)
+
+
+def test_tool_span_keeps_full_input_output_without_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    huge_args = "x" * 12000
+    huge_output = "y" * 13000
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-tools-full-payload",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("run tool", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-tools-full"))
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="paper_search",
+                    call_id="call-full",
+                    arguments=huge_args,
+                    created_at=10.0,
+                )
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output=huge_output,
+                    is_error=False,
+                    created_at=10.2,
+                )
+            ],
+            created_at=10.2,
+        )
+        await collector.on_conversation_item_added(role="assistant", content="done")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-tools-full"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    tool_span = next(span for span in fake_tracer.spans if span.name == "ToolCall")
+    assert tool_span.attributes["input"] == huge_args
+    assert tool_span.attributes["output"] == huge_output
+
+
+def test_tool_error_span_marks_error_and_root_counters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-tools-error",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("search this", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-tools-error"))
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="paper_search",
+                    call_id="call-error",
+                    arguments='{"query":""}',
+                    created_at=50.0,
+                )
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output="MCP error -32602: invalid query",
+                    is_error=True,
+                    created_at=50.1,
+                )
+            ],
+            created_at=50.1,
+        )
+        await collector.on_conversation_item_added(role="assistant", content="Tool failed.")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-tools-error"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    tool_span = next(span for span in fake_tracer.spans if span.name == "ToolCall")
+    assert tool_span.attributes["tool.is_error"] is True
+
+    root = fake_tracer.spans[0]
+    assert root.attributes["tool.call_count"] == 1
+    assert root.attributes["tool.error_count"] == 1
+
+
+def test_tool_event_without_matching_turn_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-no-tool-turn",
+            participant_id="web-123",
+        )
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="paper_search",
+                    call_id="call-orphan",
+                    arguments='{"query":"ignored"}',
+                    created_at=1.0,
+                )
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output='{"results":[]}',
+                    is_error=False,
+                    created_at=1.1,
+                )
+            ],
+            created_at=1.1,
+        )
+        await collector.on_user_input_transcribed("hello", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-no-tool-turn"))
+        await collector.on_conversation_item_added(role="assistant", content="hello")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-no-tool-turn"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    span_names = [span.name for span in fake_tracer.spans]
+    assert "ToolCall" not in span_names
 
 
 def test_tracing_failure_does_not_break_metrics_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:

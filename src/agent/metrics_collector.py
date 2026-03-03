@@ -330,6 +330,20 @@ class MetricsCollector:
             return
         await self._on_assistant_text(normalized)
 
+    async def on_function_tools_executed(
+        self,
+        *,
+        function_calls: list[Any],
+        function_call_outputs: list[Any],
+        created_at: float,
+    ) -> None:
+        trace_turn = await self._tracer.attach_function_tools_executed(
+            function_calls=function_calls,
+            function_call_outputs=function_call_outputs,
+            created_at=created_at,
+        )
+        await self._tracer.maybe_finalize(trace_turn)
+
     async def on_speech_created(self, speech_handle: Any) -> None:
         speech_id = _normalize(getattr(speech_handle, "id", None))
         if speech_id:
