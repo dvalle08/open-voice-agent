@@ -190,9 +190,12 @@ If the UI only shows silence/STT activity and never reaches LLM/TTS:
 open-voice-agent/
 ├── src/
 │   ├── agent/
-│   │   ├── agent.py              # LiveKit agent entry point
-│   │   ├── llm_runtime.py        # LLM provider + MCP runtime builder
-│   │   └── stt_factory.py        # STT provider factory
+│   │   ├── agent.py              # LiveKit CLI entrypoint
+│   │   ├── runtime/              # Session wiring + Assistant + lifecycle tasks
+│   │   ├── models/               # LLM/STT runtime providers and factory
+│   │   ├── traces/               # Metrics collector + turn tracing + Langfuse setup
+│   │   ├── tools/                # Tool feedback controller + pre-tool speech injection
+│   │   └── prompts/              # Assistant/system and runtime prompt text
 │   ├── plugins/                  # ← Custom LiveKit plugins
 │   │   ├── moonshine_stt/        # Moonshine streaming STT
 │   │   └── pocket_tts/           # Pocket TTS streaming synthesis

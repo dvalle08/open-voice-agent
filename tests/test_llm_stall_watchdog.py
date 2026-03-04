@@ -5,7 +5,7 @@ from typing import Any
 
 from livekit.agents import metrics
 
-from src.agent.metrics_collector import MetricsCollector
+from src.agent.traces.metrics_collector import MetricsCollector
 
 
 class _AwaitableValue:

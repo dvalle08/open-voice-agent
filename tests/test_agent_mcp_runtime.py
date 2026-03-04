@@ -7,24 +7,24 @@ from typing import Any
 import pytest
 from livekit.agents import llm
 
-from src.agent.agent import (
-    ASSISTANT_INSTRUCTIONS,
-    _cancel_task_for_shutdown,
-    _inject_pre_tool_feedback,
-    _run_llm_warmup,
-    _schedule_llm_warmup_task,
-    _monitor_startup_greeting_handle,
-    _schedule_startup_greeting_task,
-)
-from src.agent.llm_runtime import (
+from src.agent.models.llm_runtime import (
     MCP_GENERATE_REPLY_BLOCK_MESSAGE,
-    MCP_STARTUP_GREETING,
-    _build_mcp_http_timeout,
-    _install_mcp_generate_reply_guard,
-    _run_startup_greeting,
     build_llm_runtime,
+    build_mcp_http_timeout,
+    install_mcp_generate_reply_guard,
     resolve_mcp_runtime_mode,
+    run_startup_greeting,
 )
+from src.agent.prompts.assistant import ASSISTANT_INSTRUCTIONS
+from src.agent.prompts.runtime import MCP_STARTUP_GREETING
+from src.agent.runtime.tasks import (
+    cancel_task_for_shutdown,
+    monitor_startup_greeting_handle,
+    run_llm_warmup,
+    schedule_llm_warmup_task,
+    schedule_startup_greeting_task,
+)
+from src.agent.tools.pre_tool_feedback import inject_pre_tool_feedback
 
 
 class _FakeSpeechHandle:
@@ -216,28 +216,28 @@ def test_resolve_mcp_runtime_mode_requires_nvidia_api_key() -> None:
     assert decision.reason == "missing_nvidia_api_key"
 
 
-def test_install_mcp_generate_reply_guard_blocks_manual_generate_reply() -> None:
+def testinstall_mcp_generate_reply_guard_blocks_manual_generate_reply() -> None:
     session = _FakeSession()
 
-    _install_mcp_generate_reply_guard(session, mcp_runtime_active=True)  # type: ignore[arg-type]
+    install_mcp_generate_reply_guard(session, mcp_runtime_active=True)  # type: ignore[arg-type]
 
     with pytest.raises(RuntimeError, match=re.escape(MCP_GENERATE_REPLY_BLOCK_MESSAGE)):
         session.generate_reply(instructions="hello")
 
 
-def test_install_mcp_generate_reply_guard_is_noop_when_mcp_disabled() -> None:
+def testinstall_mcp_generate_reply_guard_is_noop_when_mcp_disabled() -> None:
     session = _FakeSession()
 
-    _install_mcp_generate_reply_guard(session, mcp_runtime_active=False)  # type: ignore[arg-type]
+    install_mcp_generate_reply_guard(session, mcp_runtime_active=False)  # type: ignore[arg-type]
     session.generate_reply(instructions="hello")
 
     assert session.generate_reply_calls == [{"instructions": "hello"}]
 
 
-def test_run_startup_greeting_uses_say_in_mcp_mode() -> None:
+def testrun_startup_greeting_uses_say_in_mcp_mode() -> None:
     session = _FakeSession()
 
-    handle = _run_startup_greeting(session, mcp_runtime_active=True)  # type: ignore[arg-type]
+    handle = run_startup_greeting(session, mcp_runtime_active=True)  # type: ignore[arg-type]
 
     assert handle is session.greeting_handle
     assert session.say_calls == [
@@ -252,10 +252,10 @@ def test_run_startup_greeting_uses_say_in_mcp_mode() -> None:
     assert session.generate_reply_calls == []
 
 
-def test_run_startup_greeting_uses_generate_reply_without_mcp() -> None:
+def testrun_startup_greeting_uses_generate_reply_without_mcp() -> None:
     session = _FakeSession()
 
-    handle = _run_startup_greeting(session, mcp_runtime_active=False)  # type: ignore[arg-type]
+    handle = run_startup_greeting(session, mcp_runtime_active=False)  # type: ignore[arg-type]
 
     assert handle is None
     assert session.generate_reply_calls == [
@@ -266,18 +266,18 @@ def test_run_startup_greeting_uses_generate_reply_without_mcp() -> None:
 
 def test_startup_greeting_monitor_times_out_and_interrupts() -> None:
     session = _FakeSession(greeting_handle=_FakeSpeechHandle(block=True))
-    handle = _run_startup_greeting(session, mcp_runtime_active=True)  # type: ignore[arg-type]
+    handle = run_startup_greeting(session, mcp_runtime_active=True)  # type: ignore[arg-type]
 
     assert handle is not None
-    asyncio.run(_monitor_startup_greeting_handle(handle, timeout_sec=0.01))
+    asyncio.run(monitor_startup_greeting_handle(handle, timeout_sec=0.01))
 
     assert handle.interrupt_calls == [True]
 
 
-def test_run_startup_greeting_swallows_say_exception() -> None:
+def testrun_startup_greeting_swallows_say_exception() -> None:
     session = _FailingSaySession()
 
-    handle = _run_startup_greeting(session, mcp_runtime_active=True)  # type: ignore[arg-type]
+    handle = run_startup_greeting(session, mcp_runtime_active=True)  # type: ignore[arg-type]
 
     assert handle is None
     assert session.say_calls == [{"text": MCP_STARTUP_GREETING, "kwargs": {"allow_interruptions": True, "add_to_chat_ctx": True}}]
@@ -288,7 +288,7 @@ def test_startup_greeting_monitor_handles_cancellation() -> None:
     async def _run() -> _FakeSpeechHandle:
         handle = _FakeSpeechHandle(block=True)
         task = asyncio.create_task(
-            _monitor_startup_greeting_handle(handle, timeout_sec=10.0)
+            monitor_startup_greeting_handle(handle, timeout_sec=10.0)
         )
         await asyncio.sleep(0)
         task.cancel()
@@ -299,17 +299,17 @@ def test_startup_greeting_monitor_handles_cancellation() -> None:
     assert handle.interrupt_calls == [True]
 
 
-def test_schedule_startup_greeting_task_is_shutdown_safe() -> None:
+def testschedule_startup_greeting_task_is_shutdown_safe() -> None:
     async def _run() -> tuple[asyncio.Task[Any], _FakeSpeechHandle]:
         handle = _FakeSpeechHandle(block=True)
         session = _FakeSession(greeting_handle=handle)
-        task = _schedule_startup_greeting_task(  # type: ignore[arg-type]
+        task = schedule_startup_greeting_task(  # type: ignore[arg-type]
             session,
             mcp_runtime_active=True,
         )
         assert task is not None
         assert not task.done()
-        await _cancel_task_for_shutdown(task, task_name="startup greeting", timeout_sec=0.1)
+        await cancel_task_for_shutdown(task, task_name="startup greeting", timeout_sec=0.1)
         return task, handle
 
     task, handle = asyncio.run(_run())
@@ -317,8 +317,8 @@ def test_schedule_startup_greeting_task_is_shutdown_safe() -> None:
     assert handle.interrupt_calls == [True]
 
 
-def test_build_mcp_http_timeout_uses_runtime_timeout_for_all_phases() -> None:
-    timeout = _build_mcp_http_timeout(12.0)
+def testbuild_mcp_http_timeout_uses_runtime_timeout_for_all_phases() -> None:
+    timeout = build_mcp_http_timeout(12.0)
 
     assert timeout.connect == 12.0
     assert timeout.read == 12.0
@@ -326,8 +326,8 @@ def test_build_mcp_http_timeout_uses_runtime_timeout_for_all_phases() -> None:
     assert timeout.pool == 12.0
 
 
-def test_build_mcp_http_timeout_enforces_positive_minimum() -> None:
-    timeout = _build_mcp_http_timeout(0.0)
+def testbuild_mcp_http_timeout_enforces_positive_minimum() -> None:
+    timeout = build_mcp_http_timeout(0.0)
 
     assert timeout.connect == 1.0
     assert timeout.read == 1.0
@@ -388,12 +388,12 @@ def test_assistant_instructions_enforce_ultra_short_answers() -> None:
     assert "Keep most responses to one short sentence." in ASSISTANT_INSTRUCTIONS
 
 
-def test_run_llm_warmup_consumes_first_chunk_and_closes_stream() -> None:
+def testrun_llm_warmup_consumes_first_chunk_and_closes_stream() -> None:
     stream = _FakeLLMStream(chunks=[{"delta": "OK"}, {"delta": "ignored"}])
     llm_client = _FakeLLMClient(stream)
 
     asyncio.run(
-        _run_llm_warmup(
+        run_llm_warmup(
             llm_client=llm_client,
             conn_options=object(),  # type: ignore[arg-type]
             provider="nvidia",
@@ -410,12 +410,12 @@ def test_run_llm_warmup_consumes_first_chunk_and_closes_stream() -> None:
     assert stream.aclose_calls == 1
 
 
-def test_run_llm_warmup_swallows_stream_errors_and_closes() -> None:
+def testrun_llm_warmup_swallows_stream_errors_and_closes() -> None:
     stream = _FakeLLMStream(iter_error=RuntimeError("warmup boom"))
     llm_client = _FakeLLMClient(stream)
 
     asyncio.run(
-        _run_llm_warmup(
+        run_llm_warmup(
             llm_client=llm_client,
             conn_options=object(),  # type: ignore[arg-type]
             provider="nvidia",
@@ -428,11 +428,11 @@ def test_run_llm_warmup_swallows_stream_errors_and_closes() -> None:
     assert stream.aclose_calls == 1
 
 
-def test_schedule_llm_warmup_task_is_shutdown_safe() -> None:
+def testschedule_llm_warmup_task_is_shutdown_safe() -> None:
     async def _run() -> tuple[asyncio.Task[Any], _FakeLLMStream]:
         stream = _FakeLLMStream(block_forever=True)
         llm_client = _FakeLLMClient(stream)
-        task = _schedule_llm_warmup_task(
+        task = schedule_llm_warmup_task(
             llm_client=llm_client,
             conn_options=object(),  # type: ignore[arg-type]
             provider="nvidia",
@@ -440,7 +440,7 @@ def test_schedule_llm_warmup_task_is_shutdown_safe() -> None:
         )
         assert not task.done()
         await asyncio.sleep(0)
-        await _cancel_task_for_shutdown(task, task_name="llm warm-up", timeout_sec=0.1)
+        await cancel_task_for_shutdown(task, task_name="llm warm-up", timeout_sec=0.1)
         return task, stream
 
     task, stream = asyncio.run(_run())
@@ -449,13 +449,13 @@ def test_schedule_llm_warmup_task_is_shutdown_safe() -> None:
     assert stream.aclose_calls == 1
 
 
-def test_inject_pre_tool_feedback_uses_model_leadin_before_tool_call() -> None:
+def testinject_pre_tool_feedback_uses_model_leadin_before_tool_call() -> None:
     feedback = _FakeToolFeedback()
     input_chunk = _tool_chunk(content="I'll check that now.")
 
     output = asyncio.run(
         _collect(
-            _inject_pre_tool_feedback(
+            inject_pre_tool_feedback(
                 _iter_items([input_chunk]),
                 tool_feedback=feedback,  # type: ignore[arg-type]
             )
@@ -470,13 +470,13 @@ def test_inject_pre_tool_feedback_uses_model_leadin_before_tool_call() -> None:
     assert feedback.start_typing_calls == 1
 
 
-def test_inject_pre_tool_feedback_uses_fallback_when_model_omits_leadin() -> None:
+def testinject_pre_tool_feedback_uses_fallback_when_model_omits_leadin() -> None:
     feedback = _FakeToolFeedback(fallback_phrase="One sec, checking now.")
     input_chunk = _tool_chunk(content=None)
 
     output = asyncio.run(
         _collect(
-            _inject_pre_tool_feedback(
+            inject_pre_tool_feedback(
                 _iter_items([input_chunk]),
                 tool_feedback=feedback,  # type: ignore[arg-type]
             )
@@ -488,14 +488,14 @@ def test_inject_pre_tool_feedback_uses_fallback_when_model_omits_leadin() -> Non
     assert feedback.start_typing_calls == 1
 
 
-def test_inject_pre_tool_feedback_announces_once_per_tool_step() -> None:
+def testinject_pre_tool_feedback_announces_once_per_tool_step() -> None:
     feedback = _FakeToolFeedback(fallback_phrase="Checking that for you.")
     first = _tool_chunk(content=None, call_id="call-1")
     second = _tool_chunk(content=None, call_id="call-2")
 
     output = asyncio.run(
         _collect(
-            _inject_pre_tool_feedback(
+            inject_pre_tool_feedback(
                 _iter_items([first, second]),
                 tool_feedback=feedback,  # type: ignore[arg-type]
             )
@@ -508,14 +508,14 @@ def test_inject_pre_tool_feedback_announces_once_per_tool_step() -> None:
     assert feedback.start_typing_calls == 1
 
 
-def test_inject_pre_tool_feedback_marks_tool_step_once() -> None:
+def testinject_pre_tool_feedback_marks_tool_step_once() -> None:
     callback = _FakeToolStepStartedCallback()
     first = _tool_chunk(content=None, call_id="call-1")
     second = _tool_chunk(content=None, call_id="call-2")
 
     _ = asyncio.run(
         _collect(
-            _inject_pre_tool_feedback(
+            inject_pre_tool_feedback(
                 _iter_items([first, second]),
                 tool_feedback=None,
                 on_tool_step_started=callback,
@@ -526,7 +526,7 @@ def test_inject_pre_tool_feedback_marks_tool_step_once() -> None:
     assert callback.calls == 1
 
 
-def test_inject_pre_tool_feedback_does_not_modify_non_tool_chunks() -> None:
+def testinject_pre_tool_feedback_does_not_modify_non_tool_chunks() -> None:
     feedback = _FakeToolFeedback()
     non_tool_chunk = llm.ChatChunk(
         id="chunk-plain",
@@ -535,7 +535,7 @@ def test_inject_pre_tool_feedback_does_not_modify_non_tool_chunks() -> None:
 
     output = asyncio.run(
         _collect(
-            _inject_pre_tool_feedback(
+            inject_pre_tool_feedback(
                 _iter_items([non_tool_chunk]),
                 tool_feedback=feedback,  # type: ignore[arg-type]
             )

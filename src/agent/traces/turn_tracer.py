@@ -19,7 +19,7 @@ from src.core.logger import logger
 from src.core.settings import settings
 
 if TYPE_CHECKING:
-    from src.agent._channel_metrics import ChannelPublisher
+    from src.agent.traces.channel_metrics import ChannelPublisher
 
 
 @dataclass
@@ -611,7 +611,7 @@ class TurnTracer:
         if not self._langfuse_enabled:
             return
 
-        import src.agent.metrics_collector as _mc
+        import src.agent.traces.metrics_collector as _mc
 
         _tracer = _mc.tracer
 

@@ -11,7 +11,7 @@ import pytest
 from opentelemetry import trace as otel_trace
 from livekit.agents import metrics
 
-from src.agent.metrics_collector import MetricsCollector
+from src.agent.traces.metrics_collector import MetricsCollector
 
 
 @dataclass
@@ -272,7 +272,7 @@ class _FakeFunctionCallOutput:
 
 
 def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPatch) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -413,7 +413,7 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
 def test_turn_trace_includes_tool_spans_between_llm_and_tts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -491,7 +491,7 @@ def test_turn_trace_includes_tool_spans_between_llm_and_tts(
 def test_tool_span_keeps_full_input_output_without_truncation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -548,7 +548,7 @@ def test_tool_span_keeps_full_input_output_without_truncation(
 def test_tool_error_span_marks_error_and_root_counters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -605,7 +605,7 @@ def test_tool_error_span_marks_error_and_root_counters(
 def test_tool_span_survives_when_tts_precedes_function_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -675,7 +675,7 @@ def test_tool_span_survives_when_tts_precedes_function_event(
 def test_trace_waits_for_post_tool_response_before_finalize(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -736,7 +736,7 @@ def test_trace_waits_for_post_tool_response_before_finalize(
 def test_timeout_finalizes_tool_turn_with_missing_post_tool_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -795,7 +795,7 @@ def test_timeout_finalizes_tool_turn_with_missing_post_tool_response(
 def test_tool_event_without_matching_turn_is_ignored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -846,7 +846,7 @@ def test_tool_event_without_matching_turn_is_ignored(
 
 
 def test_tracing_failure_does_not_break_metrics_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     monkeypatch.setattr(metrics_collector_module, "tracer", _BrokenTracer())
 
@@ -882,7 +882,7 @@ def test_tracing_failure_does_not_break_metrics_pipeline(monkeypatch: pytest.Mon
 def test_creates_new_trace_for_each_finalized_transcript(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -924,7 +924,7 @@ def test_creates_new_trace_for_each_finalized_transcript(
 
 
 def test_trace_emits_without_stt_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -969,7 +969,7 @@ def test_trace_emits_without_stt_metrics(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_trace_waits_for_assistant_text_before_emit(monkeypatch: pytest.MonkeyPatch) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -1007,7 +1007,7 @@ def test_trace_waits_for_assistant_text_before_emit(monkeypatch: pytest.MonkeyPa
 def test_speech_created_done_callback_backfills_assistant_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -1050,7 +1050,7 @@ def test_speech_created_done_callback_backfills_assistant_text(
 def test_speech_created_immediate_capture_backfills_assistant_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -1098,7 +1098,7 @@ def test_speech_created_immediate_capture_backfills_assistant_text(
 def test_trace_finalize_timeout_for_missing_assistant_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -1137,7 +1137,7 @@ def test_trace_finalize_timeout_for_missing_assistant_text(
 def test_trace_finalize_timeout_uses_pending_assistant_transcript(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -1178,7 +1178,7 @@ def test_trace_finalize_timeout_uses_pending_assistant_transcript(
 def test_long_response_latency_accounts_for_llm_to_tts_handoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -1266,7 +1266,7 @@ def test_long_response_latency_accounts_for_llm_to_tts_handoff(
 def test_fallback_console_session_id_is_used_when_metadata_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -1301,7 +1301,7 @@ def test_fallback_console_session_id_is_used_when_metadata_absent(
 def test_real_session_metadata_overrides_fallback_for_pending_turns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -1338,7 +1338,7 @@ def test_real_session_metadata_overrides_fallback_for_pending_turns(
 def test_fallback_console_participant_id_is_used_when_metadata_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
@@ -1374,7 +1374,7 @@ def test_fallback_console_participant_id_is_used_when_metadata_absent(
 def test_real_participant_metadata_overrides_fallback_for_pending_turns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.agent.metrics_collector as metrics_collector_module
+    import src.agent.traces.metrics_collector as metrics_collector_module
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)

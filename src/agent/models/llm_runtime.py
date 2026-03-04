@@ -7,10 +7,10 @@ import httpx
 from livekit.agents import AgentSession, mcp
 from livekit.plugins import openai as openai_plugin
 
+from src.agent.prompts.runtime import MCP_STARTUP_GREETING
 from src.core.logger import logger
 
 NVIDIA_OPENAI_BASE_URL = "https://integrate.api.nvidia.com/v1"
-MCP_STARTUP_GREETING = "Hi, I am Open Voice Agent. How can I help you today?"
 MCP_STARTUP_GREETING_TIMEOUT_SEC = 4.0
 MCP_GENERATE_REPLY_BLOCK_MESSAGE = (
     "Manual generate_reply is disabled in MCP mode; use session.say(...) instead."
@@ -66,7 +66,7 @@ def build_llm_runtime(
     mcp_server_url: str,
 ) -> LLMRuntimeConfig:
     provider = (llm_provider or "").strip().lower()
-    timeout = _build_mcp_http_timeout(llm_timeout_sec)
+    timeout = build_mcp_http_timeout(llm_timeout_sec)
     mcp_decision = resolve_mcp_runtime_mode(
         mcp_enabled=mcp_enabled,
         llm_provider=provider,
@@ -89,7 +89,7 @@ def build_llm_runtime(
         base_url = (ollama_base_url or "").strip()
         if not base_url:
             raise ValueError("OLLAMA_BASE_URL is required when LLM_PROVIDER=ollama")
-        api_key = _resolve_ollama_api_key(ollama_api_key)
+        api_key = resolve_ollama_api_key(ollama_api_key)
     else:
         raise ValueError(
             f"Unknown LLM provider: {provider}. Must be 'nvidia' or 'ollama'"
@@ -129,14 +129,14 @@ def build_llm_runtime(
     )
 
 
-def _resolve_ollama_api_key(api_key: str | None) -> str:
+def resolve_ollama_api_key(api_key: str | None) -> str:
     value = (api_key or "").strip()
     if value:
         return value
     return "ollama"
 
 
-def _build_mcp_http_timeout(timeout_seconds: float) -> httpx.Timeout:
+def build_mcp_http_timeout(timeout_seconds: float) -> httpx.Timeout:
     bounded_timeout = max(timeout_seconds, 1.0)
     return httpx.Timeout(
         connect=bounded_timeout,
@@ -146,7 +146,7 @@ def _build_mcp_http_timeout(timeout_seconds: float) -> httpx.Timeout:
     )
 
 
-def _install_mcp_generate_reply_guard(
+def install_mcp_generate_reply_guard(
     session: AgentSession,
     *,
     mcp_runtime_active: bool,
@@ -165,7 +165,7 @@ def _install_mcp_generate_reply_guard(
     logger.info("MCP runtime policy active: manual generate_reply disabled")
 
 
-def _run_startup_greeting(
+def run_startup_greeting(
     session: AgentSession,
     *,
     mcp_runtime_active: bool,

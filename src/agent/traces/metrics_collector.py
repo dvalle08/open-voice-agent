@@ -19,8 +19,8 @@ from livekit.agents import metrics
 from livekit.agents.telemetry import tracer  # noqa: F811 – kept at module level for monkeypatch
 from opentelemetry import trace  # noqa: F401
 
-from src.agent._channel_metrics import ChannelPublisher
-from src.agent._turn_tracer import TraceTurn, TurnTracer
+from src.agent.traces.channel_metrics import ChannelPublisher
+from src.agent.traces.turn_tracer import TraceTurn, TurnTracer
 from src.core.logger import logger
 from src.core.settings import settings
 

@@ -18,7 +18,7 @@ from livekit import rtc
 from src.core.logger import logger
 
 if TYPE_CHECKING:
-    from src.agent.metrics_collector import STTMetrics, TurnMetrics, VADMetrics
+    from src.agent.traces.metrics_collector import STTMetrics, TurnMetrics, VADMetrics
 
 
 class ChannelPublisher:

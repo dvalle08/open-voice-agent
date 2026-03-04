@@ -9,14 +9,12 @@ from typing import Any
 from livekit import rtc
 from livekit.agents import AgentSession, BackgroundAudioPlayer, BuiltinAudioClip
 
+from src.agent.prompts.runtime import (
+    DEFAULT_TOOL_FALLBACK_PHRASES,
+    TOOL_PRE_SPEECH_FALLBACK,
+)
 from src.core.logger import logger
 
-DEFAULT_TOOL_FALLBACK_PHRASES: tuple[str, ...] = (
-    "Let me check that.",
-    "One sec, checking now.",
-    "I'll look that up.",
-    "Checking that for you.",
-)
 DEFAULT_TYPING_CLIPS: tuple[BuiltinAudioClip, ...] = (
     BuiltinAudioClip.KEYBOARD_TYPING,
     BuiltinAudioClip.KEYBOARD_TYPING2,
@@ -58,7 +56,7 @@ class ToolFeedbackController:
 
     def next_fallback_phrase(self) -> str:
         if not self._fallback_phrases:
-            return "Let me check that."
+            return TOOL_PRE_SPEECH_FALLBACK
         return self._next_rotation_value(
             values=self._fallback_phrases,
             bucket=self._phrase_rotation,
