@@ -1,7 +1,9 @@
 import asyncio
 import base64
+import contextlib
 import json
 import sys
+from collections.abc import AsyncGenerator, AsyncIterable
 from time import monotonic
 from typing import Any
 
@@ -35,6 +37,7 @@ from src.agent.llm_runtime import (
 )
 from src.agent.metrics_collector import MetricsCollector
 from src.agent.stt_factory import create_stt
+from src.agent.tool_feedback import ToolFeedbackController
 from src.plugins.pocket_tts import PocketTTS
 from src.core.logger import detach_default_root_handler, logger
 from src.core.settings import settings
@@ -48,6 +51,7 @@ Call MCP tools only when user intent clearly requires external or up-to-date inf
 If a request can be answered directly from context and general knowledge, do not call tools.
 If tool usage is uncertain, ask one short clarification question before calling any tool.
 Only call tools that are explicitly available in the current session; never invent tool or function names.
+Before any tool call, first say one short context-aware lead-in sentence, then call the tool.
 If a user asks how you work, explain the pipeline and component roles in one to two short sentences.
 Use plain voice-friendly text only; no markdown, emojis, bullets, or decorative punctuation."""
 
@@ -257,6 +261,59 @@ async def _run_llm_warmup(
         )
 
 
+async def _inject_pre_tool_feedback(
+    source: AsyncIterable[Any],
+    *,
+    tool_feedback: ToolFeedbackController | None,
+) -> AsyncGenerator[Any, None]:
+    tool_step_started = False
+
+    async for chunk in source:
+        if not isinstance(chunk, llm.ChatChunk):
+            yield chunk
+            continue
+
+        delta = chunk.delta
+        has_tool_calls = bool(delta and delta.tool_calls)
+        if not has_tool_calls:
+            yield chunk
+            continue
+
+        if not tool_step_started:
+            tool_step_started = True
+            leadin_text = (delta.content or "").strip() if delta is not None else ""
+            if leadin_text:
+                logger.info(
+                    "tool_pre_speech_source=model tool_pre_speech_text=%s",
+                    leadin_text,
+                )
+                yield leadin_text
+
+                rewritten = chunk.model_copy(deep=True)
+                if rewritten.delta is not None:
+                    rewritten.delta.content = None
+                if tool_feedback is not None:
+                    await tool_feedback.start_typing_sound()
+                yield rewritten
+                continue
+
+            if tool_feedback is not None:
+                fallback = tool_feedback.next_fallback_phrase()
+            else:
+                fallback = "Let me check that."
+            logger.info(
+                "tool_pre_speech_source=fallback tool_pre_speech_text=%s",
+                fallback,
+            )
+            yield fallback
+            if tool_feedback is not None:
+                await tool_feedback.start_typing_sound()
+            yield chunk
+            continue
+
+        yield chunk
+
+
 def _schedule_llm_warmup_task(
     *,
     llm_client: Any,
@@ -325,6 +382,7 @@ class Assistant(Agent):
         *,
         room_name: str,
         job_id: str,
+        tool_feedback: ToolFeedbackController | None = None,
     ) -> None:
         super().__init__(
             instructions=ASSISTANT_INSTRUCTIONS,
@@ -332,6 +390,36 @@ class Assistant(Agent):
         self._metrics_collector = metrics_collector
         self._room_name = room_name
         self._job_id = job_id
+        self._tool_feedback = tool_feedback
+
+    async def llm_node(
+        self,
+        chat_ctx: llm.ChatContext,
+        tools: list[llm.FunctionTool | llm.RawFunctionTool],
+        model_settings: Any,
+    ) -> AsyncGenerator[llm.ChatChunk | str | Any, None]:
+        llm_node = Agent.default.llm_node(self, chat_ctx, tools, model_settings)
+        if asyncio.iscoroutine(llm_node):
+            llm_node = await llm_node
+
+        if isinstance(llm_node, str):
+            yield llm_node
+            return
+
+        if not isinstance(llm_node, AsyncIterable):
+            return
+
+        aclose = getattr(llm_node, "aclose", None)
+        try:
+            async for chunk in _inject_pre_tool_feedback(
+                llm_node,
+                tool_feedback=self._tool_feedback,
+            ):
+                yield chunk
+        finally:
+            if callable(aclose):
+                with contextlib.suppress(Exception):
+                    await aclose()
 
     async def on_enter(self) -> None:
         """Called when the agent enters the session. Set up metrics listeners."""
@@ -372,6 +460,10 @@ class Assistant(Agent):
                     created_at=event.created_at,
                 )
             )
+            if self._tool_feedback is not None:
+                asyncio.create_task(
+                    self._tool_feedback.stop_typing_sound(reason="function_tools_executed")
+                )
 
         def agent_state_changed_wrapper(event: AgentStateChangedEvent) -> None:
             asyncio.create_task(
@@ -382,6 +474,8 @@ class Assistant(Agent):
             )
 
         def error_wrapper(event: ErrorEvent) -> None:
+            if self._tool_feedback is not None:
+                asyncio.create_task(self._tool_feedback.stop_typing_sound(reason="error"))
             source = type(event.source).__name__
             error_type = _error_type_name(event.error)
             recoverable = _error_recoverable(event.error)
@@ -397,6 +491,10 @@ class Assistant(Agent):
             )
 
         def close_wrapper(event: CloseEvent) -> None:
+            if self._tool_feedback is not None:
+                asyncio.create_task(
+                    self._tool_feedback.stop_typing_sound(reason=f"close:{event.reason.value}")
+                )
             reason = event.reason.value
             if event.error is None:
                 logger.info(
@@ -445,6 +543,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
     trace_provider = setup_langfuse_tracer()
     startup_greeting_task: asyncio.Task[Any] | None = None
     llm_warmup_task: asyncio.Task[Any] | None = None
+    tool_feedback = ToolFeedbackController(enabled=False)
 
     if trace_provider:
         async def flush_trace(_: str) -> None:
@@ -470,6 +569,11 @@ async def session_handler(ctx: agents.JobContext) -> None:
         )
 
     ctx.add_shutdown_callback(cancel_llm_warmup)
+
+    async def close_tool_feedback(_: str) -> None:
+        await tool_feedback.aclose()
+
+    ctx.add_shutdown_callback(close_tool_feedback)
 
     # Create metrics collector
     participant = getattr(ctx.job, "participant", None)
@@ -534,6 +638,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         mcp_server_url=settings.llm.MCP_SERVER_URL,
     )
     mcp_runtime_active = llm_runtime.mcp_runtime_active
+    tool_feedback = ToolFeedbackController(enabled=mcp_runtime_active)
     llm_warmup_task = _schedule_llm_warmup_task(
         llm_client=llm_runtime.llm,
         conn_options=llm_conn_options,
@@ -569,6 +674,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
             metrics_collector=metrics_collector,
             room_name=ctx.room.name,
             job_id=ctx.job.id,
+            tool_feedback=tool_feedback,
         ),
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
@@ -583,6 +689,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
             ),
         ),
     )
+    await tool_feedback.start(room=ctx.room, session=session)
     if mcp_runtime_active:
         startup_greeting_task = _schedule_startup_greeting_task(
             session,

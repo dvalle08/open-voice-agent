@@ -5,10 +5,12 @@ import re
 from typing import Any
 
 import pytest
+from livekit.agents import llm
 
 from src.agent.agent import (
     ASSISTANT_INSTRUCTIONS,
     _cancel_task_for_shutdown,
+    _inject_pre_tool_feedback,
     _run_llm_warmup,
     _schedule_llm_warmup_task,
     _monitor_startup_greeting_handle,
@@ -109,6 +111,46 @@ class _FakeLLMClient:
     def chat(self, **kwargs: object) -> _FakeLLMStream:
         self.chat_calls.append(kwargs)
         return self._stream
+
+
+class _FakeToolFeedback:
+    def __init__(self, *, fallback_phrase: str = "Let me check that.") -> None:
+        self.fallback_phrase = fallback_phrase
+        self.start_typing_calls = 0
+
+    def next_fallback_phrase(self) -> str:
+        return self.fallback_phrase
+
+    async def start_typing_sound(self) -> None:
+        self.start_typing_calls += 1
+
+
+async def _iter_items(items: list[Any]) -> Any:
+    for item in items:
+        yield item
+
+
+async def _collect(items: Any) -> list[Any]:
+    out: list[Any] = []
+    async for item in items:
+        out.append(item)
+    return out
+
+
+def _tool_chunk(*, content: str | None, call_id: str = "call-1") -> llm.ChatChunk:
+    return llm.ChatChunk(
+        id="chunk-1",
+        delta=llm.ChoiceDelta(
+            content=content,
+            tool_calls=[
+                llm.FunctionToolCall(
+                    name="paper_search",
+                    arguments='{"query":"transformers"}',
+                    call_id=call_id,
+                )
+            ],
+        ),
+    )
 
 
 def test_resolve_mcp_runtime_mode_enables_mcp_with_supported_config() -> None:
@@ -397,3 +439,82 @@ def test_schedule_llm_warmup_task_is_shutdown_safe() -> None:
     assert task.done()
     assert stream.closed is True
     assert stream.aclose_calls == 1
+
+
+def test_inject_pre_tool_feedback_uses_model_leadin_before_tool_call() -> None:
+    feedback = _FakeToolFeedback()
+    input_chunk = _tool_chunk(content="I'll check that now.")
+
+    output = asyncio.run(
+        _collect(
+            _inject_pre_tool_feedback(
+                _iter_items([input_chunk]),
+                tool_feedback=feedback,  # type: ignore[arg-type]
+            )
+        )
+    )
+
+    assert output[0] == "I'll check that now."
+    assert isinstance(output[1], llm.ChatChunk)
+    assert output[1].delta is not None
+    assert output[1].delta.content is None
+    assert len(output[1].delta.tool_calls) == 1
+    assert feedback.start_typing_calls == 1
+
+
+def test_inject_pre_tool_feedback_uses_fallback_when_model_omits_leadin() -> None:
+    feedback = _FakeToolFeedback(fallback_phrase="One sec, checking now.")
+    input_chunk = _tool_chunk(content=None)
+
+    output = asyncio.run(
+        _collect(
+            _inject_pre_tool_feedback(
+                _iter_items([input_chunk]),
+                tool_feedback=feedback,  # type: ignore[arg-type]
+            )
+        )
+    )
+
+    assert output[0] == "One sec, checking now."
+    assert output[1] == input_chunk
+    assert feedback.start_typing_calls == 1
+
+
+def test_inject_pre_tool_feedback_announces_once_per_tool_step() -> None:
+    feedback = _FakeToolFeedback(fallback_phrase="Checking that for you.")
+    first = _tool_chunk(content=None, call_id="call-1")
+    second = _tool_chunk(content=None, call_id="call-2")
+
+    output = asyncio.run(
+        _collect(
+            _inject_pre_tool_feedback(
+                _iter_items([first, second]),
+                tool_feedback=feedback,  # type: ignore[arg-type]
+            )
+        )
+    )
+
+    assert output[0] == "Checking that for you."
+    assert output[1] == first
+    assert output[2] == second
+    assert feedback.start_typing_calls == 1
+
+
+def test_inject_pre_tool_feedback_does_not_modify_non_tool_chunks() -> None:
+    feedback = _FakeToolFeedback()
+    non_tool_chunk = llm.ChatChunk(
+        id="chunk-plain",
+        delta=llm.ChoiceDelta(content="Hello there."),
+    )
+
+    output = asyncio.run(
+        _collect(
+            _inject_pre_tool_feedback(
+                _iter_items([non_tool_chunk]),
+                tool_feedback=feedback,  # type: ignore[arg-type]
+            )
+        )
+    )
+
+    assert output == [non_tool_chunk]
+    assert feedback.start_typing_calls == 0
