@@ -125,6 +125,14 @@ class _FakeToolFeedback:
         self.start_typing_calls += 1
 
 
+class _FakeToolStepStartedCallback:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self) -> None:
+        self.calls += 1
+
+
 async def _iter_items(items: list[Any]) -> Any:
     for item in items:
         yield item
@@ -498,6 +506,24 @@ def test_inject_pre_tool_feedback_announces_once_per_tool_step() -> None:
     assert output[1] == first
     assert output[2] == second
     assert feedback.start_typing_calls == 1
+
+
+def test_inject_pre_tool_feedback_marks_tool_step_once() -> None:
+    callback = _FakeToolStepStartedCallback()
+    first = _tool_chunk(content=None, call_id="call-1")
+    second = _tool_chunk(content=None, call_id="call-2")
+
+    _ = asyncio.run(
+        _collect(
+            _inject_pre_tool_feedback(
+                _iter_items([first, second]),
+                tool_feedback=None,
+                on_tool_step_started=callback,
+            )
+        )
+    )
+
+    assert callback.calls == 1
 
 
 def test_inject_pre_tool_feedback_does_not_modify_non_tool_chunks() -> None:

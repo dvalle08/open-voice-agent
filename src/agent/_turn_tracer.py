@@ -10,7 +10,7 @@ import asyncio
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from time import time_ns
+from time import time, time_ns
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from opentelemetry import trace
@@ -54,6 +54,12 @@ class TraceTurn:
     llm_attributes: dict[str, Any] = field(default_factory=dict)
     tts_attributes: dict[str, Any] = field(default_factory=dict)
     tool_calls: list["ToolCallTrace"] = field(default_factory=list)
+    tool_step_announced: bool = False
+    tool_phase_open: bool = False
+    last_tool_event_at: Optional[float] = None
+    assistant_text_updated_at: Optional[float] = None
+    tts_updated_at: Optional[float] = None
+    tool_post_response_missing: bool = False
     trace_id: Optional[str] = None
 
 
@@ -301,16 +307,13 @@ class TurnTracer:
         metric_attributes: Optional[dict[str, Any]] = None,
     ) -> Optional[TraceTurn]:
         async with self._trace_lock:
-            turn = self._next_turn_where(
-                lambda c: (
-                    c.llm_duration_ms is not None and c.tts_duration_ms is None
-                )
-            )
+            turn = self._latest_turn_where(lambda c: c.llm_duration_ms is not None)
             if not turn:
                 return None
             turn.tts_duration_ms = _duration_to_ms(duration, fallback_duration)
             turn.tts_ttfb_ms = _duration_to_ms(ttfb, 0.0)
             turn.tts_attributes = _sanitize_component_attributes(metric_attributes)
+            turn.tts_updated_at = time()
             _recompute_conversational_latency(turn)
             if observed_total_latency is not None:
                 observed_ms = observed_total_latency * 1000.0
@@ -325,6 +328,7 @@ class TurnTracer:
                 llm_ttft_ms=turn.llm_ttft_ms,
                 tts_ttfb_ms=turn.tts_ttfb_ms,
             )
+            self._maybe_close_tool_phase(turn)
             return turn
 
     async def attach_assistant_text(
@@ -332,11 +336,27 @@ class TurnTracer:
         assistant_text: str,
     ) -> Optional[TraceTurn]:
         async with self._trace_lock:
-            turn = self._next_turn_where(lambda c: not c.assistant_text)
+            turn = self._latest_turn_where(lambda c: c.llm_duration_ms is not None)
+            if not turn:
+                turn = self._latest_turn_where(lambda _: True)
             if not turn:
                 return None
             turn.assistant_text = assistant_text
             turn.response_text = assistant_text
+            turn.assistant_text_updated_at = time()
+            self._maybe_close_tool_phase(turn)
+            return turn
+
+    async def attach_tool_step_started(self) -> Optional[TraceTurn]:
+        async with self._trace_lock:
+            turn = self._latest_turn_where(lambda c: c.llm_duration_ms is not None)
+            if not turn:
+                turn = self._latest_turn_where(lambda _: True)
+            if not turn:
+                return None
+
+            turn.tool_step_announced = True
+            turn.tool_phase_open = True
             return turn
 
     async def attach_function_tools_executed(
@@ -347,13 +367,15 @@ class TurnTracer:
         created_at: float,
     ) -> Optional[TraceTurn]:
         async with self._trace_lock:
-            turn = self._next_turn_where(
-                lambda c: c.llm_duration_ms is not None and c.tts_duration_ms is None
-            )
+            turn = self._latest_turn_where(lambda c: c.llm_duration_ms is not None)
             if not turn:
                 return None
 
             event_created_at = _to_optional_float(created_at)
+            turn.tool_step_announced = True
+            turn.tool_phase_open = True
+            turn.tool_post_response_missing = False
+            turn.last_tool_event_at = _resolved_event_timestamp(event_created_at)
             for function_call, function_call_output in zip(
                 function_calls, function_call_outputs, strict=False
             ):
@@ -365,6 +387,7 @@ class TurnTracer:
                     )
                 )
 
+            self._maybe_close_tool_phase(turn)
             return turn
 
     # ------------------------------------------------------------------
@@ -409,28 +432,69 @@ class TurnTracer:
                 return turn
         return None
 
+    def _latest_turn_where(
+        self,
+        predicate: Callable[[TraceTurn], bool],
+    ) -> Optional[TraceTurn]:
+        for turn in reversed(self._pending_trace_turns):
+            if predicate(turn):
+                return turn
+        return None
+
     def _is_complete(self, turn: TraceTurn) -> bool:
-        return bool(
+        base_complete = bool(
             turn.user_transcript
             and turn.assistant_text
             and turn.llm_duration_ms is not None
             and turn.tts_duration_ms is not None
         )
+        if not base_complete:
+            return False
+        if turn.tool_phase_open:
+            return False
+        return not self._requires_post_tool_response(turn)
 
     def _should_schedule_finalize_timeout(self, turn: TraceTurn) -> bool:
         return bool(
             turn.llm_duration_ms is not None
             and turn.tts_duration_ms is not None
-            and not turn.assistant_text
+            and not self._is_complete(turn)
+            and not (turn.tool_phase_open and turn.last_tool_event_at is None)
             and turn.turn_id not in self._trace_finalize_tasks
             and self._trace_finalize_timeout_sec > 0.0
         )
+
+    def _requires_post_tool_response(self, turn: TraceTurn) -> bool:
+        if not turn.tool_step_announced and turn.last_tool_event_at is None:
+            return False
+        return not self._post_tool_response_observed(turn)
+
+    def _post_tool_response_observed(self, turn: TraceTurn) -> bool:
+        if turn.last_tool_event_at is None:
+            return False
+        assistant_seen = bool(
+            turn.assistant_text_updated_at is not None
+            and turn.assistant_text_updated_at >= turn.last_tool_event_at
+        )
+        tts_seen = bool(
+            turn.tts_updated_at is not None
+            and turn.tts_updated_at >= turn.last_tool_event_at
+        )
+        return assistant_seen and tts_seen
+
+    def _maybe_close_tool_phase(self, turn: TraceTurn) -> None:
+        if not turn.tool_phase_open:
+            return
+        if not self._post_tool_response_observed(turn):
+            return
+        turn.tool_phase_open = False
 
     def _finalize_locked(
         self,
         turn: TraceTurn,
         *,
         missing_assistant_fallback: bool = False,
+        tool_post_response_missing: bool = False,
     ) -> TraceTurn:
         if not turn.prompt_text:
             turn.prompt_text = turn.user_transcript
@@ -451,6 +515,10 @@ class TurnTracer:
                 turn.assistant_text = unavailable
                 if not turn.response_text:
                     turn.response_text = unavailable
+
+        turn.tool_phase_open = False
+        if tool_post_response_missing:
+            turn.tool_post_response_missing = True
 
         self._pending_trace_turns.remove(turn)
         self._cancel_finalize_timeout(turn.turn_id)
@@ -502,8 +570,13 @@ class TurnTracer:
                 and pending_turn.llm_duration_ms is not None
                 and pending_turn.tts_duration_ms is not None
             ):
+                requires_post_tool_response = self._requires_post_tool_response(
+                    pending_turn
+                )
                 completed_turn = self._finalize_locked(
-                    pending_turn, missing_assistant_fallback=True
+                    pending_turn,
+                    missing_assistant_fallback=not bool(pending_turn.assistant_text),
+                    tool_post_response_missing=requires_post_tool_response,
                 )
 
         if completed_turn:
@@ -759,6 +832,16 @@ def _to_optional_float(value: Any) -> Optional[float]:
     return None
 
 
+def _resolved_event_timestamp(event_created_at: Optional[float]) -> float:
+    now = time()
+    if event_created_at is None:
+        return now
+    # Some test fixtures provide synthetic timestamps that are not wall-clock.
+    if abs(now - event_created_at) > 30 * 24 * 60 * 60:
+        return now
+    return event_created_at
+
+
 def _build_tool_call_trace(
     *,
     function_call: Any,
@@ -971,6 +1054,8 @@ def _set_root_attributes(
         "langfuse.trace.metadata.turn_id": turn.turn_id,
         "langfuse.trace.metadata.assistant_text_missing": turn.assistant_text_missing,
         "langfuse.trace.metadata.stt_status": turn.stt_status,
+        "langfuse.trace.metadata.tool_phase_announced": turn.tool_step_announced,
+        "langfuse.trace.metadata.tool_post_response_missing": turn.tool_post_response_missing,
         "duration_ms": _total_duration_ms(turn),
         "latency_ms.user_input": vals["user_input_duration_ms"],
         "latency_ms.vad": vals["vad_duration_ms"],
@@ -995,6 +1080,8 @@ def _set_root_attributes(
         ],
         "tool.call_count": vals["tool_call_count"],
         "tool.error_count": vals["tool_error_count"],
+        "tool.phase_announced": turn.tool_step_announced,
+        "tool.post_response_missing": turn.tool_post_response_missing,
         "stt_status": turn.stt_status,
     }
     for key, value in attrs.items():

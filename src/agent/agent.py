@@ -3,7 +3,7 @@ import base64
 import contextlib
 import json
 import sys
-from collections.abc import AsyncGenerator, AsyncIterable
+from collections.abc import AsyncGenerator, AsyncIterable, Awaitable, Callable
 from time import monotonic
 from typing import Any
 
@@ -265,6 +265,7 @@ async def _inject_pre_tool_feedback(
     source: AsyncIterable[Any],
     *,
     tool_feedback: ToolFeedbackController | None,
+    on_tool_step_started: Callable[[], Awaitable[None]] | None = None,
 ) -> AsyncGenerator[Any, None]:
     tool_step_started = False
 
@@ -281,6 +282,11 @@ async def _inject_pre_tool_feedback(
 
         if not tool_step_started:
             tool_step_started = True
+            if on_tool_step_started is not None:
+                try:
+                    await on_tool_step_started()
+                except Exception as exc:
+                    logger.debug("tool_step_started callback failed: %s", exc)
             leadin_text = (delta.content or "").strip() if delta is not None else ""
             if leadin_text:
                 logger.info(
@@ -414,6 +420,7 @@ class Assistant(Agent):
             async for chunk in _inject_pre_tool_feedback(
                 llm_node,
                 tool_feedback=self._tool_feedback,
+                on_tool_step_started=self._metrics_collector.on_tool_step_started,
             ):
                 yield chunk
         finally:
