@@ -448,6 +448,7 @@ class MetricsCollector:
             duration=duration,
             fallback_duration=audio_duration,
             ttfb=ttfb,
+            speech_id=speech_id,
             observed_total_latency=self._observed_total_latency(speech_id),
             metric_attributes={
                 "type": "tts_metrics",
@@ -532,6 +533,7 @@ class MetricsCollector:
             trace_turn = await self._tracer.attach_llm(
                 duration=collected_metrics.duration,
                 ttft=collected_metrics.ttft,
+                speech_id=speech_id,
                 metric_attributes=_llm_metric_attributes(collected_metrics),
             )
 
@@ -559,6 +561,7 @@ class MetricsCollector:
                 duration=collected_metrics.duration,
                 fallback_duration=collected_metrics.audio_duration,
                 ttfb=collected_metrics.ttfb,
+                speech_id=speech_id,
                 observed_total_latency=self._observed_total_latency(speech_id),
                 metric_attributes=_tts_metric_attributes(collected_metrics),
             )

@@ -311,21 +311,29 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
         "VADMetrics",
         "STTMetrics",
         "EOUMetrics",
+        "agent_response_phase_1",
         "LLMMetrics",
         "TTSMetrics",
-        "conversation_latency",
+        "metrics_summary",
+        "perceived_latency_first_audio",
     ]
 
-    (
-        root,
-        user_input_span,
-        vad_span,
-        stt_span,
-        eou_span,
-        llm_span,
-        tts_span,
-        conversational_span,
-    ) = fake_tracer.spans
+    root = fake_tracer.spans[0]
+    user_input_span = next(span for span in fake_tracer.spans if span.name == "user_input")
+    vad_span = next(span for span in fake_tracer.spans if span.name == "VADMetrics")
+    stt_span = next(span for span in fake_tracer.spans if span.name == "STTMetrics")
+    eou_span = next(span for span in fake_tracer.spans if span.name == "EOUMetrics")
+    phase_span = next(
+        span for span in fake_tracer.spans if span.name == "agent_response_phase_1"
+    )
+    llm_span = next(span for span in fake_tracer.spans if span.name == "LLMMetrics")
+    tts_span = next(span for span in fake_tracer.spans if span.name == "TTSMetrics")
+    summary_span = next(span for span in fake_tracer.spans if span.name == "metrics_summary")
+    perceived_first_span = next(
+        span
+        for span in fake_tracer.spans
+        if span.name == "perceived_latency_first_audio"
+    )
     assert root.attributes["session_id"] == "session-abc"
     assert root.attributes["room_id"] == "RM123"
     assert root.attributes["participant_id"] == "web-123"
@@ -337,6 +345,7 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
     assert root.attributes["latency_ms.llm_ttft"] > 0
     assert root.attributes["latency_ms.llm_total"] > 0
     assert root.attributes["latency_ms.tts_ttfb"] > 0
+    assert root.attributes["latency_ms.perceived_first_audio"] == pytest.approx(1350.0)
     assert root.attributes["latency_ms.conversational"] == pytest.approx(1350.0)
     assert root.attributes["latency_ms.speech_end_to_assistant_speech_start"] == pytest.approx(1350.0)
 
@@ -375,14 +384,18 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
     assert tts_span.attributes["characters_count"] == 42
     assert tts_span.attributes["streamed"] is True
 
-    assert conversational_span.attributes["duration_ms"] == pytest.approx(1350.0)
+    assert phase_span.attributes["phase.index"] == 1
+    assert phase_span.attributes["phase.kind"] == "single"
+    assert summary_span.attributes["duration_ms"] >= perceived_first_span.attributes["duration_ms"]
+
+    assert perceived_first_span.attributes["duration_ms"] == pytest.approx(1350.0)
     assert (
-        conversational_span.attributes["speech_end_to_assistant_speech_start_ms"]
+        perceived_first_span.attributes["speech_end_to_assistant_speech_start_ms"]
         == pytest.approx(1350.0)
     )
-    assert conversational_span.attributes["eou_delay_ms"] == pytest.approx(1100.0)
-    assert conversational_span.attributes["llm_ttft_ms"] > 0
-    assert conversational_span.attributes["tts_ttfb_ms"] > 0
+    assert perceived_first_span.attributes["eou_delay_ms"] == pytest.approx(1100.0)
+    assert perceived_first_span.attributes["llm_ttft_ms"] > 0
+    assert perceived_first_span.attributes["tts_ttfb_ms"] > 0
     assert all(span.end_count == 1 for span in fake_tracer.spans)
 
     payloads = _decode_payloads(room)
@@ -467,10 +480,24 @@ def test_turn_trace_includes_tool_spans_between_llm_and_tts(
         "VADMetrics",
         "STTMetrics",
         "EOUMetrics",
+        "agent_response_phase_1",
         "LLMMetrics",
+        "tool_execution_1",
         "ToolCall",
+        "agent_response_phase_2",
         "TTSMetrics",
+        "metrics_summary",
+        "perceived_latency_second_audio",
     ]
+
+    phase_pre = next(
+        span for span in fake_tracer.spans if span.name == "agent_response_phase_1"
+    )
+    phase_post = next(
+        span for span in fake_tracer.spans if span.name == "agent_response_phase_2"
+    )
+    assert phase_pre.attributes["phase.kind"] == "pre-tool"
+    assert phase_post.attributes["phase.kind"] == "post-tool"
 
     tool_span = next(span for span in fake_tracer.spans if span.name == "ToolCall")
     assert tool_span.attributes["tool.name"] == "paper_search"
@@ -485,7 +512,97 @@ def test_turn_trace_includes_tool_spans_between_llm_and_tts(
     root = fake_tracer.spans[0]
     assert root.attributes["tool.call_count"] == 1
     assert root.attributes["tool.error_count"] == 0
+    assert root.attributes["tool.execution_count"] == 1
     assert root.attributes["latency_ms.tool_calls_total"] == pytest.approx(400.0)
+    assert root.attributes["latency_ms.perceived_second_audio"] >= 0
+
+
+def test_turn_trace_supports_multiple_tool_execution_rounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-tools-multi-round",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("find and compare papers", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-tools-multi", ttft=0.08))
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="paper_search",
+                    call_id="call-round-1",
+                    arguments='{"query":"transformers"}',
+                    created_at=10.0,
+                )
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output='{"results":[{"title":"Attention Is All You Need"}]}',
+                    is_error=False,
+                    created_at=10.2,
+                )
+            ],
+            created_at=10.2,
+        )
+        await collector.on_metrics_collected(_make_llm_metrics("speech-tools-multi", ttft=0.09))
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="paper_compare",
+                    call_id="call-round-2",
+                    arguments='{"left":"A","right":"B"}',
+                    created_at=10.3,
+                )
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output='{"winner":"A"}',
+                    is_error=False,
+                    created_at=10.5,
+                )
+            ],
+            created_at=10.5,
+        )
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="I compared them. Paper A is more relevant.",
+        )
+        await collector.on_metrics_collected(
+            _make_tts_metrics("speech-tools-multi", ttfb=0.12, duration=0.4, audio_duration=0.4)
+        )
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    span_names = [span.name for span in fake_tracer.spans]
+    assert span_names.count("LLMMetrics") == 2
+    assert span_names.count("ToolCall") == 2
+    assert "tool_execution_1" in span_names
+    assert "tool_execution_2" in span_names
+    assert "agent_response_phase_3" in span_names
+    assert "perceived_latency_second_audio" in span_names
+
+    root = fake_tracer.spans[0]
+    assert root.attributes["tool.call_count"] == 2
+    assert root.attributes["tool.execution_count"] == 2
+    assert root.attributes["langfuse.trace.output"] == "I compared them. Paper A is more relevant."
+    assert root.attributes["latency_ms.perceived_second_audio"] >= 0
 
 
 def test_tool_span_keeps_full_input_output_without_truncation(
@@ -959,10 +1076,12 @@ def test_trace_emits_without_stt_metrics(monkeypatch: pytest.MonkeyPatch) -> Non
         "VADMetrics",
         "STTMetrics",
         "EOUMetrics",
+        "agent_response_phase_1",
         "LLMMetrics",
         "TTSMetrics",
+        "metrics_summary",
     ]
-    stt_span = fake_tracer.spans[3]
+    stt_span = next(span for span in fake_tracer.spans if span.name == "STTMetrics")
     assert stt_span.attributes["user_transcript"] == "turn without stt metrics"
     assert stt_span.attributes["stt_status"] == "missing"
     assert "duration_ms" not in stt_span.attributes
@@ -1225,11 +1344,13 @@ def test_long_response_latency_accounts_for_llm_to_tts_handoff(
     root = turn_spans[0]
     span_names = [span.name for span in fake_tracer.spans]
     assert span_names.index("STTMetrics") < span_names.index("EOUMetrics")
-    assert span_names.index("LLMMetrics") < span_names.index("llm_to_tts_handoff")
-    assert span_names.index("llm_to_tts_handoff") < span_names.index("TTSMetrics")
-    if "conversation_latency" in span_names:
-        assert span_names.index("TTSMetrics") < span_names.index("conversation_latency")
+    assert span_names.index("agent_response_phase_1") < span_names.index("LLMMetrics")
+    assert span_names.index("LLMMetrics") < span_names.index("TTSMetrics")
+    assert span_names.index("TTSMetrics") < span_names.index("metrics_summary")
+    if "perceived_latency_first_audio" in span_names:
+        assert span_names.index("metrics_summary") < span_names.index("perceived_latency_first_audio")
 
+    assert root.attributes["latency_ms.perceived_first_audio"] > 200.0
     assert root.attributes["latency_ms.conversational"] > 200.0
     assert root.attributes["latency_ms.llm_to_tts_handoff"] > 150.0
     assert root.attributes["latency_ms.conversational"] == pytest.approx(
@@ -1240,13 +1361,6 @@ def test_long_response_latency_accounts_for_llm_to_tts_handoff(
         abs=5.0,
     )
     assert root.attributes["latency_ms.stt_finalization"] == pytest.approx(200.0)
-
-    gap_spans = [span for span in fake_tracer.spans if span.name == "llm_to_tts_handoff"]
-    assert len(gap_spans) == 1
-    assert gap_spans[0].attributes["duration_ms"] == pytest.approx(
-        root.attributes["latency_ms.llm_to_tts_handoff"],
-        abs=5.0,
-    )
 
     payloads = _decode_payloads(room)
     conversation_turns = [
