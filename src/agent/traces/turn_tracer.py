@@ -150,6 +150,7 @@ class ToolExecutionBlock:
 
 
 _DEFAULT_TRACE_FINALIZE_TIMEOUT_MS = 8000.0
+_DEFAULT_POST_TOOL_RESPONSE_TIMEOUT_MS = 30000.0
 _DEFAULT_MAX_PENDING_TRACE_TASKS = 200
 _DEFAULT_TRACE_FLUSH_TIMEOUT_SEC = 1.0
 
@@ -186,6 +187,7 @@ class TurnTracer:
         self._trace_lock = asyncio.Lock()
         self._trace_emit_tasks: set[asyncio.Task[None]] = set()
         self._trace_finalize_tasks: dict[str, asyncio.Task[None]] = {}
+        self._trace_finalize_task_versions: dict[str, int] = {}
 
         self._trace_finalize_timeout_sec = (
             max(
@@ -193,6 +195,17 @@ class TurnTracer:
                     settings.langfuse,
                     "LANGFUSE_TRACE_FINALIZE_TIMEOUT_MS",
                     _DEFAULT_TRACE_FINALIZE_TIMEOUT_MS,
+                ),
+                0.0,
+            )
+            / 1000.0
+        )
+        self._trace_post_tool_response_timeout_sec = (
+            max(
+                getattr(
+                    settings.langfuse,
+                    "LANGFUSE_POST_TOOL_RESPONSE_TIMEOUT_MS",
+                    _DEFAULT_POST_TOOL_RESPONSE_TIMEOUT_MS,
                 ),
                 0.0,
             )
@@ -563,18 +576,21 @@ class TurnTracer:
             return
 
         completed_turn: Optional[TraceTurn] = None
-        schedule_timeout_for_turn: Optional[str] = None
+        schedule_timeout_for_turn: Optional[tuple[str, float]] = None
         async with self._trace_lock:
             if trace_turn not in self._pending_trace_turns:
                 return
             if not self._is_complete(trace_turn):
                 if self._should_schedule_finalize_timeout(trace_turn):
-                    schedule_timeout_for_turn = trace_turn.turn_id
+                    schedule_timeout_for_turn = (
+                        trace_turn.turn_id,
+                        self._resolve_finalize_timeout_sec(trace_turn),
+                    )
             else:
                 completed_turn = self._finalize_locked(trace_turn)
 
         if schedule_timeout_for_turn:
-            self._schedule_finalize_timeout(schedule_timeout_for_turn)
+            self._schedule_finalize_timeout(*schedule_timeout_for_turn)
         if completed_turn:
             self._schedule_trace_emit(completed_turn)
 
@@ -682,22 +698,31 @@ class TurnTracer:
             and turn.tts_calls
             and not self._is_complete(turn)
             and not (turn.tool_phase_open and turn.last_tool_event_at is None)
-            and turn.turn_id not in self._trace_finalize_tasks
-            and self._trace_finalize_timeout_sec > 0.0
+            and self._resolve_finalize_timeout_sec(turn) > 0.0
         )
+
+    def _resolve_finalize_timeout_sec(self, turn: TraceTurn) -> float:
+        if self._requires_post_tool_response(turn):
+            return self._trace_post_tool_response_timeout_sec
+        return self._trace_finalize_timeout_sec
 
     def _requires_post_tool_response(self, turn: TraceTurn) -> bool:
         if not turn.tool_step_announced and turn.last_tool_event_order is None:
             return False
         return not self._post_tool_response_observed(turn)
 
-    def _post_tool_response_observed(self, turn: TraceTurn) -> bool:
+    def _post_tool_assistant_observed(self, turn: TraceTurn) -> bool:
         if turn.last_tool_event_order is None:
             return False
-        assistant_seen = bool(
+        return bool(
             turn.assistant_text_updated_order is not None
             and turn.assistant_text_updated_order > turn.last_tool_event_order
         )
+
+    def _post_tool_response_observed(self, turn: TraceTurn) -> bool:
+        if turn.last_tool_event_order is None:
+            return False
+        assistant_seen = self._post_tool_assistant_observed(turn)
         tts_seen = bool(
             turn.tts_updated_order is not None
             and turn.tts_updated_order > turn.last_tool_event_order
@@ -717,7 +742,12 @@ class TurnTracer:
         *,
         missing_assistant_fallback: bool = False,
         tool_post_response_missing: bool = False,
+        drop_assistant_text: bool = False,
     ) -> TraceTurn:
+        if drop_assistant_text:
+            turn.assistant_text = ""
+            turn.response_text = ""
+
         if not turn.prompt_text:
             turn.prompt_text = turn.user_transcript
         if not turn.response_text and turn.assistant_text:
@@ -726,7 +756,13 @@ class TurnTracer:
             turn.assistant_text = turn.response_text
 
         if missing_assistant_fallback and not turn.assistant_text:
-            fallback = self._best_available_assistant_text(turn)
+            fallback = self._best_available_assistant_text(
+                turn,
+                min_observed_order=(
+                    turn.last_tool_event_order if tool_post_response_missing else None
+                ),
+                include_pending_agent_transcripts=not tool_post_response_missing,
+            )
             if fallback:
                 turn.assistant_text = fallback
                 if not turn.response_text:
@@ -746,15 +782,40 @@ class TurnTracer:
         self._cancel_finalize_timeout(turn.turn_id)
         return turn
 
-    def _best_available_assistant_text(self, turn: TraceTurn) -> str:
+    def _best_available_assistant_text(
+        self,
+        turn: TraceTurn,
+        *,
+        min_observed_order: Optional[int] = None,
+        include_pending_agent_transcripts: bool = True,
+    ) -> str:
         if turn.assistant_text.strip():
-            return turn.assistant_text.strip()
+            if (
+                min_observed_order is None
+                or (
+                    turn.assistant_text_updated_order is not None
+                    and turn.assistant_text_updated_order > min_observed_order
+                )
+            ):
+                return turn.assistant_text.strip()
         if turn.response_text.strip():
-            return turn.response_text.strip()
+            if (
+                min_observed_order is None
+                or (
+                    turn.assistant_text_updated_order is not None
+                    and turn.assistant_text_updated_order > min_observed_order
+                )
+            ):
+                return turn.response_text.strip()
         for tts_call in reversed(turn.tts_calls):
+            if (
+                min_observed_order is not None
+                and tts_call.observed_order <= min_observed_order
+            ):
+                continue
             if tts_call.assistant_text.strip():
                 return tts_call.assistant_text.strip()
-        if self._pending_agent_transcripts:
+        if include_pending_agent_transcripts and self._pending_agent_transcripts:
             return self._pending_agent_transcripts.popleft().strip()
         return ""
 
@@ -762,32 +823,66 @@ class TurnTracer:
     # Timeout scheduling
     # ------------------------------------------------------------------
 
-    def _schedule_finalize_timeout(self, turn_id: str) -> None:
-        if turn_id in self._trace_finalize_tasks:
+    def _schedule_finalize_timeout(self, turn_id: str, timeout_sec: float) -> None:
+        if timeout_sec <= 0.0:
             return
-        task = asyncio.create_task(self._finalize_after_timeout(turn_id))
+
+        version = self._trace_finalize_task_versions.get(turn_id, 0) + 1
+        self._trace_finalize_task_versions[turn_id] = version
+
+        existing_task = self._trace_finalize_tasks.get(turn_id)
+        current = asyncio.current_task()
+        if existing_task and not existing_task.done() and existing_task is not current:
+            existing_task.cancel()
+
+        task = asyncio.create_task(
+            self._finalize_after_timeout(
+                turn_id=turn_id,
+                version=version,
+                timeout_sec=timeout_sec,
+            )
+        )
         self._trace_finalize_tasks[turn_id] = task
         task.add_done_callback(
-            lambda _: self._trace_finalize_tasks.pop(turn_id, None)
+            lambda _task, tid=turn_id, v=version: self._on_finalize_timeout_task_done(
+                turn_id=tid,
+                version=v,
+            )
         )
 
+    def _on_finalize_timeout_task_done(self, *, turn_id: str, version: int) -> None:
+        if self._trace_finalize_task_versions.get(turn_id) != version:
+            return
+        self._trace_finalize_tasks.pop(turn_id, None)
+
     def _cancel_finalize_timeout(self, turn_id: str) -> None:
+        self._trace_finalize_task_versions.pop(turn_id, None)
         task = self._trace_finalize_tasks.pop(turn_id, None)
         current = asyncio.current_task()
         if task and not task.done() and task is not current:
             task.cancel()
 
-    async def _finalize_after_timeout(self, turn_id: str) -> None:
-        await asyncio.sleep(self._trace_finalize_timeout_sec)
+    async def _finalize_after_timeout(
+        self,
+        *,
+        turn_id: str,
+        version: int,
+        timeout_sec: float,
+    ) -> None:
+        await asyncio.sleep(timeout_sec)
 
         completed_turn: Optional[TraceTurn] = None
         async with self._trace_lock:
+            if self._trace_finalize_task_versions.get(turn_id) != version:
+                return
+
             pending_turn = next(
                 (t for t in self._pending_trace_turns if t.turn_id == turn_id),
                 None,
             )
             if not pending_turn:
                 return
+
             if self._is_complete(pending_turn):
                 completed_turn = self._finalize_locked(pending_turn)
             elif (
@@ -798,14 +893,23 @@ class TurnTracer:
                 requires_post_tool_response = self._requires_post_tool_response(
                     pending_turn
                 )
+                missing_post_tool_assistant = bool(
+                    requires_post_tool_response
+                    and not self._post_tool_assistant_observed(pending_turn)
+                )
                 completed_turn = self._finalize_locked(
                     pending_turn,
-                    missing_assistant_fallback=not bool(pending_turn.assistant_text),
+                    missing_assistant_fallback=(
+                        missing_post_tool_assistant
+                        or not bool(pending_turn.assistant_text)
+                    ),
                     tool_post_response_missing=requires_post_tool_response,
+                    drop_assistant_text=missing_post_tool_assistant,
                 )
 
         if completed_turn:
             self._schedule_trace_emit(completed_turn)
+
 
     # ------------------------------------------------------------------
     # Trace emission

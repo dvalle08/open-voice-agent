@@ -868,6 +868,7 @@ def test_timeout_finalizes_tool_turn_with_missing_post_tool_response(
         langfuse_enabled=True,
     )
     collector._trace_finalize_timeout_sec = 0.01
+    collector._trace_post_tool_response_timeout_sec = 0.01
 
     async def _run() -> None:
         await collector.on_session_metadata(
@@ -907,6 +908,80 @@ def test_timeout_finalizes_tool_turn_with_missing_post_tool_response(
     root = fake_tracer.spans[0]
     assert root.attributes["tool.phase_announced"] is True
     assert root.attributes["tool.post_response_missing"] is True
+    assert root.attributes["langfuse.trace.output"] == "[assistant text unavailable]"
+
+
+def test_post_tool_timeout_prevents_early_finalize_of_pre_tool_leadin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+    collector._trace_finalize_timeout_sec = 0.01
+    collector._trace_post_tool_response_timeout_sec = 0.08
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-post-tool-timeout-window",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("find me the best paper", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-post-tool-timeout-window"))
+        await collector.on_tool_step_started()
+        await collector.on_conversation_item_added(role="assistant", content="I'll look that up.")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-post-tool-timeout-window"))
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="paper_search",
+                    call_id="call-post-tool-timeout-window",
+                    arguments='{"query":"mps cubic phases"}',
+                    created_at=400.0,
+                )
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output='{"results":[{"title":"A key paper"}]}',
+                    is_error=False,
+                    created_at=400.2,
+                )
+            ],
+            created_at=400.2,
+        )
+
+        # The base finalize timeout has elapsed, but post-tool timeout should keep the turn pending.
+        await asyncio.sleep(0.03)
+        await collector.wait_for_pending_trace_tasks()
+        assert not fake_tracer.spans
+
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="The most cited paper is Attention Is All You Need.",
+        )
+        await collector.on_metrics_collected(
+            _make_tts_metrics("speech-post-tool-timeout-window")
+        )
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    root = fake_tracer.spans[0]
+    assert (
+        root.attributes["langfuse.trace.output"]
+        == "The most cited paper is Attention Is All You Need."
+    )
+    assert root.attributes["tool.post_response_missing"] is False
 
 
 def test_tool_event_without_matching_turn_is_ignored(

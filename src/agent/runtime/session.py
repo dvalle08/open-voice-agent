@@ -23,7 +23,7 @@ from src.agent.models.stt_factory import create_stt
 from src.agent.runtime.assistant import Assistant
 from src.agent.runtime.tasks import (
     cancel_task_for_shutdown,
-    schedule_llm_warmup_task,
+    run_llm_warmup,
     schedule_startup_greeting_task,
 )
 from src.agent.tools.feedback import ToolFeedbackController
@@ -63,7 +63,6 @@ async def session_handler(ctx: agents.JobContext) -> None:
     )
     trace_provider = setup_langfuse_tracer()
     startup_greeting_task: asyncio.Task[Any] | None = None
-    llm_warmup_task: asyncio.Task[Any] | None = None
     tool_feedback = ToolFeedbackController(enabled=False)
 
     if trace_provider:
@@ -83,14 +82,6 @@ async def session_handler(ctx: agents.JobContext) -> None:
         )
 
     ctx.add_shutdown_callback(cancel_startup_greeting)
-
-    async def cancel_llm_warmup(_: str) -> None:
-        await cancel_task_for_shutdown(
-            llm_warmup_task,
-            task_name="llm warm-up",
-        )
-
-    ctx.add_shutdown_callback(cancel_llm_warmup)
 
     async def close_tool_feedback(_: str) -> None:
         await tool_feedback.aclose()
@@ -160,7 +151,12 @@ async def session_handler(ctx: agents.JobContext) -> None:
     )
     mcp_runtime_active = llm_runtime.mcp_runtime_active
     tool_feedback = ToolFeedbackController(enabled=mcp_runtime_active)
-    llm_warmup_task = schedule_llm_warmup_task(
+    logger.info(
+        "Running LLM warm-up before session start: provider=%s model=%s",
+        llm_runtime.provider,
+        llm_runtime.model,
+    )
+    await run_llm_warmup(
         llm_client=llm_runtime.llm,
         conn_options=llm_conn_options,
         provider=llm_runtime.provider,

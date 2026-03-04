@@ -245,7 +245,7 @@ def testrun_startup_greeting_uses_say_in_mcp_mode() -> None:
             "text": MCP_STARTUP_GREETING,
             "kwargs": {
                 "allow_interruptions": True,
-                "add_to_chat_ctx": True,
+                "add_to_chat_ctx": False,
             },
         }
     ]
@@ -280,7 +280,7 @@ def testrun_startup_greeting_swallows_say_exception() -> None:
     handle = run_startup_greeting(session, mcp_runtime_active=True)  # type: ignore[arg-type]
 
     assert handle is None
-    assert session.say_calls == [{"text": MCP_STARTUP_GREETING, "kwargs": {"allow_interruptions": True, "add_to_chat_ctx": True}}]
+    assert session.say_calls == [{"text": MCP_STARTUP_GREETING, "kwargs": {"allow_interruptions": True, "add_to_chat_ctx": False}}]
     assert session.generate_reply_calls == []
 
 

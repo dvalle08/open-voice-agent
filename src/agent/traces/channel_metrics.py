@@ -90,7 +90,13 @@ class ChannelPublisher:
                 reliable=True,
             )
         except Exception as e:
-            logger.error(f"Failed to publish live metrics update: {e}")
+            if _is_preconnect_publish_error(e):
+                logger.debug(
+                    "Skipping live metrics update before room connect: %s",
+                    e,
+                )
+            else:
+                logger.error(f"Failed to publish live metrics update: {e}")
 
     async def publish_conversation_turn(self, turn_metrics: TurnMetrics) -> None:
         """Publish completed turn metrics to LiveKit data channel."""
@@ -138,6 +144,10 @@ def _stt_display_duration(stt_metrics: STTMetrics) -> float:
     if stt_metrics.duration > 0:
         return stt_metrics.duration
     return stt_metrics.audio_duration
+
+
+def _is_preconnect_publish_error(exc: Exception) -> bool:
+    return "cannot access local participant before connecting" in str(exc).lower()
 
 
 def _build_partial_latencies(

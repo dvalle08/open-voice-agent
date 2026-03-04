@@ -188,7 +188,7 @@ class LLMSettings(CoreSettings):
 
     # NVIDIA settings
     NVIDIA_API_KEY: Optional[str] = Field(default=None)
-    NVIDIA_MODEL: str = Field(default="qwen/qwen3-next-80b-a3b-instruct")
+    NVIDIA_MODEL: str = Field(default="meta/llama-3.1-8b-instruct") #"qwen/qwen3-next-80b-a3b-instruct"
 
     # Ollama settings
     OLLAMA_BASE_URL: str = Field(
@@ -267,6 +267,15 @@ class LangfuseSettings(CoreSettings):
         ge=0.0,
         le=10000.0,
         description="Timeout to wait for assistant text before force-finalizing trace",
+    )
+    LANGFUSE_POST_TOOL_RESPONSE_TIMEOUT_MS: float = Field(
+        default=30000.0,
+        ge=0.0,
+        le=120000.0,
+        description=(
+            "Timeout to wait for post-tool assistant response before force-finalizing trace; "
+            "telemetry only, does not affect live audio latency"
+        ),
     )
     LANGFUSE_MAX_PENDING_TRACE_TASKS: int = Field(
         default=200,

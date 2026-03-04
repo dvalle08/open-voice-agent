@@ -250,6 +250,7 @@ class MetricsCollector:
         self._llm_stall_tasks: dict[str, asyncio.Task[None]] = {}
         self._latest_vad_metrics: Optional[VADMetrics] = None
         self._latest_vad_metric_attributes: Optional[dict[str, Any]] = None
+        self._first_final_user_turn_logged = False
         self._llm_stall_timeout_sec = max(
             float(
                 getattr(
@@ -281,6 +282,14 @@ class MetricsCollector:
     def _trace_finalize_timeout_sec(self, value: float) -> None:
         self._tracer._trace_finalize_timeout_sec = value
 
+    @property
+    def _trace_post_tool_response_timeout_sec(self) -> float:
+        return self._tracer._trace_post_tool_response_timeout_sec
+
+    @_trace_post_tool_response_timeout_sec.setter
+    def _trace_post_tool_response_timeout_sec(self, value: float) -> None:
+        self._tracer._trace_post_tool_response_timeout_sec = value
+
     # ------------------------------------------------------------------
     # Public event handlers
     # ------------------------------------------------------------------
@@ -310,6 +319,14 @@ class MetricsCollector:
         if not normalized:
             return
         self._pending_transcripts.append(normalized)
+        if not self._first_final_user_turn_logged:
+            self._first_final_user_turn_logged = True
+            logger.info(
+                "First finalized user transcript received: room=%s chars=%s preview=%r",
+                self._room_name,
+                len(normalized),
+                normalized[:80],
+            )
         self._start_llm_stall_watchdog(transcript=normalized)
         room_id = await self._resolve_room_id()
         await self._tracer.create_turn(user_transcript=normalized, room_id=room_id)

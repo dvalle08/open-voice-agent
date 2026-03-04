@@ -11,7 +11,7 @@ from src.agent.prompts.runtime import MCP_STARTUP_GREETING
 from src.core.logger import logger
 
 NVIDIA_OPENAI_BASE_URL = "https://integrate.api.nvidia.com/v1"
-MCP_STARTUP_GREETING_TIMEOUT_SEC = 4.0
+MCP_STARTUP_GREETING_TIMEOUT_SEC = 8.0
 MCP_GENERATE_REPLY_BLOCK_MESSAGE = (
     "Manual generate_reply is disabled in MCP mode; use session.say(...) instead."
 )
@@ -176,7 +176,7 @@ def run_startup_greeting(
             return session.say(
                 MCP_STARTUP_GREETING,
                 allow_interruptions=True,
-                add_to_chat_ctx=True,
+                add_to_chat_ctx=False,
             )
         except Exception as exc:
             logger.warning(f"MCP startup greeting could not start: {exc}")
