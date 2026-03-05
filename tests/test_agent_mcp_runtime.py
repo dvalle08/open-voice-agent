@@ -363,6 +363,46 @@ def test_build_llm_runtime_supports_ollama_with_mcp() -> None:
     assert runtime.mcp_servers is not None
 
 
+def test_build_llm_runtime_rejects_cloud_alias_model_for_ollama_cloud_v1() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"cannot use ':cloud' aliases.*https://ollama\.com/v1",
+    ):
+        build_llm_runtime(
+            llm_provider="ollama",
+            llm_temperature=0.7,
+            llm_max_tokens=1024,
+            llm_timeout_sec=12.0,
+            nvidia_api_key=None,
+            nvidia_model="meta/llama-3.1-8b-instruct",
+            ollama_base_url="https://ollama.com/v1",
+            ollama_model="qwen3.5:cloud",
+            ollama_api_key="test-key",
+            mcp_enabled=True,
+            mcp_server_url="https://huggingface.co/mcp",
+        )
+
+
+def test_build_llm_runtime_rejects_cloud_alias_model_for_api_ollama_cloud_v1() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"cannot use ':cloud' aliases.*https://ollama\.com/v1",
+    ):
+        build_llm_runtime(
+            llm_provider="ollama",
+            llm_temperature=0.7,
+            llm_max_tokens=1024,
+            llm_timeout_sec=12.0,
+            nvidia_api_key=None,
+            nvidia_model="meta/llama-3.1-8b-instruct",
+            ollama_base_url="https://api.ollama.com/v1",
+            ollama_model="qwen3.5:cloud",
+            ollama_api_key="test-key",
+            mcp_enabled=True,
+            mcp_server_url="https://huggingface.co/mcp",
+        )
+
+
 def test_build_llm_runtime_requires_nvidia_key() -> None:
     with pytest.raises(ValueError, match="NVIDIA_API_KEY is required"):
         build_llm_runtime(

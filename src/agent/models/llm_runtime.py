@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from livekit.agents import AgentSession, mcp
@@ -89,6 +90,7 @@ def build_llm_runtime(
         base_url = (ollama_base_url or "").strip()
         if not base_url:
             raise ValueError("OLLAMA_BASE_URL is required when LLM_PROVIDER=ollama")
+        validate_ollama_model_for_endpoint(base_url=base_url, model=model)
         api_key = resolve_ollama_api_key(ollama_api_key)
     else:
         raise ValueError(
@@ -134,6 +136,28 @@ def resolve_ollama_api_key(api_key: str | None) -> str:
     if value:
         return value
     return "ollama"
+
+
+def validate_ollama_model_for_endpoint(*, base_url: str, model: str) -> None:
+    if not is_ollama_cloud_openai_endpoint(base_url):
+        return
+
+    if model.lower().endswith(":cloud"):
+        raise ValueError(
+            "OLLAMA_MODEL cannot use ':cloud' aliases with OLLAMA_BASE_URL=https://ollama.com/v1. "
+            "Use an exact model ID from https://ollama.com/v1/models (for example, qwen3-next:80b)."
+        )
+
+
+def is_ollama_cloud_openai_endpoint(base_url: str) -> bool:
+    raw = (base_url or "").strip()
+    if not raw:
+        return False
+
+    parsed = urlparse(raw)
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").rstrip("/")
+    return host in {"ollama.com", "www.ollama.com", "api.ollama.com"} and path == "/v1"
 
 
 def build_mcp_http_timeout(timeout_seconds: float) -> httpx.Timeout:

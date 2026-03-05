@@ -9,7 +9,7 @@ from src.core.settings import LLMSettings
 def test_llm_runtime_tuning_defaults_are_declared() -> None:
     fields = LLMSettings.model_fields
 
-    assert fields["LLM_PROVIDER"].default == "nvidia"
+    assert fields["LLM_PROVIDER"].default == "ollama"
     assert fields["MCP_ENABLED"].default is True
     assert fields["MCP_SERVER_URL"].default == "https://huggingface.co/mcp"
     assert fields["OLLAMA_BASE_URL"].default == "http://localhost:11434/v1"

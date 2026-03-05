@@ -121,6 +121,22 @@ OLLAMA_MODEL=qwen2.5:7b
 OLLAMA_API_KEY=ollama
 ```
 
+**Ollama Cloud (OpenAI-compatible):**
+```bash
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=https://ollama.com/v1
+OLLAMA_MODEL=qwen3-next:80b
+OLLAMA_API_KEY=your_ollama_api_key_here
+```
+
+- For `https://ollama.com/v1`, `OLLAMA_MODEL` must be an exact ID returned by `GET /v1/models`.
+- Do not use `:cloud` aliases (for example `qwen3.5:cloud`) with the OpenAI-compatible endpoint.
+- Quick check:
+  ```bash
+  curl -sS https://ollama.com/v1/models \
+    -H "Authorization: Bearer $OLLAMA_API_KEY"
+  ```
+
 **API (NVIDIA NIM):**
 ```bash
 LLM_PROVIDER=nvidia
@@ -180,7 +196,8 @@ If the UI only shows silence/STT activity and never reaches LLM/TTS:
 - Check backend logs for `Agent session pipeline error` with `source=...` and `error_type=...`.
 - Verify your selected LLM provider config:
   - `nvidia`: `NVIDIA_API_KEY` and `NVIDIA_MODEL`
-  - `ollama`: local server reachable at `OLLAMA_BASE_URL` and model pulled in Ollama
+  - `ollama` local: local server reachable at `OLLAMA_BASE_URL` and model pulled in Ollama
+  - `ollama` cloud: `OLLAMA_BASE_URL=https://ollama.com/v1` and model ID from `/v1/models`
 - Verify NVIDIA STT credentials when using `STT_PROVIDER=nvidia`; the agent logs which STT key source is used.
 - If local memory warnings are noisy, raise `LIVEKIT_JOB_MEMORY_WARN_MB` (for local setups, `6144` is a practical baseline).
 
