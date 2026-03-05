@@ -4,6 +4,7 @@ import asyncio
 import json
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+import time
 from typing import Any
 
 import pytest
@@ -853,6 +854,110 @@ def test_trace_waits_for_post_tool_response_before_finalize(
     assert (
         root.attributes["langfuse.trace.output"]
         == "One sec, checking.\nHere are the top results."
+    )
+
+
+def test_delayed_pre_tool_assistant_event_uses_timestamps_and_keeps_final_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    base_time = time.time() - 2.0
+    pre_tool_text_created_at = base_time + 0.1
+    tool_created_at = base_time + 0.2
+    final_text_created_at = base_time + 0.4
+    speech_id = "speech-delayed-pre-tool-assistant"
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-delayed-pre-tool-assistant",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("Graphic design", is_final=True)
+        await collector.on_metrics_collected(
+            _make_llm_metrics(speech_id, ttft=0.08, duration=0.35)
+        )
+        await collector.on_tool_step_started()
+
+        # Pre-tool lead-in TTS can be observed before conversation item events.
+        await collector.on_metrics_collected(
+            _make_tts_metrics(speech_id, ttfb=0.06, duration=0.2, audio_duration=0.2)
+        )
+
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="paper_search",
+                    call_id="call-delayed-pre-tool-assistant",
+                    arguments='{"query":"graphic design"}',
+                    created_at=tool_created_at - 0.05,
+                )
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output='{"results":[{"title":"Thinking with Type"}]}',
+                    is_error=False,
+                    created_at=tool_created_at,
+                )
+            ],
+            created_at=tool_created_at,
+        )
+
+        # Delayed pre-tool lead-in arrives after tool execution callback.
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="Checking that for you.",
+            event_created_at=tool_created_at + 1.0,
+            item_created_at=pre_tool_text_created_at,
+        )
+
+        await collector.on_metrics_collected(
+            _make_llm_metrics(speech_id, ttft=0.12, duration=0.45)
+        )
+        await collector.on_metrics_collected(
+            _make_tts_metrics(speech_id, ttfb=0.11, duration=0.6, audio_duration=0.6)
+        )
+        await collector.wait_for_pending_trace_tasks()
+        assert not fake_tracer.spans
+
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="Graphic design is the craft of visual communication.",
+            event_created_at=final_text_created_at,
+            item_created_at=final_text_created_at,
+        )
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    root = next(span for span in fake_tracer.spans if span.name == "turn")
+    assert root.attributes["tool.post_response_missing"] is False
+    assert (
+        root.attributes["langfuse.trace.output"]
+        == "Checking that for you.\nGraphic design is the craft of visual communication."
+    )
+
+    tts_phase_2 = next(
+        span
+        for span in fake_tracer.spans
+        if span.name == "TTSMetrics" and span.attributes.get("phase_index") == 2
+    )
+    assert (
+        tts_phase_2.attributes["assistant_text"]
+        == "Graphic design is the craft of visual communication."
     )
 
 

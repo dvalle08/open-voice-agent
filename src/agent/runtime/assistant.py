@@ -102,10 +102,13 @@ class Assistant(Agent):
             item = event.item
             role = getattr(item, "role", None)
             content = getattr(item, "content", None)
+            item_created_at = getattr(item, "created_at", None)
             asyncio.create_task(
                 self._metrics_collector.on_conversation_item_added(
                     role=role,
                     content=content,
+                    event_created_at=event.created_at,
+                    item_created_at=item_created_at,
                 )
             )
 

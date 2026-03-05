@@ -336,6 +336,8 @@ class MetricsCollector:
         *,
         role: Optional[str],
         content: Any,
+        event_created_at: Optional[float] = None,
+        item_created_at: Optional[float] = None,
     ) -> None:
         if role not in {"user", "assistant"}:
             return
@@ -345,7 +347,13 @@ class MetricsCollector:
         if role == "user":
             _append_if_new(self._pending_transcripts, normalized)
             return
-        await self._on_assistant_text(normalized)
+        assistant_event_created_at = (
+            item_created_at if item_created_at is not None else event_created_at
+        )
+        await self._on_assistant_text(
+            normalized,
+            event_created_at=assistant_event_created_at,
+        )
 
     async def on_function_tools_executed(
         self,
@@ -371,11 +379,14 @@ class MetricsCollector:
         if speech_id:
             self._pending_speech_ids_for_first_audio.append(speech_id)
 
-        assistant_text = _extract_text_from_chat_items(
+        assistant_text, assistant_created_at = _extract_latest_assistant_chat_item(
             getattr(speech_handle, "chat_items", [])
         )
         if assistant_text:
-            await self._on_assistant_text(assistant_text)
+            await self._on_assistant_text(
+                assistant_text,
+                event_created_at=assistant_created_at,
+            )
 
         add_done_callback = getattr(speech_handle, "add_done_callback", None)
         if not callable(add_done_callback):
@@ -386,11 +397,16 @@ class MetricsCollector:
                 done_speech_id = _normalize(getattr(handle, "id", None))
                 if done_speech_id:
                     self._discard_pending_speech_id(done_speech_id)
-                text = _extract_text_from_chat_items(
+                text, created_at = _extract_latest_assistant_chat_item(
                     getattr(handle, "chat_items", [])
                 )
                 if text:
-                    asyncio.create_task(self._on_assistant_text(text))
+                    asyncio.create_task(
+                        self._on_assistant_text(
+                            text,
+                            event_created_at=created_at,
+                        )
+                    )
             except Exception:
                 return
 
@@ -676,12 +692,20 @@ class MetricsCollector:
             )
         return state.metrics
 
-    async def _on_assistant_text(self, assistant_text: str) -> None:
+    async def _on_assistant_text(
+        self,
+        assistant_text: str,
+        *,
+        event_created_at: Optional[float] = None,
+    ) -> None:
         normalized = assistant_text.strip()
         if not normalized:
             return
         _append_if_new(self._pending_agent_transcripts, normalized)
-        trace_turn = await self._tracer.attach_assistant_text(normalized)
+        trace_turn = await self._tracer.attach_assistant_text(
+            normalized,
+            event_created_at=event_created_at,
+        )
         await self._tracer.maybe_finalize(trace_turn)
 
     async def _publish_live_update(
@@ -878,22 +902,39 @@ def _extract_content_text(content: Any) -> str:
     return ""
 
 
-def _extract_text_from_chat_items(chat_items: Any) -> str:
-    """Extract assistant text from speech handle chat items."""
+def _extract_latest_assistant_chat_item(chat_items: Any) -> tuple[str, Optional[float]]:
+    """Extract latest assistant text and created_at from speech handle chat items."""
     if isinstance(chat_items, (str, bytes, bytearray)) or not isinstance(
         chat_items, Sequence
     ):
-        return ""
-    parts: list[str] = []
+        return "", None
+    latest_text = ""
+    latest_created_at: Optional[float] = None
     for item in chat_items:
         role = getattr(item, "role", None)
         if isinstance(role, str) and role not in {"assistant"}:
             continue
         content = getattr(item, "content", None)
         text = _extract_content_text(content)
-        if text.strip():
-            parts.append(text.strip())
-    return parts[-1] if parts else ""
+        normalized = text.strip()
+        if not normalized:
+            continue
+        latest_text = normalized
+        latest_created_at = _to_optional_float(getattr(item, "created_at", None))
+    return latest_text, latest_created_at
+
+
+def _to_optional_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
 
 
 def _metric_metadata_to_dict(metadata: Any) -> Optional[dict[str, Any]]:

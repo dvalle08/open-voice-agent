@@ -460,7 +460,8 @@ class TurnTracer:
             if turn.tts_ttfb_ms is None:
                 turn.tts_ttfb_ms = tts_call.ttfb_ms
             turn.tts_total_latency_ms = _sum_tts_duration_ms(turn.tts_calls)
-            turn.tts_updated_at = time()
+            tts_event_created_at = _to_optional_float(tts_attrs.get("timestamp"))
+            turn.tts_updated_at = _resolved_event_timestamp(tts_event_created_at)
             turn.tts_updated_order = order
 
             _recompute_perceived_first_audio_latency(turn)
@@ -485,6 +486,8 @@ class TurnTracer:
     async def attach_assistant_text(
         self,
         assistant_text: str,
+        *,
+        event_created_at: Optional[float] = None,
     ) -> Optional[TraceTurn]:
         async with self._trace_lock:
             turn = self._latest_turn_where(lambda c: bool(c.llm_calls))
@@ -492,12 +495,23 @@ class TurnTracer:
                 turn = self._latest_turn_where(lambda _: True)
             if not turn:
                 return None
+            normalized_text = assistant_text.strip()
+            if not normalized_text:
+                return turn
+            previous_assistant_text = turn.assistant_text or turn.response_text
             order = self._next_event_order(turn)
-            turn.assistant_text = assistant_text
-            turn.response_text = assistant_text
-            turn.assistant_text_updated_at = time()
+            turn.assistant_text = normalized_text
+            turn.response_text = normalized_text
+            assistant_event_created_at = _to_optional_float(event_created_at)
+            turn.assistant_text_updated_at = _resolved_event_timestamp(
+                assistant_event_created_at
+            )
             turn.assistant_text_updated_order = order
-            _backfill_next_missing_tts_assistant_text(turn, assistant_text)
+            _reconcile_assistant_text_with_tts_calls(
+                turn=turn,
+                assistant_text=normalized_text,
+                previous_assistant_text=previous_assistant_text,
+            )
             self._maybe_close_tool_phase(turn)
             return turn
 
@@ -717,18 +731,39 @@ class TurnTracer:
     def _post_tool_assistant_observed(self, turn: TraceTurn) -> bool:
         if turn.last_tool_event_order is None:
             return False
+        return self._observed_after_last_tool(
+            turn=turn,
+            event_at=turn.assistant_text_updated_at,
+            event_order=turn.assistant_text_updated_order,
+        )
+
+    def _observed_after_last_tool(
+        self,
+        *,
+        turn: TraceTurn,
+        event_at: Optional[float],
+        event_order: Optional[int],
+    ) -> bool:
+        if turn.last_tool_event_order is None:
+            return False
+        if turn.last_tool_event_at is not None and event_at is not None:
+            if event_at > turn.last_tool_event_at:
+                return True
+            if event_at < turn.last_tool_event_at:
+                return False
         return bool(
-            turn.assistant_text_updated_order is not None
-            and turn.assistant_text_updated_order > turn.last_tool_event_order
+            event_order is not None
+            and event_order > turn.last_tool_event_order
         )
 
     def _post_tool_response_observed(self, turn: TraceTurn) -> bool:
         if turn.last_tool_event_order is None:
             return False
         assistant_seen = self._post_tool_assistant_observed(turn)
-        tts_seen = bool(
-            turn.tts_updated_order is not None
-            and turn.tts_updated_order > turn.last_tool_event_order
+        tts_seen = self._observed_after_last_tool(
+            turn=turn,
+            event_at=turn.tts_updated_at,
+            event_order=turn.tts_updated_order,
         )
         return assistant_seen and tts_seen
 
@@ -1408,6 +1443,33 @@ def _latest_assistant_text(turn: TraceTurn) -> str:
     return (turn.assistant_text or turn.response_text).strip()
 
 
+def _phase_latest_observed_order(block: ResponsePhaseBlock) -> Optional[int]:
+    orders = [call.observed_order for call in block.tts_calls]
+    if orders:
+        return max(orders)
+    llm_orders = [call.observed_order for call in block.llm_calls]
+    if llm_orders:
+        return max(llm_orders)
+    return None
+
+
+def _assistant_text_newer_than_phase(
+    *,
+    turn: TraceTurn,
+    block: ResponsePhaseBlock,
+) -> bool:
+    latest_assistant = _latest_assistant_text(turn)
+    if not latest_assistant:
+        return False
+    phase_latest_order = _phase_latest_observed_order(block)
+    if phase_latest_order is None:
+        return False
+    return bool(
+        turn.assistant_text_updated_order is not None
+        and turn.assistant_text_updated_order > phase_latest_order
+    )
+
+
 def _ordered_phase_response_texts(
     *,
     turn: TraceTurn,
@@ -1415,16 +1477,19 @@ def _ordered_phase_response_texts(
 ) -> list[str]:
     response_texts: list[str] = []
     last_response_phase_index = _last_response_phase_index(phase_blocks)
+    latest_assistant = _latest_assistant_text(turn)
     for block in phase_blocks:
         if not isinstance(block, ResponsePhaseBlock):
             continue
         phase_text = _phase_response_text(block)
-        if (
-            not phase_text
-            and last_response_phase_index is not None
+        is_last_phase = (
+            last_response_phase_index is not None
             and block.index == last_response_phase_index
-        ):
-            phase_text = _latest_assistant_text(turn)
+        )
+        if is_last_phase and _assistant_text_newer_than_phase(turn=turn, block=block):
+            phase_text = latest_assistant
+        elif not phase_text and is_last_phase:
+            phase_text = latest_assistant
         if phase_text:
             if response_texts and response_texts[-1] == phase_text:
                 continue
@@ -1465,13 +1530,46 @@ def _backfill_next_missing_tts_assistant_text(
         return
 
 
+def _reconcile_assistant_text_with_tts_calls(
+    *,
+    turn: TraceTurn,
+    assistant_text: str,
+    previous_assistant_text: str,
+) -> None:
+    normalized = assistant_text.strip()
+    if not normalized:
+        return
+    previous = previous_assistant_text.strip()
+    post_tool_min_order = turn.last_tool_event_order
+    for tts_call in reversed(turn.tts_calls):
+        if (
+            post_tool_min_order is not None
+            and tts_call.observed_order <= post_tool_min_order
+        ):
+            continue
+        existing = tts_call.assistant_text.strip()
+        if not existing or (previous and existing == previous):
+            tts_call.assistant_text = normalized
+        return
+    _backfill_next_missing_tts_assistant_text(turn, normalized)
+
+
 def _has_post_tool_assistant_text(turn: TraceTurn) -> bool:
     if turn.last_tool_event_order is None:
         return False
+    if not _latest_assistant_text(turn):
+        return False
+    if (
+        turn.last_tool_event_at is not None
+        and turn.assistant_text_updated_at is not None
+    ):
+        if turn.assistant_text_updated_at > turn.last_tool_event_at:
+            return True
+        if turn.assistant_text_updated_at < turn.last_tool_event_at:
+            return False
     return bool(
         turn.assistant_text_updated_order is not None
         and turn.assistant_text_updated_order > turn.last_tool_event_order
-        and _latest_assistant_text(turn)
     )
 
 
