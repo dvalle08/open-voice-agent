@@ -16,7 +16,9 @@ async def inject_pre_tool_feedback(
     source: AsyncIterable[Any],
     *,
     tool_feedback: ToolFeedbackController | None,
-    on_tool_step_started: Callable[[], Awaitable[None]] | None = None,
+    on_tool_step_started: Callable[[], Awaitable[bool | None]] | None = None,
+    should_announce_tool_step: Callable[[], Awaitable[bool]] | None = None,
+    allowed_tool_names: set[str] | None = None,
 ) -> AsyncGenerator[Any, None]:
     tool_step_started = False
 
@@ -31,13 +33,34 @@ async def inject_pre_tool_feedback(
             yield chunk
             continue
 
+        tool_call_names = _extract_tool_call_names(delta)
+        if not _tool_calls_supported(tool_call_names, allowed_tool_names):
+            logger.info(
+                "tool_pre_speech_skipped reason=unknown_tool_names names=%s",
+                ",".join(sorted(tool_call_names)) if tool_call_names else "<none>",
+            )
+            yield chunk
+            continue
+
         if not tool_step_started:
             tool_step_started = True
-            if on_tool_step_started is not None:
+            should_announce = True
+            if should_announce_tool_step is not None:
+                try:
+                    should_announce = bool(await should_announce_tool_step())
+                except Exception as exc:
+                    logger.debug("should_announce_tool_step callback failed: %s", exc)
+            elif on_tool_step_started is not None:
                 try:
                     await on_tool_step_started()
                 except Exception as exc:
                     logger.debug("tool_step_started callback failed: %s", exc)
+
+            if not should_announce:
+                logger.debug("tool_pre_speech_skipped reason=announcement_suppressed")
+                yield chunk
+                continue
+
             leadin_text = (delta.content or "").strip() if delta is not None else ""
             if leadin_text:
                 logger.info(
@@ -69,3 +92,36 @@ async def inject_pre_tool_feedback(
             continue
 
         yield chunk
+
+
+def _extract_tool_call_names(delta: Any) -> set[str]:
+    tool_call_names: set[str] = set()
+    tool_calls = getattr(delta, "tool_calls", None) or []
+    for tool_call in tool_calls:
+        name = _normalize_tool_name(getattr(tool_call, "name", None))
+        if name:
+            tool_call_names.add(name)
+            continue
+        function = getattr(tool_call, "function", None)
+        function_name = _normalize_tool_name(getattr(function, "name", None))
+        if function_name:
+            tool_call_names.add(function_name)
+    return tool_call_names
+
+
+def _normalize_tool_name(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _tool_calls_supported(
+    tool_call_names: set[str],
+    allowed_tool_names: set[str] | None,
+) -> bool:
+    if allowed_tool_names is None:
+        return True
+    if not tool_call_names:
+        return True
+    return any(name in allowed_tool_names for name in tool_call_names)

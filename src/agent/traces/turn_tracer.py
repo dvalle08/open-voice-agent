@@ -153,6 +153,7 @@ _DEFAULT_TRACE_FINALIZE_TIMEOUT_MS = 8000.0
 _DEFAULT_POST_TOOL_RESPONSE_TIMEOUT_MS = 30000.0
 _DEFAULT_MAX_PENDING_TRACE_TASKS = 200
 _DEFAULT_TRACE_FLUSH_TIMEOUT_SEC = 1.0
+_TOOL_ERROR_FALLBACK_TEXT = "I couldn't complete that tool request. Please rephrase the query."
 
 
 class TurnTracer:
@@ -496,20 +497,22 @@ class TurnTracer:
             turn.response_text = assistant_text
             turn.assistant_text_updated_at = time()
             turn.assistant_text_updated_order = order
+            _backfill_next_missing_tts_assistant_text(turn, assistant_text)
             self._maybe_close_tool_phase(turn)
             return turn
 
-    async def attach_tool_step_started(self) -> Optional[TraceTurn]:
+    async def attach_tool_step_started(self) -> tuple[Optional[TraceTurn], bool]:
         async with self._trace_lock:
             turn = self._latest_turn_where(lambda c: bool(c.llm_calls))
             if not turn:
                 turn = self._latest_turn_where(lambda _: True)
             if not turn:
-                return None
+                return None, False
 
+            should_announce = not turn.tool_phase_open
             turn.tool_step_announced = True
             turn.tool_phase_open = True
-            return turn
+            return turn, should_announce
 
     async def attach_function_tools_executed(
         self,
@@ -768,11 +771,20 @@ class TurnTracer:
                 if not turn.response_text:
                     turn.response_text = fallback
             else:
-                turn.assistant_text_missing = True
-                unavailable = "[assistant text unavailable]"
-                turn.assistant_text = unavailable
-                if not turn.response_text:
-                    turn.response_text = unavailable
+                tool_error_fallback = ""
+                if tool_post_response_missing:
+                    tool_error_fallback = _tool_error_fallback_text(turn)
+
+                if tool_error_fallback:
+                    turn.assistant_text = tool_error_fallback
+                    if not turn.response_text:
+                        turn.response_text = tool_error_fallback
+                else:
+                    turn.assistant_text_missing = True
+                    unavailable = "[assistant text unavailable]"
+                    turn.assistant_text = unavailable
+                    if not turn.response_text:
+                        turn.response_text = unavailable
 
         turn.tool_phase_open = False
         if tool_post_response_missing:
@@ -946,7 +958,12 @@ class TurnTracer:
 
         try:
             vals = _prepare_span_values(turn)
-            trace_output = turn.assistant_text or turn.response_text
+            phase_blocks = _build_phase_blocks(turn)
+            last_response_phase_index = _last_response_phase_index(phase_blocks)
+            trace_output = _build_trace_output(
+                turn=turn,
+                phase_blocks=phase_blocks,
+            )
 
             root_context = trace.set_span_in_context(trace.INVALID_SPAN)
             root_start_ns = time_ns()
@@ -1031,7 +1048,6 @@ class TurnTracer:
                     )
                 cursor_ns = user_cursor_ns
 
-                phase_blocks = _build_phase_blocks(turn)
                 for block in phase_blocks:
                     if isinstance(block, ResponsePhaseBlock):
                         phase_start_ns = cursor_ns
@@ -1050,10 +1066,13 @@ class TurnTracer:
                             phase_span.set_attribute("phase.index", block.index)
                             phase_span.set_attribute("phase.kind", phase_kind)
                             phase_ctx = trace.set_span_in_context(phase_span)
-                            phase_text = _phase_response_text(
-                                block,
-                                fallback_text=turn.response_text,
-                            )
+                            phase_text = _phase_response_text(block)
+                            if (
+                                not phase_text
+                                and last_response_phase_index is not None
+                                and block.index == last_response_phase_index
+                            ):
+                                phase_text = _latest_assistant_text(turn)
 
                             for llm_idx, llm_call in enumerate(
                                 block.llm_calls, start=1
@@ -1368,13 +1387,101 @@ def _build_phase_blocks(
 
 def _phase_response_text(
     block: ResponsePhaseBlock,
-    *,
-    fallback_text: str,
 ) -> str:
     for tts_call in reversed(block.tts_calls):
         if tts_call.assistant_text.strip():
             return tts_call.assistant_text.strip()
-    return fallback_text
+    return ""
+
+
+def _last_response_phase_index(
+    phase_blocks: list[ResponsePhaseBlock | ToolExecutionBlock],
+) -> Optional[int]:
+    last_index: Optional[int] = None
+    for block in phase_blocks:
+        if isinstance(block, ResponsePhaseBlock):
+            last_index = block.index
+    return last_index
+
+
+def _latest_assistant_text(turn: TraceTurn) -> str:
+    return (turn.assistant_text or turn.response_text).strip()
+
+
+def _ordered_phase_response_texts(
+    *,
+    turn: TraceTurn,
+    phase_blocks: list[ResponsePhaseBlock | ToolExecutionBlock],
+) -> list[str]:
+    response_texts: list[str] = []
+    last_response_phase_index = _last_response_phase_index(phase_blocks)
+    for block in phase_blocks:
+        if not isinstance(block, ResponsePhaseBlock):
+            continue
+        phase_text = _phase_response_text(block)
+        if (
+            not phase_text
+            and last_response_phase_index is not None
+            and block.index == last_response_phase_index
+        ):
+            phase_text = _latest_assistant_text(turn)
+        if phase_text:
+            if response_texts and response_texts[-1] == phase_text:
+                continue
+            response_texts.append(phase_text)
+    return response_texts
+
+
+def _build_trace_output(
+    *,
+    turn: TraceTurn,
+    phase_blocks: list[ResponsePhaseBlock | ToolExecutionBlock],
+) -> str:
+    if turn.tool_post_response_missing and not _has_post_tool_assistant_text(turn):
+        fallback = _latest_assistant_text(turn)
+        if fallback:
+            return fallback
+
+    phase_texts = _ordered_phase_response_texts(
+        turn=turn,
+        phase_blocks=phase_blocks,
+    )
+    if phase_texts:
+        return "\n".join(phase_texts)
+    return _latest_assistant_text(turn)
+
+
+def _backfill_next_missing_tts_assistant_text(
+    turn: TraceTurn,
+    assistant_text: str,
+) -> None:
+    normalized = assistant_text.strip()
+    if not normalized:
+        return
+    for tts_call in turn.tts_calls:
+        if tts_call.assistant_text.strip():
+            continue
+        tts_call.assistant_text = normalized
+        return
+
+
+def _has_post_tool_assistant_text(turn: TraceTurn) -> bool:
+    if turn.last_tool_event_order is None:
+        return False
+    return bool(
+        turn.assistant_text_updated_order is not None
+        and turn.assistant_text_updated_order > turn.last_tool_event_order
+        and _latest_assistant_text(turn)
+    )
+
+
+def _tool_error_fallback_text(turn: TraceTurn) -> str:
+    has_tool_error = any(
+        tool_call.is_error for tool_call in _flatten_tool_calls(turn.tool_executions)
+    )
+    if not has_tool_error:
+        return ""
+    return _TOOL_ERROR_FALLBACK_TEXT
 
 
 def _to_optional_float(value: Any) -> Optional[float]:

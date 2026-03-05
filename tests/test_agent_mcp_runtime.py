@@ -126,11 +126,13 @@ class _FakeToolFeedback:
 
 
 class _FakeToolStepStartedCallback:
-    def __init__(self) -> None:
+    def __init__(self, *, announce: bool = True) -> None:
         self.calls = 0
+        self.announce = announce
 
-    async def __call__(self) -> None:
+    async def __call__(self) -> bool:
         self.calls += 1
+        return self.announce
 
 
 async def _iter_items(items: list[Any]) -> Any:
@@ -145,14 +147,19 @@ async def _collect(items: Any) -> list[Any]:
     return out
 
 
-def _tool_chunk(*, content: str | None, call_id: str = "call-1") -> llm.ChatChunk:
+def _tool_chunk(
+    *,
+    content: str | None,
+    call_id: str = "call-1",
+    name: str = "paper_search",
+) -> llm.ChatChunk:
     return llm.ChatChunk(
         id="chunk-1",
         delta=llm.ChoiceDelta(
             content=content,
             tool_calls=[
                 llm.FunctionToolCall(
-                    name="paper_search",
+                    name=name,
                     arguments='{"query":"transformers"}',
                     call_id=call_id,
                 )
@@ -388,6 +395,11 @@ def test_assistant_instructions_enforce_ultra_short_answers() -> None:
     assert "Keep most responses to one short sentence." in ASSISTANT_INSTRUCTIONS
 
 
+def test_assistant_instructions_disable_tools_for_self_description() -> None:
+    assert "For self-description requests" in ASSISTANT_INSTRUCTIONS
+    assert "do not call tools" in ASSISTANT_INSTRUCTIONS
+
+
 def testrun_llm_warmup_consumes_first_chunk_and_closes_stream() -> None:
     stream = _FakeLLMStream(chunks=[{"delta": "OK"}, {"delta": "ignored"}])
     llm_client = _FakeLLMClient(stream)
@@ -524,6 +536,45 @@ def testinject_pre_tool_feedback_marks_tool_step_once() -> None:
     )
 
     assert callback.calls == 1
+
+
+def testinject_pre_tool_feedback_skips_unknown_tool_names() -> None:
+    feedback = _FakeToolFeedback()
+    unknown_tool_chunk = _tool_chunk(content=None, name="explain_pipeline")
+
+    output = asyncio.run(
+        _collect(
+            inject_pre_tool_feedback(
+                _iter_items([unknown_tool_chunk]),
+                tool_feedback=feedback,  # type: ignore[arg-type]
+                allowed_tool_names={"paper_search"},
+            )
+        )
+    )
+
+    assert output == [unknown_tool_chunk]
+    assert feedback.start_typing_calls == 0
+
+
+def testinject_pre_tool_feedback_respects_announcement_suppression() -> None:
+    feedback = _FakeToolFeedback()
+    callback = _FakeToolStepStartedCallback(announce=False)
+    tool_chunk = _tool_chunk(content=None)
+
+    output = asyncio.run(
+        _collect(
+            inject_pre_tool_feedback(
+                _iter_items([tool_chunk]),
+                tool_feedback=feedback,  # type: ignore[arg-type]
+                should_announce_tool_step=callback,
+                allowed_tool_names={"paper_search"},
+            )
+        )
+    )
+
+    assert output == [tool_chunk]
+    assert callback.calls == 1
+    assert feedback.start_typing_calls == 0
 
 
 def testinject_pre_tool_feedback_does_not_modify_non_tool_chunks() -> None:

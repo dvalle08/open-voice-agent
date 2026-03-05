@@ -8,6 +8,12 @@ from collections.abc import AsyncGenerator, AsyncIterable
 from typing import Any
 
 from livekit.agents import Agent, llm
+from livekit.agents.llm.tool_context import (
+    get_function_info,
+    get_raw_function_info,
+    is_function_tool,
+    is_raw_function_tool,
+)
 from livekit.agents.voice.events import (
     AgentStateChangedEvent,
     CloseEvent,
@@ -61,12 +67,14 @@ class Assistant(Agent):
         if not isinstance(llm_node, AsyncIterable):
             return
 
+        allowed_tool_names = _resolve_allowed_tool_names(tools)
         aclose = getattr(llm_node, "aclose", None)
         try:
             async for chunk in inject_pre_tool_feedback(
                 llm_node,
                 tool_feedback=self._tool_feedback,
-                on_tool_step_started=self._metrics_collector.on_tool_step_started,
+                should_announce_tool_step=self._metrics_collector.on_tool_step_started,
+                allowed_tool_names=allowed_tool_names,
             ):
                 yield chunk
         finally:
@@ -180,3 +188,38 @@ class Assistant(Agent):
         self.session.on("agent_state_changed", agent_state_changed_wrapper)
         self.session.on("error", error_wrapper)
         self.session.on("close", close_wrapper)
+
+
+def _resolve_allowed_tool_names(
+    tools: list[llm.FunctionTool | llm.RawFunctionTool],
+) -> set[str]:
+    names: set[str] = set()
+    for tool in tools:
+        try:
+            if is_function_tool(tool):
+                names.add(get_function_info(tool).name)
+                continue
+            if is_raw_function_tool(tool):
+                names.add(get_raw_function_info(tool).name)
+                continue
+        except Exception:
+            pass
+
+        fallback_name = _normalize_tool_name(getattr(tool, "name", None))
+        if fallback_name:
+            names.add(fallback_name)
+            continue
+
+        raw_schema = getattr(tool, "raw_schema", None)
+        if isinstance(raw_schema, dict):
+            raw_name = _normalize_tool_name(raw_schema.get("name"))
+            if raw_name:
+                names.add(raw_name)
+    return names
+
+
+def _normalize_tool_name(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None

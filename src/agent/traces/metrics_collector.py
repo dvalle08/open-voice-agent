@@ -361,9 +361,10 @@ class MetricsCollector:
         )
         await self._tracer.maybe_finalize(trace_turn)
 
-    async def on_tool_step_started(self) -> None:
-        trace_turn = await self._tracer.attach_tool_step_started()
+    async def on_tool_step_started(self) -> bool:
+        trace_turn, should_announce = await self._tracer.attach_tool_step_started()
         await self._tracer.maybe_finalize(trace_turn)
+        return should_announce
 
     async def on_speech_created(self, speech_handle: Any) -> None:
         speech_id = _normalize(getattr(speech_handle, "id", None))

@@ -188,7 +188,7 @@ class LLMSettings(CoreSettings):
 
     # NVIDIA settings
     NVIDIA_API_KEY: Optional[str] = Field(default=None)
-    NVIDIA_MODEL: str = Field(default="meta/llama-3.1-8b-instruct") #"qwen/qwen3-next-80b-a3b-instruct"
+    NVIDIA_MODEL: str = Field(default="qwen/qwen3-next-80b-a3b-instruct") #meta/llama-3.1-8b-instruct #"qwen/qwen3-next-80b-a3b-instruct", "qwen/qwen3.5-397b-a17b"
 
     # Ollama settings
     OLLAMA_BASE_URL: str = Field(
@@ -196,7 +196,7 @@ class LLMSettings(CoreSettings):
         description="OpenAI-compatible Ollama endpoint",
     )
     OLLAMA_MODEL: str = Field(
-        default="qwen2.5:7b",
+        default="qwen3.5:cloud", #"qwen2.5:7b",
         description="Ollama model tag",
     )
     OLLAMA_API_KEY: Optional[str] = Field(

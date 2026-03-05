@@ -784,7 +784,10 @@ def test_tool_span_survives_when_tts_precedes_function_event(
     assert tool_span.attributes["tool.call_id"] == "call-late"
 
     root = fake_tracer.spans[0]
-    assert root.attributes["langfuse.trace.output"] == "I found relevant papers."
+    assert (
+        root.attributes["langfuse.trace.output"]
+        == "Let me check that.\nI found relevant papers."
+    )
     assert root.attributes["tool.phase_announced"] is True
     assert root.attributes["tool.post_response_missing"] is False
 
@@ -847,7 +850,10 @@ def test_trace_waits_for_post_tool_response_before_finalize(
     span_names = [span.name for span in fake_tracer.spans]
     assert "ToolCall" in span_names
     root = fake_tracer.spans[0]
-    assert root.attributes["langfuse.trace.output"] == "Here are the top results."
+    assert (
+        root.attributes["langfuse.trace.output"]
+        == "One sec, checking.\nHere are the top results."
+    )
 
 
 def test_timeout_finalizes_tool_turn_with_missing_post_tool_response(
@@ -909,6 +915,136 @@ def test_timeout_finalizes_tool_turn_with_missing_post_tool_response(
     assert root.attributes["tool.phase_announced"] is True
     assert root.attributes["tool.post_response_missing"] is True
     assert root.attributes["langfuse.trace.output"] == "[assistant text unavailable]"
+
+
+def test_timeout_tool_error_turn_uses_fallback_error_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+    collector._trace_finalize_timeout_sec = 0.01
+    collector._trace_post_tool_response_timeout_sec = 0.01
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-tools-timeout-error-summary",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("run tool", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-tools-timeout-error-summary"))
+        await collector.on_tool_step_started()
+        await collector.on_conversation_item_added(role="assistant", content="Checking now.")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-tools-timeout-error-summary"))
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="paper_search",
+                    call_id="call-timeout-error-summary",
+                    arguments='{"query":"timeout"}',
+                    created_at=301.0,
+                )
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output="MCP error -32602: invalid query",
+                    is_error=True,
+                    created_at=301.2,
+                )
+            ],
+            created_at=301.2,
+        )
+        await asyncio.sleep(0.05)
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    root = fake_tracer.spans[0]
+    assert root.attributes["tool.post_response_missing"] is True
+    assert root.attributes["tool.error_count"] == 1
+    assert (
+        root.attributes["langfuse.trace.output"]
+        == "I couldn't complete that tool request. Please rephrase the query."
+    )
+
+
+def test_post_tool_assistant_text_without_post_tool_tts_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+    collector._trace_finalize_timeout_sec = 0.01
+    collector._trace_post_tool_response_timeout_sec = 0.01
+
+    async def _run() -> None:
+        speech_id = "speech-post-tool-no-tts"
+        await collector.on_session_metadata(
+            session_id="session-post-tool-no-tts",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("find one paper", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics(speech_id, ttft=0.08))
+        await collector.on_tool_step_started()
+        await collector.on_conversation_item_added(role="assistant", content="I'll look that up.")
+        await collector.on_metrics_collected(
+            _make_tts_metrics(speech_id, ttfb=0.07, duration=0.2, audio_duration=0.2)
+        )
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="paper_search",
+                    call_id="call-post-tool-no-tts",
+                    arguments='{"query":"medicine"}',
+                    created_at=600.0,
+                )
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output='{"results":[{"title":"GAIA"}]}',
+                    is_error=False,
+                    created_at=600.3,
+                )
+            ],
+            created_at=600.3,
+        )
+        await collector.on_metrics_collected(_make_llm_metrics(speech_id, ttft=0.11))
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="The key paper is GAIA.",
+        )
+        await asyncio.sleep(0.05)
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    root = fake_tracer.spans[0]
+    assert (
+        root.attributes["langfuse.trace.output"]
+        == "I'll look that up.\nThe key paper is GAIA."
+    )
 
 
 def test_post_tool_timeout_prevents_early_finalize_of_pre_tool_leadin(
@@ -979,9 +1115,106 @@ def test_post_tool_timeout_prevents_early_finalize_of_pre_tool_leadin(
     root = fake_tracer.spans[0]
     assert (
         root.attributes["langfuse.trace.output"]
-        == "The most cited paper is Attention Is All You Need."
+        == "I'll look that up.\nThe most cited paper is Attention Is All You Need."
     )
     assert root.attributes["tool.post_response_missing"] is False
+
+
+def test_tool_turn_phase_text_order_and_root_output_concatenation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-phase-order",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("find one key medicine paper", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-phase-order", ttft=0.08))
+        await collector.on_tool_step_started()
+        await collector.on_conversation_item_added(role="assistant", content="I'll look that up.")
+        await collector.on_metrics_collected(
+            _make_tts_metrics("speech-phase-order", ttfb=0.07, duration=0.2, audio_duration=0.2)
+        )
+
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="paper_search",
+                    call_id="call-phase-order",
+                    arguments='{"query":"medicine"}',
+                    created_at=500.0,
+                )
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output='{"results":[{"title":"GAIA: a benchmark for General AI Assistants"}]}',
+                    is_error=False,
+                    created_at=500.4,
+                )
+            ],
+            created_at=500.4,
+        )
+        await collector.on_metrics_collected(_make_llm_metrics("speech-phase-order", ttft=0.12))
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content='The key paper is "GAIA: a benchmark for General AI Assistants".',
+        )
+        await collector.on_metrics_collected(
+            _make_tts_metrics("speech-phase-order", ttfb=0.11, duration=0.35, audio_duration=0.35)
+        )
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    phase_spans = [
+        span for span in fake_tracer.spans if span.name.startswith("agent_response_phase_")
+    ]
+    assert len(phase_spans) == 2
+    phase1 = next(span for span in phase_spans if span.attributes["phase.index"] == 1)
+    phase2 = next(span for span in phase_spans if span.attributes["phase.index"] == 2)
+    assert phase1.attributes["phase.kind"] == "pre-tool"
+    assert phase2.attributes["phase.kind"] == "post-tool"
+
+    llm_spans = [span for span in fake_tracer.spans if span.name == "LLMMetrics"]
+    assert len(llm_spans) == 2
+    llm_phase_1 = next(span for span in llm_spans if span.attributes["phase_index"] == 1)
+    llm_phase_2 = next(span for span in llm_spans if span.attributes["phase_index"] == 2)
+    assert llm_phase_1.attributes["response_text"] == "I'll look that up."
+    assert (
+        llm_phase_2.attributes["response_text"]
+        == 'The key paper is "GAIA: a benchmark for General AI Assistants".'
+    )
+
+    tts_spans = [span for span in fake_tracer.spans if span.name == "TTSMetrics"]
+    assert len(tts_spans) == 2
+    tts_phase_1 = next(span for span in tts_spans if span.attributes["phase_index"] == 1)
+    tts_phase_2 = next(span for span in tts_spans if span.attributes["phase_index"] == 2)
+    assert tts_phase_1.attributes["assistant_text"] == "I'll look that up."
+    assert (
+        tts_phase_2.attributes["assistant_text"]
+        == 'The key paper is "GAIA: a benchmark for General AI Assistants".'
+    )
+
+    root = fake_tracer.spans[0]
+    assert (
+        root.attributes["langfuse.trace.output"]
+        == "I'll look that up.\nThe key paper is \"GAIA: a benchmark for General AI Assistants\"."
+    )
 
 
 def test_tool_event_without_matching_turn_is_ignored(
