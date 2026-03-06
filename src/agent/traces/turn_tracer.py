@@ -976,7 +976,7 @@ class TurnTracer:
 
     async def _emit_and_publish(self, turn: TraceTurn) -> None:
         await self._publisher.publish_turn_pipeline_summary(
-            _build_turn_pipeline_summary(turn)
+            _build_turn_pipeline_summary(turn, partial=False)
         )
         await self._emit_turn_trace(turn)
         if turn.trace_id:
@@ -985,6 +985,20 @@ class TurnTracer:
                 turn_id=turn.turn_id,
                 trace_id=turn.trace_id,
             )
+
+    async def build_pipeline_summary_payload(
+        self,
+        trace_turn: Optional[TraceTurn],
+        *,
+        partial: bool,
+    ) -> Optional[dict[str, Any]]:
+        if trace_turn is None:
+            return None
+
+        async with self._trace_lock:
+            if partial and trace_turn not in self._pending_trace_turns:
+                return None
+            return _build_turn_pipeline_summary(trace_turn, partial=partial)
 
     async def _emit_turn_trace(self, turn: TraceTurn) -> None:
         if not self._langfuse_enabled:
@@ -1728,7 +1742,11 @@ def _total_duration_ms(turn: TraceTurn) -> float:
     return calculated
 
 
-def _build_turn_pipeline_summary(turn: TraceTurn) -> dict[str, Any]:
+def _build_turn_pipeline_summary(
+    turn: TraceTurn,
+    *,
+    partial: bool,
+) -> dict[str, Any]:
     phase_blocks = _build_phase_blocks(turn)
     response_blocks = [
         block for block in phase_blocks if isinstance(block, ResponsePhaseBlock)
@@ -1777,6 +1795,7 @@ def _build_turn_pipeline_summary(turn: TraceTurn) -> dict[str, Any]:
         "timestamp": time(),
         "turn_id": turn.turn_id,
         "session_id": turn.session_id,
+        "partial": partial,
         "has_tools": has_tools,
         "phases": [
             _pipeline_phase_payload(

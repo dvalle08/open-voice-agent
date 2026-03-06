@@ -89,17 +89,20 @@ function formatSeconds(seconds) {
   return `${seconds.toFixed(2)}s`;
 }
 
-function setValueAndBar(valueElId, barElId, seconds, maxSeconds) {
+function setValueAndBar(valueElId, barElId, seconds, maxSeconds, options) {
   const valueEl = document.getElementById(valueElId);
   const barEl = document.getElementById(barElId);
   if (!valueEl || !barEl) return;
+  const loadingOnMissing = options && options.loadingOnMissing === true;
   if (!isFiniteNumber(seconds)) {
-    valueEl.textContent = "--";
+    valueEl.textContent = loadingOnMissing ? "coming..." : "--";
+    valueEl.classList.toggle("loading", loadingOnMissing);
     barEl.style.width = "0%";
     return;
   }
   const pct = Math.min((seconds / maxSeconds) * 100, 100);
   valueEl.textContent = formatSeconds(seconds);
+  valueEl.classList.remove("loading");
   barEl.style.width = `${pct}%`;
 }
 
@@ -194,6 +197,7 @@ function clearToolPipelineView() {
 function renderTurnPipelineSummary(summary) {
   if (!summary || summary.type !== "turn_pipeline_summary") return;
   const hasTools = summary.has_tools === true;
+  const isPartial = summary.partial === true;
   toolTurnActive = hasTools;
 
   const phase1 = secondsFromPhase(summary.phases, 1);
@@ -224,11 +228,12 @@ function renderTurnPipelineSummary(summary) {
     : (isFiniteNumber(summary.first_audio_latency_ms)
       ? summary.first_audio_latency_ms / 1000
       : null);
-  const totalTurnSeconds = isFiniteNumber(summary.total_turn_duration_seconds)
+  const totalTurnSecondsRaw = isFiniteNumber(summary.total_turn_duration_seconds)
     ? summary.total_turn_duration_seconds
     : (isFiniteNumber(summary.total_turn_duration_ms)
       ? summary.total_turn_duration_ms / 1000
       : null);
+  const totalTurnSeconds = isPartial ? null : totalTurnSecondsRaw;
   const secondAudioSeconds = isFiniteNumber(summary.second_audio_latency_seconds)
     ? summary.second_audio_latency_seconds
     : (isFiniteNumber(summary.second_audio_latency_ms)
@@ -236,7 +241,13 @@ function renderTurnPipelineSummary(summary) {
       : null);
 
   setTotalCardMode(hasTools);
-  setValueAndBar("live-total", "live-total-bar", firstAudioSeconds, 8.0);
+  setValueAndBar(
+    "live-total",
+    "live-total-bar",
+    firstAudioSeconds,
+    8.0,
+    { loadingOnMissing: hasTools && isPartial },
+  );
   const totalAvgLabel = document.getElementById("live-total-avg");
   if (totalAvgLabel && hasTools) {
     totalAvgLabel.textContent = "";
@@ -247,13 +258,16 @@ function renderTurnPipelineSummary(summary) {
     return;
   }
 
+  const toolSectionWasHidden = toolPhaseShellEl ? toolPhaseShellEl.hidden : true;
   if (toolPhaseShellEl) {
     toolPhaseShellEl.hidden = false;
   }
   if (totalTurnCardEl) {
     totalTurnCardEl.hidden = false;
   }
-  setToolPhaseExpanded(true);
+  if (toolSectionWasHidden) {
+    setToolPhaseExpanded(true);
+  }
 
   const toolPhase = summary.tool_phase || {};
   const tools = Array.isArray(toolPhase.tools) ? toolPhase.tools : [];
@@ -272,11 +286,13 @@ function renderTurnPipelineSummary(summary) {
     }
   }
   if (toolDescEl) {
-    toolDescEl.textContent = "Executing external function calls";
+    toolDescEl.textContent = (isPartial && tools.length === 0)
+      ? "Waiting for tool execution..."
+      : "Executing external function calls";
   }
   renderToolList(tools);
 
-  const toolTotalSeconds = isFiniteNumber(toolPhase.total_duration_seconds)
+  const toolTotalSecondsRaw = isFiniteNumber(toolPhase.total_duration_seconds)
     ? toolPhase.total_duration_seconds
     : (isFiniteNumber(toolPhase.total_duration_ms)
       ? toolPhase.total_duration_ms / 1000
@@ -285,14 +301,45 @@ function renderTurnPipelineSummary(summary) {
           if (isFiniteNumber(tool.duration_ms)) return sum + (tool.duration_ms / 1000);
           return sum;
         }, 0));
-  setValueAndBar("live-tool-total", "live-tool-total-bar", toolTotalSeconds, 8.0);
+  const toolTotalSeconds = (isPartial && tools.length === 0) ? null : toolTotalSecondsRaw;
+  setValueAndBar(
+    "live-tool-total",
+    "live-tool-total-bar",
+    toolTotalSeconds,
+    8.0,
+    { loadingOnMissing: isPartial },
+  );
 
   const postPhase5 = secondsFromPhase(summary.post_tool_phases, 5);
   const postPhase6 = secondsFromPhase(summary.post_tool_phases, 6);
-  setValueAndBar("live-post-llm-ttft", "live-post-llm-ttft-bar", postPhase5, 4.0);
-  setValueAndBar("live-post-voice-generation", "live-post-voice-generation-bar", postPhase6, 4.0);
-  setValueAndBar("live-second-audio", "live-second-audio-bar", secondAudioSeconds, 8.0);
-  setValueAndBar("live-total-turn", "live-total-turn-bar", totalTurnSeconds, 20.0);
+  setValueAndBar(
+    "live-post-llm-ttft",
+    "live-post-llm-ttft-bar",
+    postPhase5,
+    4.0,
+    { loadingOnMissing: isPartial },
+  );
+  setValueAndBar(
+    "live-post-voice-generation",
+    "live-post-voice-generation-bar",
+    postPhase6,
+    4.0,
+    { loadingOnMissing: isPartial },
+  );
+  setValueAndBar(
+    "live-second-audio",
+    "live-second-audio-bar",
+    secondAudioSeconds,
+    8.0,
+    { loadingOnMissing: isPartial },
+  );
+  setValueAndBar(
+    "live-total-turn",
+    "live-total-turn-bar",
+    totalTurnSeconds,
+    20.0,
+    { loadingOnMissing: isPartial },
+  );
 
   if (postToolStageRowEl) {
     postToolStageRowEl.hidden = false;

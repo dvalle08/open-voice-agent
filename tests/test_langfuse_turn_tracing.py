@@ -637,8 +637,12 @@ def test_turn_pipeline_summary_tool_turn_contains_breakdown() -> None:
     summaries = [
         payload for payload in payloads if payload.get("type") == "turn_pipeline_summary"
     ]
-    assert len(summaries) == 1
-    summary = summaries[0]
+    assert summaries
+    partial_summaries = [payload for payload in summaries if payload.get("partial") is True]
+    final_summaries = [payload for payload in summaries if payload.get("partial") is False]
+    assert partial_summaries, "expected progressive tool summaries before final summary"
+    assert len(final_summaries) == 1
+    summary = final_summaries[0]
 
     assert summary["has_tools"] is True
     assert [phase["id"] for phase in summary["phases"]] == [1, 2, 3]
@@ -649,6 +653,42 @@ def test_turn_pipeline_summary_tool_turn_contains_breakdown() -> None:
     assert summary["tool_phase"]["tools"][1]["name"] == "get_weather"
     assert summary["second_audio_latency_seconds"] is not None
     assert summary["total_turn_duration_seconds"] >= summary["first_audio_latency_seconds"]
+
+
+def test_turn_pipeline_summary_publishes_partial_at_tool_step_started() -> None:
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=False,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-summary-step-start",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("use tools", is_final=True)
+        await collector.on_metrics_collected(_make_stt_metrics("stt-summary-step-start"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-summary-step-start", ttft=0.11))
+        await collector.on_tool_step_started()
+
+    asyncio.run(_run())
+
+    payloads = _decode_payloads(room)
+    summaries = [
+        payload for payload in payloads if payload.get("type") == "turn_pipeline_summary"
+    ]
+    assert summaries
+    partial = summaries[-1]
+    assert partial["partial"] is True
+    assert partial["has_tools"] is True
+    assert partial["tool_phase"] is not None
+    assert partial["tool_phase"]["tools"] == []
+    assert [phase["id"] for phase in partial["post_tool_phases"]] == [5, 6]
 
 
 def test_turn_trace_supports_multiple_tool_execution_rounds(

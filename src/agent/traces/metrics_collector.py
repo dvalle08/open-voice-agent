@@ -367,10 +367,12 @@ class MetricsCollector:
             function_call_outputs=function_call_outputs,
             created_at=created_at,
         )
+        await self._publish_partial_turn_pipeline_summary(trace_turn)
         await self._tracer.maybe_finalize(trace_turn)
 
     async def on_tool_step_started(self) -> bool:
         trace_turn, should_announce = await self._tracer.attach_tool_step_started()
+        await self._publish_partial_turn_pipeline_summary(trace_turn)
         await self._tracer.maybe_finalize(trace_turn)
         return should_announce
 
@@ -668,6 +670,10 @@ class MetricsCollector:
 
         if speech_id and turn_metrics:
             await self._maybe_publish_turn(speech_id, turn_metrics)
+        if _trace_turn_has_tool_activity(trace_turn) and isinstance(
+            collected_metrics, (metrics.LLMMetrics, metrics.TTSMetrics)
+        ):
+            await self._publish_partial_turn_pipeline_summary(trace_turn)
         await self._tracer.maybe_finalize(trace_turn)
 
     async def wait_for_pending_trace_tasks(self) -> None:
@@ -725,6 +731,18 @@ class MetricsCollector:
             stt_finalization_delay=state.stt_finalization_delay if state else 0.0,
             observed_total_latency=self._observed_total_latency(speech_id or ""),
         )
+
+    async def _publish_partial_turn_pipeline_summary(
+        self,
+        trace_turn: Optional[TraceTurn],
+    ) -> None:
+        payload = await self._tracer.build_pipeline_summary_payload(
+            trace_turn,
+            partial=True,
+        )
+        if payload is None:
+            return
+        await self._publisher.publish_turn_pipeline_summary(payload)
 
     async def _maybe_publish_turn(
         self, speech_id: str, turn_metrics: TurnMetrics
@@ -861,6 +879,17 @@ def _append_if_new(queue: deque[str], value: str) -> None:
     if queue and queue[-1] == value:
         return
     queue.append(value)
+
+
+def _trace_turn_has_tool_activity(trace_turn: Optional[TraceTurn]) -> bool:
+    if trace_turn is None:
+        return False
+    return bool(
+        trace_turn.tool_step_announced
+        or trace_turn.tool_phase_open
+        or trace_turn.last_tool_event_order is not None
+        or trace_turn.tool_executions
+    )
 
 
 def _extract_content_text(content: Any) -> str:
