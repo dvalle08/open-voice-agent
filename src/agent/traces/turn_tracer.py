@@ -975,6 +975,9 @@ class TurnTracer:
         task.add_done_callback(lambda t: self._trace_emit_tasks.discard(t))
 
     async def _emit_and_publish(self, turn: TraceTurn) -> None:
+        await self._publisher.publish_turn_pipeline_summary(
+            _build_turn_pipeline_summary(turn)
+        )
         await self._emit_turn_trace(turn)
         if turn.trace_id:
             await self._publisher.publish_trace_update(
@@ -1723,6 +1726,152 @@ def _total_duration_ms(turn: TraceTurn) -> float:
     if turn.perceived_latency_second_audio_ms is not None:
         calculated = max(calculated, turn.perceived_latency_second_audio_ms)
     return calculated
+
+
+def _build_turn_pipeline_summary(turn: TraceTurn) -> dict[str, Any]:
+    phase_blocks = _build_phase_blocks(turn)
+    response_blocks = [
+        block for block in phase_blocks if isinstance(block, ResponsePhaseBlock)
+    ]
+    pre_tool_phase = response_blocks[0] if response_blocks else None
+
+    all_tool_calls = _flatten_tool_calls(turn.tool_executions)
+    has_tools = bool(turn.tool_executions or turn.tool_step_announced or all_tool_calls)
+
+    post_tool_phase: Optional[ResponsePhaseBlock] = None
+    if has_tools:
+        for block in reversed(response_blocks):
+            if block.index > 1:
+                post_tool_phase = block
+                break
+
+    tool_payloads: list[dict[str, Any]] = []
+    tool_total_ms = 0.0
+    for tool_call in all_tool_calls:
+        duration_ms = max(tool_call.duration_ms or 0.0, 0.0)
+        tool_total_ms += duration_ms
+        tool_payloads.append(
+            {
+                "name": tool_call.name or "tool_call",
+                "call_id": tool_call.call_id,
+                "duration_seconds": duration_ms / 1000.0,
+                "duration_ms": duration_ms,
+                "is_error": tool_call.is_error,
+            }
+        )
+
+    first_audio_ms = (
+        max(turn.perceived_latency_first_audio_ms, 0.0)
+        if turn.perceived_latency_first_audio_ms is not None
+        else None
+    )
+    second_audio_ms = (
+        max(turn.perceived_latency_second_audio_ms, 0.0)
+        if turn.perceived_latency_second_audio_ms is not None
+        else None
+    )
+    total_turn_ms = _total_duration_ms(turn)
+
+    payload: dict[str, Any] = {
+        "type": "turn_pipeline_summary",
+        "timestamp": time(),
+        "turn_id": turn.turn_id,
+        "session_id": turn.session_id,
+        "has_tools": has_tools,
+        "phases": [
+            _pipeline_phase_payload(
+                phase_id=1,
+                label="Turn Detection",
+                sublabel="EOU Delay",
+                duration_ms=max(turn.vad_duration_ms or 0.0, 0.0),
+            ),
+            _pipeline_phase_payload(
+                phase_id=2,
+                label="Thinking",
+                sublabel="LLM TTFT",
+                duration_ms=_first_llm_ttft_ms(pre_tool_phase),
+            ),
+            _pipeline_phase_payload(
+                phase_id=3,
+                label="Voice Generation",
+                sublabel="TTS TTFB",
+                duration_ms=_first_tts_ttfb_ms(pre_tool_phase),
+            ),
+        ],
+        "tool_phase": None,
+        "post_tool_phases": [],
+        "first_audio_latency_seconds": (
+            first_audio_ms / 1000.0 if first_audio_ms is not None else None
+        ),
+        "first_audio_latency_ms": first_audio_ms,
+        "second_audio_latency_seconds": (
+            second_audio_ms / 1000.0 if second_audio_ms is not None else None
+        ),
+        "second_audio_latency_ms": second_audio_ms,
+        "total_turn_duration_seconds": total_turn_ms / 1000.0,
+        "total_turn_duration_ms": total_turn_ms,
+    }
+
+    if has_tools:
+        payload["tool_phase"] = {
+            "execution_count": len(turn.tool_executions),
+            "tools": tool_payloads,
+            "total_duration_seconds": tool_total_ms / 1000.0,
+            "total_duration_ms": tool_total_ms,
+        }
+        payload["post_tool_phases"] = [
+            _pipeline_phase_payload(
+                phase_id=5,
+                label="Thinking",
+                sublabel="LLM TTFT",
+                duration_ms=_first_llm_ttft_ms(post_tool_phase),
+            ),
+            _pipeline_phase_payload(
+                phase_id=6,
+                label="Voice Generation",
+                sublabel="TTS TTFB",
+                duration_ms=_first_tts_ttfb_ms(post_tool_phase),
+            ),
+        ]
+
+    return payload
+
+
+def _pipeline_phase_payload(
+    *,
+    phase_id: int,
+    label: str,
+    sublabel: str,
+    duration_ms: Optional[float],
+) -> dict[str, Any]:
+    resolved_ms = max(duration_ms, 0.0) if duration_ms is not None else None
+    return {
+        "id": phase_id,
+        "label": label,
+        "sublabel": sublabel,
+        "duration_seconds": (resolved_ms / 1000.0) if resolved_ms is not None else None,
+        "duration_ms": resolved_ms,
+    }
+
+
+def _first_llm_ttft_ms(phase: Optional[ResponsePhaseBlock]) -> Optional[float]:
+    if phase is None:
+        return None
+    for call in phase.llm_calls:
+        if call.ttft_ms is None:
+            continue
+        return max(call.ttft_ms, 0.0)
+    return None
+
+
+def _first_tts_ttfb_ms(phase: Optional[ResponsePhaseBlock]) -> Optional[float]:
+    if phase is None:
+        return None
+    for call in phase.tts_calls:
+        if call.ttfb_ms is None:
+            continue
+        return max(call.ttfb_ms, 0.0)
+    return None
 
 
 def _prepare_span_values(turn: TraceTurn) -> dict[str, Any]:

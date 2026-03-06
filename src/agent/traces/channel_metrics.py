@@ -1,9 +1,10 @@
 """Data channel metrics publisher for LiveKit agent telemetry.
 
-Publishes three message types to the LiveKit data channel:
-- ``metrics_live_update``  – ephemeral per-stage updates
-- ``conversation_turn``    – completed turn metrics
-- ``trace_update``         – Langfuse trace ID notification
+Publishes four message types to the LiveKit data channel:
+- ``metrics_live_update``     – ephemeral per-stage updates
+- ``conversation_turn``       – completed turn metrics
+- ``turn_pipeline_summary``   – finalized pipeline view model for frontend
+- ``trace_update``            – Langfuse trace ID notification
 """
 
 from __future__ import annotations
@@ -137,6 +138,17 @@ class ChannelPublisher:
             )
         except Exception as exc:
             logger.error(f"Failed to publish trace update: {exc}")
+
+    async def publish_turn_pipeline_summary(self, payload: dict[str, Any]) -> None:
+        """Publish finalized turn pipeline summary for frontend rendering."""
+        try:
+            await self._room.local_participant.publish_data(
+                payload=json.dumps(payload).encode("utf-8"),
+                topic="metrics",
+                reliable=True,
+            )
+        except Exception as exc:
+            logger.error(f"Failed to publish turn pipeline summary: {exc}")
 
 
 def _stt_display_duration(stt_metrics: STTMetrics) -> float:

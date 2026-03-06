@@ -196,7 +196,7 @@ class LLMSettings(CoreSettings):
         description="OpenAI-compatible Ollama endpoint",
     )
     OLLAMA_MODEL: str = Field(
-        default="qwen2.5:7b",#"qwen2.5:7b",#"qwen3.5:9b"
+        default= "qwen3.5:4b", #"qwen2.5:7b",#"ministral-3:8b", #"qwen2.5:7b", #"qwen3.5:9b"
         description="Ollama model tag",
     )
     OLLAMA_API_KEY: Optional[str] = Field(

@@ -32,6 +32,8 @@
         --agent-color: #6c8fff;
         --agent-bg: rgba(108, 143, 255, 0.08);
         --warning: #f59e0b;
+        --tool-accent: #f59e0b;
+        --post-accent: #34d399;
         --critical: #ef4444;
         --radius: 12px;
         --radius-sm: 8px;
@@ -215,13 +217,75 @@
         font-size: 11px;
         color: var(--text-muted);
       }
+
+      .pipeline-phase-label {
+        --phase-color: var(--accent-light);
+        --phase-line: rgba(108, 143, 255, 0.2);
+        color: var(--phase-color);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 2px 0 8px;
+      }
+      .pipeline-phase-label::before {
+        content: "";
+        width: 10px;
+        height: 2px;
+        border-radius: 999px;
+        background: var(--phase-color);
+      }
+      .pipeline-phase-label::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: var(--phase-line);
+      }
+      .pipeline-phase-label .text {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .pipeline-phase-label.primary {
+        --phase-color: var(--accent-light);
+        --phase-line: rgba(108, 143, 255, 0.22);
+      }
+      .pipeline-phase-label.tool {
+        --phase-color: var(--tool-accent);
+        --phase-line: rgba(245, 158, 11, 0.22);
+      }
+      .pipeline-phase-label.post {
+        --phase-color: var(--post-accent);
+        --phase-line: rgba(52, 211, 153, 0.22);
+      }
+
       .pipeline-stage-row {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 10px;
+        --connector-a: rgba(108, 143, 255, 0.18);
+        --connector-b: rgba(108, 143, 255, 0.5);
+        --connector-c: rgba(167, 139, 250, 0.58);
+        --connector-shadow: rgba(108, 143, 255, 0.18);
+        --connector-arrow: rgba(167, 139, 250, 0.72);
       }
       .pipeline-stage-row.handoff-visible {
         grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+      .pipeline-stage-row.tool-phase-row {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .pipeline-stage-row.post-tool-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        --connector-a: rgba(52, 211, 153, 0.2);
+        --connector-b: rgba(52, 211, 153, 0.6);
+        --connector-c: rgba(16, 185, 129, 0.56);
+        --connector-shadow: rgba(52, 211, 153, 0.2);
+        --connector-arrow: rgba(52, 211, 153, 0.76);
+      }
+      .pipeline-stage-row.no-connectors .stage-card::after,
+      .pipeline-stage-row.no-connectors .stage-card::before {
+        display: none !important;
       }
       .stage-card[hidden] {
         display: none;
@@ -245,11 +309,11 @@
         border-radius: 999px;
         background: linear-gradient(
           90deg,
-          rgba(108, 143, 255, 0.18) 0%,
-          rgba(108, 143, 255, 0.5) 60%,
-          rgba(167, 139, 250, 0.58) 100%
+          var(--connector-a) 0%,
+          var(--connector-b) 60%,
+          var(--connector-c) 100%
         );
-        box-shadow: 0 0 5px rgba(108, 143, 255, 0.18);
+        box-shadow: 0 0 5px var(--connector-shadow);
         transform: translateY(-50%);
         pointer-events: none;
         z-index: 1;
@@ -261,9 +325,9 @@
         left: calc(100% + 10px);
         width: 6px;
         height: 6px;
-        background: rgba(167, 139, 250, 0.72);
+        background: var(--connector-arrow);
         clip-path: polygon(0 0, 100% 50%, 0 100%);
-        box-shadow: 0 0 6px rgba(108, 143, 255, 0.2);
+        box-shadow: 0 0 6px var(--connector-shadow);
         transform: translateY(-50%);
         pointer-events: none;
         z-index: 1;
@@ -293,6 +357,40 @@
         border: 1px solid rgba(108, 143, 255, 0.35);
         flex-shrink: 0;
       }
+      .metric-card.theme-primary {
+        border-color: rgba(108, 143, 255, 0.24);
+      }
+      .metric-card.theme-tool {
+        background: linear-gradient(135deg, rgba(245, 158, 11, 0.08), rgba(245, 158, 11, 0.03));
+        border-color: rgba(245, 158, 11, 0.3);
+      }
+      .metric-card.theme-post {
+        background: linear-gradient(135deg, rgba(52, 211, 153, 0.1), rgba(16, 185, 129, 0.03));
+        border-color: rgba(52, 211, 153, 0.3);
+      }
+      .metric-card.theme-tool .metric-step {
+        color: var(--tool-accent);
+        background: rgba(245, 158, 11, 0.18);
+        border-color: rgba(245, 158, 11, 0.45);
+      }
+      .metric-card.theme-post .metric-step {
+        color: var(--post-accent);
+        background: rgba(52, 211, 153, 0.16);
+        border-color: rgba(52, 211, 153, 0.45);
+      }
+      .metric-card.theme-tool .metric-card-value {
+        color: var(--tool-accent);
+      }
+      .metric-card.theme-post .metric-card-value {
+        color: var(--post-accent);
+      }
+      .metric-card.theme-tool .metric-card-fill {
+        background: linear-gradient(135deg, rgba(245, 158, 11, 0.95), rgba(245, 158, 11, 0.5));
+      }
+      .metric-card.theme-post .metric-card-fill {
+        background: linear-gradient(135deg, rgba(52, 211, 153, 0.95), rgba(16, 185, 129, 0.5));
+      }
+
       .metric-tech-wrap {
         display: inline-flex;
         align-items: center;
@@ -391,6 +489,117 @@
         font-size: 11px;
         color: var(--text-secondary);
       }
+      .pipeline-total-card.post-tool {
+        background: linear-gradient(135deg, rgba(52, 211, 153, 0.12), rgba(16, 185, 129, 0.04));
+        border-color: rgba(52, 211, 153, 0.3);
+      }
+      .pipeline-total-card.post-tool .pipeline-total-value {
+        color: var(--post-accent);
+      }
+      .pipeline-total-card.neutral {
+        background: linear-gradient(135deg, rgba(141, 149, 171, 0.09), rgba(74, 85, 110, 0.04));
+        border-color: rgba(141, 149, 171, 0.3);
+      }
+      .pipeline-total-card.neutral .pipeline-total-value {
+        color: var(--text-secondary);
+      }
+
+      .tool-phase-shell {
+        margin-top: 16px;
+      }
+      .tool-phase-toggle {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid rgba(245, 158, 11, 0.24);
+        background: rgba(245, 158, 11, 0.06);
+        color: var(--tool-accent);
+        border-radius: 8px;
+        padding: 8px 10px;
+        cursor: pointer;
+        transition: border-color 0.2s, background 0.2s;
+      }
+      .tool-phase-toggle:hover {
+        border-color: rgba(245, 158, 11, 0.42);
+        background: rgba(245, 158, 11, 0.1);
+      }
+      .tool-phase-chevron {
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+        transition: transform 0.25s ease;
+      }
+      .tool-phase-toggle[aria-expanded="true"] .tool-phase-chevron {
+        transform: rotate(180deg);
+      }
+      .tool-phase-title {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .tool-phase-count {
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+      .tool-phase-toggle-spacer {
+        flex: 1;
+      }
+      .tool-phase-content {
+        margin-top: 12px;
+        animation: fade-in-slide 0.2s ease;
+      }
+      .tool-phase-content[hidden] {
+        display: none;
+      }
+      .tool-list {
+        margin: 6px 0 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .tool-list-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11px;
+        color: var(--text-secondary);
+      }
+      .tool-list-name {
+        color: rgba(245, 158, 11, 0.96);
+      }
+      .tool-list-duration {
+        font-variant-numeric: tabular-nums;
+      }
+      .tool-list-empty {
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+      .tool-tag {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 5px;
+        background: rgba(245, 158, 11, 0.16);
+        color: var(--tool-accent);
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        padding: 2px 6px;
+        text-transform: uppercase;
+      }
+
+      @keyframes fade-in-slide {
+        from {
+          opacity: 0;
+          transform: translateY(-6px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
 
       .tooltip {
         position: relative;
@@ -457,6 +666,12 @@
         .pipeline-stage-row {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
+        .pipeline-stage-row.tool-phase-row {
+          grid-template-columns: 1fr;
+        }
+        .pipeline-stage-row.post-tool-row {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
         .stage-card::after {
           display: none;
         }
@@ -485,6 +700,9 @@
           padding: 0 14px 10px;
         }
         .pipeline-stage-row {
+          grid-template-columns: 1fr;
+        }
+        .pipeline-stage-row.post-tool-row {
           grid-template-columns: 1fr;
         }
         .pipeline-total-top {
@@ -574,8 +792,12 @@
           <span class="pipeline-subtitle">Core stages from end-of-speech to first assistant audio</span>
         </div>
 
+        <div class="pipeline-phase-label primary">
+          <span class="text">Initial Response</span>
+        </div>
+
         <div class="pipeline-stage-row" id="pipeline-stage-row">
-          <div class="metric-card stage-card">
+          <div class="metric-card stage-card theme-primary">
             <div class="metric-card-top">
               <span class="metric-step">1</span>
               <div class="metric-tech-wrap">
@@ -597,7 +819,7 @@
             </div>
           </div>
 
-          <div class="metric-card stage-card">
+          <div class="metric-card stage-card theme-primary">
             <div class="metric-card-top">
               <span class="metric-step">2</span>
               <div class="metric-tech-wrap">
@@ -619,7 +841,7 @@
             </div>
           </div>
 
-          <div class="metric-card stage-card" id="live-handoff-card" hidden>
+          <div class="metric-card stage-card theme-primary" id="live-handoff-card" hidden>
             <div class="metric-card-top">
               <span class="metric-step">3</span>
               <div class="metric-tech-wrap">
@@ -641,7 +863,7 @@
             </div>
           </div>
 
-          <div class="metric-card stage-card">
+          <div class="metric-card stage-card theme-primary">
             <div class="metric-card-top">
               <span class="metric-step" id="live-voice-generation-step">3</span>
               <div class="metric-tech-wrap">
@@ -664,15 +886,15 @@
           </div>
         </div>
 
-        <div class="pipeline-total-card">
+        <div class="pipeline-total-card" id="first-audio-card">
           <div class="pipeline-total-top">
             <div>
-              <div class="pipeline-total-label">Total Round-Trip</div>
+              <div class="pipeline-total-label" id="live-total-label">Total Round-Trip</div>
               <div class="pipeline-total-tech">
-                <span>End-to-End Latency</span>
+                <span id="live-total-tech-text">End-to-End Latency</span>
                 <div class="tooltip tooltip-right">
                   <button type="button" class="tooltip-trigger" aria-label="What is End-to-End Latency?">i</button>
-                  <span class="tooltip-content" role="tooltip">Total round-trip from end of user speech to first assistant audio: EOU delay + Thinking (LLM TTFT) + optional handoff + Voice Generation (TTS TTFB).</span>
+                  <span class="tooltip-content" role="tooltip" id="live-total-tooltip-text">Total round-trip from end of user speech to first assistant audio: EOU delay + Thinking (LLM TTFT) + optional handoff + Voice Generation (TTS TTFB).</span>
                 </div>
               </div>
             </div>
@@ -683,6 +905,127 @@
           </div>
           <div class="metric-card-track">
             <div class="metric-card-fill" id="live-total-bar" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <div class="tool-phase-shell" id="tool-phase-shell" hidden>
+          <button
+            type="button"
+            class="tool-phase-toggle"
+            id="tool-phase-toggle"
+            aria-expanded="true"
+            aria-controls="tool-phase-content"
+          >
+            <svg class="tool-phase-chevron" id="tool-phase-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <span class="tool-phase-title">Tool Execution</span>
+            <span class="tool-phase-count" id="tool-phase-count">0 tools called</span>
+            <span class="tool-phase-toggle-spacer"></span>
+          </button>
+
+          <div class="tool-phase-content" id="tool-phase-content">
+            <div class="pipeline-stage-row tool-phase-row no-connectors">
+              <div class="metric-card stage-card theme-tool" id="live-tool-card">
+                <div class="metric-card-top">
+                  <span class="metric-step">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                      <path d="M12.1 3.9c-.5-.5-1.2-.7-1.9-.6l-1.5-1.5c-.2-.2-.5-.2-.7 0s-.2.5 0 .7l1.3 1.3c-.3.8-.1 1.7.5 2.3.5.5 1.2.7 1.9.6l2.5 2.5c.2.2.5.2.7 0s.2-.5 0-.7l-2.5-2.5c.1-.7-.1-1.4-.6-1.9zM3.5 12.5l3-3L5 8l-3 3c-.3.3-.3.7 0 1l.5.5c.3.3.7.3 1 0zM13.4 11.6l-5-5-.7.7 5 5c.2.2.5.2.7 0s.2-.5 0-.7zM4.1 2.6L2 4.7l1.1 1.1 1.1-.6 1.1 1.1-.6 1.1 1.1 1.1 2.1-2.1-3.8-3.8z" />
+                    </svg>
+                  </span>
+                  <div class="metric-tech-wrap">
+                    <span class="metric-tech">Tool Calls</span>
+                    <span class="tool-tag" id="live-tool-tag">Tool Call</span>
+                  </div>
+                </div>
+                <div class="metric-card-human" id="live-tool-title">Tool execution</div>
+                <div class="metric-card-desc" id="live-tool-desc">Executing external function calls</div>
+                <div class="tool-list" id="live-tool-list">
+                  <div class="tool-list-empty">No tools executed.</div>
+                </div>
+                <div class="metric-card-value-row">
+                  <span class="metric-card-value" id="live-tool-total">--</span>
+                </div>
+                <div class="metric-card-track">
+                  <div class="metric-card-fill" id="live-tool-total-bar" style="width: 0%"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="pipeline-phase-label post">
+              <span class="text">Post-Tool Response</span>
+            </div>
+
+            <div class="pipeline-stage-row post-tool-row" id="post-tool-stage-row">
+              <div class="metric-card stage-card theme-post">
+                <div class="metric-card-top">
+                  <span class="metric-step">5</span>
+                  <div class="metric-tech-wrap">
+                    <span class="metric-tech">LLM TTFT</span>
+                  </div>
+                </div>
+                <div class="metric-card-human">Thinking</div>
+                <div class="metric-card-desc">Generating the first token after tools</div>
+                <div class="metric-card-value-row">
+                  <span class="metric-card-value" id="live-post-llm-ttft">--</span>
+                </div>
+                <div class="metric-card-track">
+                  <div class="metric-card-fill" id="live-post-llm-ttft-bar" style="width: 0%"></div>
+                </div>
+              </div>
+
+              <div class="metric-card stage-card theme-post">
+                <div class="metric-card-top">
+                  <span class="metric-step">6</span>
+                  <div class="metric-tech-wrap">
+                    <span class="metric-tech">TTS TTFB</span>
+                  </div>
+                </div>
+                <div class="metric-card-human">Voice Generation</div>
+                <div class="metric-card-desc">Starting post-tool audio synthesis</div>
+                <div class="metric-card-value-row">
+                  <span class="metric-card-value" id="live-post-voice-generation">--</span>
+                </div>
+                <div class="metric-card-track">
+                  <div class="metric-card-fill" id="live-post-voice-generation-bar" style="width: 0%"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="pipeline-total-card post-tool" id="second-audio-card">
+              <div class="pipeline-total-top">
+                <div>
+                  <div class="pipeline-total-label">Second Audio</div>
+                  <div class="pipeline-total-tech">
+                    <span id="live-second-audio-tech-text">Tool completion to post-tool assistant audio</span>
+                    <span class="tool-tag">Tool→Audio</span>
+                  </div>
+                </div>
+                <div class="pipeline-total-value-wrap">
+                  <span class="metric-card-value pipeline-total-value" id="live-second-audio">--</span>
+                </div>
+              </div>
+              <div class="metric-card-track">
+                <div class="metric-card-fill" id="live-second-audio-bar" style="width: 0%"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pipeline-total-card neutral" id="total-turn-card">
+            <div class="pipeline-total-top">
+              <div>
+                <div class="pipeline-total-label">Total Turn Duration</div>
+                <div class="pipeline-total-tech">
+                  <span>Complete turn including tool execution and post-tool response</span>
+                </div>
+              </div>
+              <div class="pipeline-total-value-wrap">
+                <span class="metric-card-value pipeline-total-value" id="live-total-turn">--</span>
+              </div>
+            </div>
+            <div class="metric-card-track">
+              <div class="metric-card-fill" id="live-total-turn-bar" style="width: 0%"></div>
+            </div>
           </div>
         </div>
       </div>

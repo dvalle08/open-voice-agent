@@ -46,8 +46,23 @@ const LIVE_METRIC_IDS = [
 const pipelineStageRowEl = document.getElementById("pipeline-stage-row");
 const handoffCardEl = document.getElementById("live-handoff-card");
 const voiceGenerationStepEl = document.getElementById("live-voice-generation-step");
+const liveTotalLabelEl = document.getElementById("live-total-label");
+const liveTotalTechTextEl = document.getElementById("live-total-tech-text");
+const liveTotalTooltipTextEl = document.getElementById("live-total-tooltip-text");
+const toolPhaseShellEl = document.getElementById("tool-phase-shell");
+const toolPhaseToggleEl = document.getElementById("tool-phase-toggle");
+const toolPhaseContentEl = document.getElementById("tool-phase-content");
+const toolPhaseCountEl = document.getElementById("tool-phase-count");
+const toolPhaseTagEl = document.getElementById("live-tool-tag");
+const toolTitleEl = document.getElementById("live-tool-title");
+const toolDescEl = document.getElementById("live-tool-desc");
+const toolListEl = document.getElementById("live-tool-list");
+const postToolStageRowEl = document.getElementById("post-tool-stage-row");
+const totalTurnCardEl = document.getElementById("total-turn-card");
 let activeLiveSpeechId = null;
 let liveTurnValues = createEmptyLiveTurnValues();
+let toolPhaseExpanded = true;
+let toolTurnActive = false;
 
 function createEmptyLiveTurnValues() {
   return {
@@ -59,6 +74,231 @@ function createEmptyLiveTurnValues() {
   };
 }
 
+function setToolPhaseExpanded(expanded) {
+  toolPhaseExpanded = Boolean(expanded);
+  if (toolPhaseToggleEl) {
+    toolPhaseToggleEl.setAttribute("aria-expanded", toolPhaseExpanded ? "true" : "false");
+  }
+  if (toolPhaseContentEl) {
+    toolPhaseContentEl.hidden = !toolPhaseExpanded;
+  }
+}
+
+function formatSeconds(seconds) {
+  if (!isFiniteNumber(seconds)) return "--";
+  return `${seconds.toFixed(2)}s`;
+}
+
+function setValueAndBar(valueElId, barElId, seconds, maxSeconds) {
+  const valueEl = document.getElementById(valueElId);
+  const barEl = document.getElementById(barElId);
+  if (!valueEl || !barEl) return;
+  if (!isFiniteNumber(seconds)) {
+    valueEl.textContent = "--";
+    barEl.style.width = "0%";
+    return;
+  }
+  const pct = Math.min((seconds / maxSeconds) * 100, 100);
+  valueEl.textContent = formatSeconds(seconds);
+  barEl.style.width = `${pct}%`;
+}
+
+function secondsFromPhase(phases, phaseId) {
+  if (!Array.isArray(phases)) return null;
+  const phase = phases.find((item) => item && item.id === phaseId);
+  if (!phase || typeof phase !== "object") return null;
+  if (isFiniteNumber(phase.duration_seconds)) return phase.duration_seconds;
+  if (isFiniteNumber(phase.duration_ms)) return phase.duration_ms / 1000;
+  return null;
+}
+
+function clearToolList() {
+  if (!toolListEl) return;
+  toolListEl.innerHTML = "";
+  const emptyEl = document.createElement("div");
+  emptyEl.className = "tool-list-empty";
+  emptyEl.textContent = "No tools executed.";
+  toolListEl.appendChild(emptyEl);
+}
+
+function renderToolList(tools) {
+  if (!toolListEl) return;
+  toolListEl.innerHTML = "";
+  if (!Array.isArray(tools) || tools.length === 0) {
+    clearToolList();
+    return;
+  }
+
+  tools.forEach((tool) => {
+    const row = document.createElement("div");
+    row.className = "tool-list-item";
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "tool-list-name";
+    nameEl.textContent = tool && typeof tool.name === "string" && tool.name.trim()
+      ? tool.name
+      : "tool_call";
+
+    const durationEl = document.createElement("span");
+    durationEl.className = "tool-list-duration";
+    const seconds = isFiniteNumber(tool.duration_seconds)
+      ? tool.duration_seconds
+      : (isFiniteNumber(tool.duration_ms) ? tool.duration_ms / 1000 : null);
+    durationEl.textContent = formatSeconds(seconds);
+
+    row.appendChild(nameEl);
+    row.appendChild(durationEl);
+    toolListEl.appendChild(row);
+  });
+}
+
+function setTotalCardMode(hasTools) {
+  if (!liveTotalLabelEl || !liveTotalTechTextEl || !liveTotalTooltipTextEl) return;
+  if (hasTools) {
+    liveTotalLabelEl.textContent = "First Audio";
+    liveTotalTechTextEl.textContent = "EOU to first assistant audio (pre-tool acknowledgment)";
+    liveTotalTooltipTextEl.textContent = "Perceived latency from end of user speech to the first assistant audio before tool execution.";
+    return;
+  }
+  liveTotalLabelEl.textContent = "Total Round-Trip";
+  liveTotalTechTextEl.textContent = "End-to-End Latency";
+  liveTotalTooltipTextEl.textContent = "Total round-trip from end of user speech to first assistant audio: EOU delay + Thinking (LLM TTFT) + optional handoff + Voice Generation (TTS TTFB).";
+}
+
+function clearToolPipelineView() {
+  toolTurnActive = false;
+  if (toolPhaseShellEl) {
+    toolPhaseShellEl.hidden = true;
+  }
+  setToolPhaseExpanded(true);
+  if (toolPhaseCountEl) {
+    toolPhaseCountEl.textContent = "0 tools called";
+  }
+  if (toolPhaseTagEl) {
+    toolPhaseTagEl.textContent = "Tool Call";
+  }
+  if (toolTitleEl) {
+    toolTitleEl.textContent = "Tool execution";
+  }
+  if (toolDescEl) {
+    toolDescEl.textContent = "Executing external function calls";
+  }
+  clearToolList();
+  setValueAndBar("live-tool-total", "live-tool-total-bar", null, 6.0);
+  setValueAndBar("live-post-llm-ttft", "live-post-llm-ttft-bar", null, 4.0);
+  setValueAndBar("live-post-voice-generation", "live-post-voice-generation-bar", null, 4.0);
+  setValueAndBar("live-second-audio", "live-second-audio-bar", null, 8.0);
+  setValueAndBar("live-total-turn", "live-total-turn-bar", null, 20.0);
+}
+
+function renderTurnPipelineSummary(summary) {
+  if (!summary || summary.type !== "turn_pipeline_summary") return;
+  const hasTools = summary.has_tools === true;
+  toolTurnActive = hasTools;
+
+  const phase1 = secondsFromPhase(summary.phases, 1);
+  const phase2 = secondsFromPhase(summary.phases, 2);
+  const phase3 = secondsFromPhase(summary.phases, 3);
+
+  if (isFiniteNumber(phase1)) {
+    liveTurnValues.eouDelay = phase1;
+    setLiveMetric("eou", phase1, 4.0, 0.8, 1.2);
+  }
+  if (isFiniteNumber(phase2)) {
+    liveTurnValues.llmTtft = phase2;
+    setLiveMetric("llm-ttft", phase2, 4.0, 0.5, 1.0);
+  }
+  if (isFiniteNumber(phase3)) {
+    liveTurnValues.ttsTtfb = phase3;
+    setLiveMetric("voice-generation", phase3, 4.0, 0.6, 1.2);
+  }
+
+  if (hasTools) {
+    liveTurnValues.llmToTtsHandoff = null;
+    clearLiveMetric("handoff");
+    setHandoffCardVisible(false);
+  }
+
+  const firstAudioSeconds = isFiniteNumber(summary.first_audio_latency_seconds)
+    ? summary.first_audio_latency_seconds
+    : (isFiniteNumber(summary.first_audio_latency_ms)
+      ? summary.first_audio_latency_ms / 1000
+      : null);
+  const totalTurnSeconds = isFiniteNumber(summary.total_turn_duration_seconds)
+    ? summary.total_turn_duration_seconds
+    : (isFiniteNumber(summary.total_turn_duration_ms)
+      ? summary.total_turn_duration_ms / 1000
+      : null);
+  const secondAudioSeconds = isFiniteNumber(summary.second_audio_latency_seconds)
+    ? summary.second_audio_latency_seconds
+    : (isFiniteNumber(summary.second_audio_latency_ms)
+      ? summary.second_audio_latency_ms / 1000
+      : null);
+
+  setTotalCardMode(hasTools);
+  setValueAndBar("live-total", "live-total-bar", firstAudioSeconds, 8.0);
+  const totalAvgLabel = document.getElementById("live-total-avg");
+  if (totalAvgLabel && hasTools) {
+    totalAvgLabel.textContent = "";
+  }
+
+  if (!hasTools) {
+    clearToolPipelineView();
+    return;
+  }
+
+  if (toolPhaseShellEl) {
+    toolPhaseShellEl.hidden = false;
+  }
+  if (totalTurnCardEl) {
+    totalTurnCardEl.hidden = false;
+  }
+  setToolPhaseExpanded(true);
+
+  const toolPhase = summary.tool_phase || {};
+  const tools = Array.isArray(toolPhase.tools) ? toolPhase.tools : [];
+  const toolCount = tools.length;
+  if (toolPhaseCountEl) {
+    toolPhaseCountEl.textContent = `${toolCount} tool${toolCount === 1 ? "" : "s"} called`;
+  }
+  if (toolPhaseTagEl) {
+    toolPhaseTagEl.textContent = toolCount === 1 ? "Tool Call" : "Tool Calls";
+  }
+  if (toolTitleEl) {
+    if (toolCount === 1 && tools[0] && typeof tools[0].name === "string" && tools[0].name.trim()) {
+      toolTitleEl.textContent = tools[0].name;
+    } else {
+      toolTitleEl.textContent = `${toolCount} tools`;
+    }
+  }
+  if (toolDescEl) {
+    toolDescEl.textContent = "Executing external function calls";
+  }
+  renderToolList(tools);
+
+  const toolTotalSeconds = isFiniteNumber(toolPhase.total_duration_seconds)
+    ? toolPhase.total_duration_seconds
+    : (isFiniteNumber(toolPhase.total_duration_ms)
+      ? toolPhase.total_duration_ms / 1000
+      : tools.reduce((sum, tool) => {
+          if (isFiniteNumber(tool.duration_seconds)) return sum + tool.duration_seconds;
+          if (isFiniteNumber(tool.duration_ms)) return sum + (tool.duration_ms / 1000);
+          return sum;
+        }, 0));
+  setValueAndBar("live-tool-total", "live-tool-total-bar", toolTotalSeconds, 8.0);
+
+  const postPhase5 = secondsFromPhase(summary.post_tool_phases, 5);
+  const postPhase6 = secondsFromPhase(summary.post_tool_phases, 6);
+  setValueAndBar("live-post-llm-ttft", "live-post-llm-ttft-bar", postPhase5, 4.0);
+  setValueAndBar("live-post-voice-generation", "live-post-voice-generation-bar", postPhase6, 4.0);
+  setValueAndBar("live-second-audio", "live-second-audio-bar", secondAudioSeconds, 8.0);
+  setValueAndBar("live-total-turn", "live-total-turn-bar", totalTurnSeconds, 20.0);
+
+  if (postToolStageRowEl) {
+    postToolStageRowEl.hidden = false;
+  }
+}
+
 // Initialize canvas sizing on load
 window.addEventListener('DOMContentLoaded', () => {
   resizeCanvas();
@@ -68,6 +308,14 @@ window.addEventListener('DOMContentLoaded', () => {
     resizeCanvas();
   });
   resizeObserver.observe(canvas.parentElement);
+
+  if (toolPhaseToggleEl) {
+    toolPhaseToggleEl.addEventListener("click", () => {
+      setToolPhaseExpanded(!toolPhaseExpanded);
+    });
+  }
+  setToolPhaseExpanded(true);
+  clearToolPipelineView();
 });
 
 function setStatus(text, state) {
@@ -398,6 +646,8 @@ async function connectToRoom() {
               updateLiveMetrics(metricsData);
             }
             renderTurn(metricsData);
+          } else if (metricsData.type === "turn_pipeline_summary") {
+            renderTurnPipelineSummary(metricsData);
           }
         } catch (error) {
           console.error("Failed to parse metrics:", error);
@@ -511,6 +761,7 @@ async function disconnectRoom() {
 function resetMetrics() {
   activeLiveSpeechId = null;
   liveTurnValues = createEmptyLiveTurnValues();
+  toolTurnActive = false;
   averages = {
     eouDelay: [],
     llmTtft: [],
@@ -521,6 +772,8 @@ function resetMetrics() {
 
   clearAllLiveMetrics();
   setHandoffCardVisible(false);
+  clearToolPipelineView();
+  setTotalCardMode(false);
 
   updateLiveMetricAverages();
 }
@@ -532,6 +785,8 @@ function handleLiveTurnBoundary(metricsData) {
   if (!speechId) {
     clearAllLiveMetrics();
     setHandoffCardVisible(false);
+    clearToolPipelineView();
+    setTotalCardMode(false);
     activeLiveSpeechId = null;
     liveTurnValues = createEmptyLiveTurnValues();
     return;
@@ -541,6 +796,8 @@ function handleLiveTurnBoundary(metricsData) {
   activeLiveSpeechId = speechId;
   liveTurnValues = createEmptyLiveTurnValues();
   setHandoffCardVisible(false);
+  clearToolPipelineView();
+  setTotalCardMode(false);
   setAllLiveMetricsLoading();
 }
 
@@ -560,6 +817,8 @@ async function toggleMute() {
 resetMuteButton();
 setConnectionState(CONNECTION_STATES.IDLE);
 setHandoffCardVisible(false);
+setTotalCardMode(false);
+clearToolPipelineView();
 
 connectBtn.addEventListener("click", () => {
   connectToRoom().catch((error) => {
@@ -679,7 +938,11 @@ function updateLiveMetricAverages() {
   setLiveMetricAverage("llm-ttft", avg(averages.llmTtft));
   setLiveMetricAverage("handoff", avg(averages.llmToTtsHandoff));
   setLiveMetricAverage("voice-generation", avg(averages.voiceGeneration));
-  setLiveMetricAverage("total", avg(averages.totalLatency));
+  if (toolTurnActive) {
+    setLiveMetricAverage("total", null);
+  } else {
+    setLiveMetricAverage("total", avg(averages.totalLatency));
+  }
 }
 
 function shouldApplyUserLatency(turn, nextValue, currentValue) {
@@ -715,7 +978,11 @@ function updateLiveMetrics(turn) {
   }
 
   const llmToTtsHandoff = latencies.llm_to_tts_handoff_latency;
-  if (isFiniteNumber(llmToTtsHandoff) && llmToTtsHandoff > 0) {
+  if (toolTurnActive) {
+    liveTurnValues.llmToTtsHandoff = null;
+    setHandoffCardVisible(false);
+    clearLiveMetric("handoff");
+  } else if (isFiniteNumber(llmToTtsHandoff) && llmToTtsHandoff > 0) {
     liveTurnValues.llmToTtsHandoff = llmToTtsHandoff;
     setHandoffCardVisible(true);
     setLiveMetric("handoff", llmToTtsHandoff, 4.0, 0.35, 0.8);
@@ -742,7 +1009,7 @@ function updateLiveMetrics(turn) {
     isFiniteNumber(liveTurnValues.ttsTtfb)
   );
 
-  if (hasAllStages) {
+  if (hasAllStages && !toolTurnActive) {
     const handoff = isFiniteNumber(liveTurnValues.llmToTtsHandoff)
       ? Math.max(liveTurnValues.llmToTtsHandoff, 0)
       : 0;

@@ -518,6 +518,139 @@ def test_turn_trace_includes_tool_spans_between_llm_and_tts(
     assert root.attributes["latency_ms.perceived_second_audio"] >= 0
 
 
+def test_turn_pipeline_summary_simple_turn_without_langfuse() -> None:
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=False,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-summary-simple",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("hello", is_final=True)
+        await collector.on_metrics_collected(_make_stt_metrics("stt-summary-simple"))
+        await collector.on_metrics_collected(
+            _make_eou_metrics("speech-summary-simple", delay=0.8, transcription_delay=0.1)
+        )
+        await collector.on_metrics_collected(
+            _make_llm_metrics("speech-summary-simple", ttft=0.12)
+        )
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="Hello! How can I help?",
+        )
+        await collector.on_metrics_collected(
+            _make_tts_metrics("speech-summary-simple", ttfb=0.14, duration=0.4, audio_duration=0.8)
+        )
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    payloads = _decode_payloads(room)
+    summaries = [
+        payload for payload in payloads if payload.get("type") == "turn_pipeline_summary"
+    ]
+    assert len(summaries) == 1
+    summary = summaries[0]
+
+    assert summary["has_tools"] is False
+    assert summary["tool_phase"] is None
+    assert summary["post_tool_phases"] == []
+    assert [phase["id"] for phase in summary["phases"]] == [1, 2, 3]
+    assert summary["first_audio_latency_seconds"] is not None
+    assert summary["second_audio_latency_seconds"] is None
+    assert summary["total_turn_duration_seconds"] >= summary["first_audio_latency_seconds"]
+
+
+def test_turn_pipeline_summary_tool_turn_contains_breakdown() -> None:
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=False,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-summary-tools",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("search and summarize", is_final=True)
+        await collector.on_metrics_collected(_make_stt_metrics("stt-summary-tools"))
+        await collector.on_metrics_collected(
+            _make_eou_metrics("speech-summary-tools", delay=0.7, transcription_delay=0.05)
+        )
+        await collector.on_metrics_collected(
+            _make_llm_metrics("speech-summary-tools", ttft=0.09)
+        )
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="search_web",
+                    call_id="call-summary-1",
+                    arguments='{"query":"transformers"}',
+                    created_at=20.0,
+                ),
+                _FakeFunctionCall(
+                    name="get_weather",
+                    call_id="call-summary-2",
+                    arguments='{"city":"Bogota"}',
+                    created_at=20.3,
+                ),
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output='{"results":[{"title":"Attention Is All You Need"}]}',
+                    is_error=False,
+                    created_at=20.2,
+                ),
+                _FakeFunctionCallOutput(
+                    output='{"temperature_c":18}',
+                    is_error=False,
+                    created_at=20.55,
+                ),
+            ],
+            created_at=20.55,
+        )
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="I found relevant results and weather context.",
+        )
+        await collector.on_metrics_collected(
+            _make_tts_metrics("speech-summary-tools", ttfb=0.18, duration=0.5, audio_duration=0.9)
+        )
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    payloads = _decode_payloads(room)
+    summaries = [
+        payload for payload in payloads if payload.get("type") == "turn_pipeline_summary"
+    ]
+    assert len(summaries) == 1
+    summary = summaries[0]
+
+    assert summary["has_tools"] is True
+    assert [phase["id"] for phase in summary["phases"]] == [1, 2, 3]
+    assert [phase["id"] for phase in summary["post_tool_phases"]] == [5, 6]
+    assert summary["tool_phase"]["execution_count"] == 1
+    assert len(summary["tool_phase"]["tools"]) == 2
+    assert summary["tool_phase"]["tools"][0]["name"] == "search_web"
+    assert summary["tool_phase"]["tools"][1]["name"] == "get_weather"
+    assert summary["second_audio_latency_seconds"] is not None
+    assert summary["total_turn_duration_seconds"] >= summary["first_audio_latency_seconds"]
+
+
 def test_turn_trace_supports_multiple_tool_execution_rounds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

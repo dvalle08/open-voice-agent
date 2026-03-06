@@ -122,6 +122,7 @@ def build_llm_runtime(
         max_completion_tokens=llm_max_tokens,
         timeout=timeout,
         _strict_tool_schema=False,
+        extra_body={"think": False} if provider == "ollama" else None, 
     )
     return LLMRuntimeConfig(
         llm=llm,
