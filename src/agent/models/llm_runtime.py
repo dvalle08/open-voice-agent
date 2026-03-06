@@ -83,6 +83,7 @@ def build_llm_runtime(
         model = nvidia_model
         base_url = NVIDIA_OPENAI_BASE_URL
         api_key = nvidia_api_key
+        extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
     elif provider == "ollama":
         model = (ollama_model or "").strip()
         if not model:
@@ -92,6 +93,7 @@ def build_llm_runtime(
             raise ValueError("OLLAMA_BASE_URL is required when LLM_PROVIDER=ollama")
         validate_ollama_model_for_endpoint(base_url=base_url, model=model)
         api_key = resolve_ollama_api_key(ollama_api_key)
+        extra_body = {"think": False}
     else:
         raise ValueError(
             f"Unknown LLM provider: {provider}. Must be 'nvidia' or 'ollama'"
@@ -122,7 +124,7 @@ def build_llm_runtime(
         max_completion_tokens=llm_max_tokens,
         timeout=timeout,
         _strict_tool_schema=False,
-        extra_body={"think": False} if provider == "ollama" else None, 
+        extra_body=extra_body,
     )
     return LLMRuntimeConfig(
         llm=llm,

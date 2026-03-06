@@ -420,6 +420,74 @@ def test_build_llm_runtime_requires_nvidia_key() -> None:
         )
 
 
+def test_build_llm_runtime_passes_nvidia_disable_thinking_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_kwargs: dict[str, Any] = {}
+    fake_llm = object()
+
+    def _fake_openai_llm(**kwargs: Any) -> object:
+        captured_kwargs.update(kwargs)
+        return fake_llm
+
+    monkeypatch.setattr(
+        "src.agent.models.llm_runtime.openai_plugin.LLM",
+        _fake_openai_llm,
+    )
+
+    runtime = build_llm_runtime(
+        llm_provider="nvidia",
+        llm_temperature=0.7,
+        llm_max_tokens=1024,
+        llm_timeout_sec=12.0,
+        nvidia_api_key="nvapi-test",
+        nvidia_model="qwen/qwen3-next-80b-a3b-instruct",
+        ollama_base_url="http://localhost:11434/v1",
+        ollama_model="qwen2.5:7b",
+        ollama_api_key="ollama",
+        mcp_enabled=False,
+        mcp_server_url="https://huggingface.co/mcp",
+    )
+
+    assert runtime.llm is fake_llm
+    assert captured_kwargs["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+
+
+def test_build_llm_runtime_passes_ollama_disable_thinking_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_kwargs: dict[str, Any] = {}
+    fake_llm = object()
+
+    def _fake_openai_llm(**kwargs: Any) -> object:
+        captured_kwargs.update(kwargs)
+        return fake_llm
+
+    monkeypatch.setattr(
+        "src.agent.models.llm_runtime.openai_plugin.LLM",
+        _fake_openai_llm,
+    )
+
+    runtime = build_llm_runtime(
+        llm_provider="ollama",
+        llm_temperature=0.7,
+        llm_max_tokens=1024,
+        llm_timeout_sec=12.0,
+        nvidia_api_key=None,
+        nvidia_model="meta/llama-3.1-8b-instruct",
+        ollama_base_url="http://localhost:11434/v1",
+        ollama_model="qwen2.5:7b",
+        ollama_api_key="ollama",
+        mcp_enabled=False,
+        mcp_server_url="https://huggingface.co/mcp",
+    )
+
+    assert runtime.llm is fake_llm
+    assert captured_kwargs["extra_body"] == {"think": False}
+
+
 def test_assistant_instructions_discourage_tools_for_small_talk() -> None:
     assert "greetings, acknowledgements, thanks, and casual small talk" in ASSISTANT_INSTRUCTIONS
     assert "do not call tools" in ASSISTANT_INSTRUCTIONS
