@@ -19,6 +19,7 @@ from src.agent.models.llm_runtime import (
     install_mcp_generate_reply_guard,
     run_startup_greeting,
 )
+from src.agent.runtime.connect_options import build_api_connect_options
 from src.agent.models.stt_factory import create_stt
 from src.agent.runtime.assistant import Assistant
 from src.agent.runtime.tasks import (
@@ -65,6 +66,24 @@ def fallback_participant_prefix() -> str | None:
     if any(arg == "console" for arg in sys.argv[1:]):
         return "console"
     return None
+
+
+def _build_session_connect_options() -> tuple[APIConnectOptions, SessionConnectOptions]:
+    llm_conn_options = build_api_connect_options(
+        max_retry=settings.llm.LLM_CONN_MAX_RETRY,
+        retry_interval_sec=settings.llm.LLM_CONN_RETRY_INTERVAL_SEC,
+        timeout_sec=settings.llm.LLM_CONN_TIMEOUT_SEC,
+    )
+    tts_conn_options = build_api_connect_options(
+        max_retry=settings.llm.LLM_CONN_MAX_RETRY,
+        retry_interval_sec=settings.llm.LLM_CONN_RETRY_INTERVAL_SEC,
+        timeout_sec=settings.llm.LLM_CONN_TIMEOUT_SEC,
+    )
+    session_conn_options = SessionConnectOptions(
+        llm_conn_options=llm_conn_options,
+        tts_conn_options=tts_conn_options,
+    )
+    return llm_conn_options, session_conn_options
 
 
 @server.rtc_session(agent_name=settings.livekit.LIVEKIT_AGENT_NAME)
@@ -143,12 +162,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         temperature=settings.voice.POCKET_TTS_TEMPERATURE,
         lsd_decode_steps=settings.voice.POCKET_TTS_LSD_DECODE_STEPS,
     )
-    llm_conn_options = APIConnectOptions(
-        max_retry=settings.llm.LLM_CONN_MAX_RETRY,
-        retry_interval=settings.llm.LLM_CONN_RETRY_INTERVAL_SEC,
-        timeout=settings.llm.LLM_CONN_TIMEOUT_SEC,
-    )
-    session_conn_options = SessionConnectOptions(llm_conn_options=llm_conn_options)
+    llm_conn_options, session_conn_options = _build_session_connect_options()
     llm_runtime = build_llm_runtime(
         llm_provider=settings.llm.LLM_PROVIDER,
         llm_temperature=settings.llm.LLM_TEMPERATURE,

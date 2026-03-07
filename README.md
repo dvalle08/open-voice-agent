@@ -184,7 +184,7 @@ Notes:
 - `LANGFUSE_PROJECT_ID` is required to build trace deep links in the UI.
 - Session pages are intentionally not linked from the frontend because they are project-member scoped in Langfuse Cloud.
 
-### LLM runtime resilience
+### LLM/TTS runtime resilience
 
 Tune request behavior with:
 
@@ -195,7 +195,7 @@ LLM_CONN_RETRY_INTERVAL_SEC=1.0
 TURN_LLM_STALL_TIMEOUT_SEC=8.0
 ```
 
-- `LLM_CONN_*` controls timeout/retry behavior for LLM requests.
+- `LLM_CONN_*` controls timeout/retry behavior for both LLM and PocketTTS requests.
 - `TURN_LLM_STALL_TIMEOUT_SEC` emits a backend warning if a finalized user turn never reaches the LLM stage.
 
 ### Troubleshooting: STT works but no voice reply
