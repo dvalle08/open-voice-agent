@@ -52,6 +52,7 @@ def test_create_tts_uses_deepgram_provider(monkeypatch) -> None:
 
 def test_create_tts_uses_nvidia_provider_with_shared_api_key_fallback(monkeypatch) -> None:
     nvidia_calls: dict[str, object] = {}
+    patch_calls: list[str] = []
 
     class _FakeNvidiaTTS:
         def __init__(
@@ -83,11 +84,17 @@ def test_create_tts_uses_nvidia_provider_with_shared_api_key_fallback(monkeypatc
     )
     monkeypatch.setattr(settings.voice, "NVIDIA_TTS_USE_SSL", True)
     monkeypatch.setattr(settings.llm, "NVIDIA_API_KEY", "shared-nvidia-test-key")
+    monkeypatch.setattr(
+        tts_factory,
+        "_patch_nvidia_tts_stream_once",
+        lambda: patch_calls.append("patched"),
+    )
     monkeypatch.setattr(tts_factory.nvidia, "TTS", _FakeNvidiaTTS)
 
     tts_engine = tts_factory.create_tts()
 
     assert isinstance(tts_engine, _FakeNvidiaTTS)
+    assert patch_calls == ["patched"]
     assert nvidia_calls == {
         "voice": "Magpie-Multilingual.EN-US.Leo",
         "language_code": "en-US",
