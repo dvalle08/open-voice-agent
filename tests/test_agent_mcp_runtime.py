@@ -306,6 +306,22 @@ def test_startup_greeting_monitor_times_out_and_interrupts() -> None:
     assert handle.interrupt_calls == [True]
 
 
+def test_startup_greeting_monitor_allows_unbounded_playout_when_timeout_disabled() -> None:
+    async def _run() -> _FakeSpeechHandle:
+        handle = _FakeSpeechHandle(block=True)
+        task = asyncio.create_task(
+            monitor_startup_greeting_handle(handle, timeout_sec=0.0)
+        )
+        await asyncio.sleep(0)
+        assert not task.done()
+        handle.interrupt(force=False)
+        await task
+        return handle
+
+    handle = asyncio.run(_run())
+    assert handle.interrupt_calls == [False]
+
+
 def testrun_startup_greeting_swallows_say_exception() -> None:
     session = _FailingSaySession()
 

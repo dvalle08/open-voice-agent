@@ -13,7 +13,6 @@ from src.core.logger import logger
 from src.core.settings import LLMSettings
 
 NVIDIA_OPENAI_BASE_URL = "https://integrate.api.nvidia.com/v1"
-MCP_STARTUP_GREETING_TIMEOUT_SEC = 8.0
 MCP_GENERATE_REPLY_BLOCK_MESSAGE = (
     "Manual generate_reply is disabled in MCP mode; use session.say(...) instead."
 )

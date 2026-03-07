@@ -71,7 +71,7 @@ def _build_session_connect_options() -> tuple[APIConnectOptions, SessionConnectO
     tts_conn_options = build_api_connect_options(
         max_retry=settings.llm.LLM_CONN_MAX_RETRY,
         retry_interval_sec=settings.llm.LLM_CONN_RETRY_INTERVAL_SEC,
-        timeout_sec=settings.llm.LLM_CONN_TIMEOUT_SEC,
+        timeout_sec=settings.voice.POCKET_TTS_CONN_TIMEOUT_SEC,
     )
     session_conn_options = SessionConnectOptions(
         llm_conn_options=llm_conn_options,
@@ -220,6 +220,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         startup_greeting_task = schedule_startup_greeting_task(
             session,
             mcp_runtime_active=mcp_runtime_active,
+            timeout_sec=settings.llm.MCP_STARTUP_GREETING_TIMEOUT_SEC,
         )
     else:
         run_startup_greeting(session, mcp_runtime_active=mcp_runtime_active)

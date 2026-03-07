@@ -197,9 +197,13 @@ LLM_CONN_TIMEOUT_SEC=12.0
 LLM_CONN_MAX_RETRY=1
 LLM_CONN_RETRY_INTERVAL_SEC=1.0
 TURN_LLM_STALL_TIMEOUT_SEC=8.0
+MCP_STARTUP_GREETING_TIMEOUT_SEC=0.0
+POCKET_TTS_CONN_TIMEOUT_SEC=45.0
 ```
 
-- `LLM_CONN_*` controls timeout/retry behavior for both LLM and PocketTTS requests.
+- `LLM_CONN_*` controls timeout/retry behavior for LLM requests.
+- `POCKET_TTS_CONN_TIMEOUT_SEC` controls the timeout for one PocketTTS synthesis attempt.
+- `MCP_STARTUP_GREETING_TIMEOUT_SEC=0.0` disables forced interruption of the startup greeting; set a positive value to restore a cutoff.
 - `TURN_LLM_STALL_TIMEOUT_SEC` emits a backend warning if a finalized user turn never reaches the LLM stage.
 
 ### LiveKit worker startup
@@ -212,6 +216,7 @@ LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC=20.0
 ```
 
 - `LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC` maps to LiveKit's idle worker bootstrap timeout.
+- `LIVEKIT_NUM_IDLE_PROCESSES=1` is the intended local baseline to reduce idle worker memory and CPU pressure.
 - `20.0` seconds is the intended baseline when keeping the current worker behavior and avoiding idle worker init timeouts.
 
 ### Troubleshooting: STT works but no voice reply

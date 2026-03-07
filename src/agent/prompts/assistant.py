@@ -46,13 +46,15 @@ def _format_agent_config_summary(current_settings: Settings) -> str:
             f"{f'cloud_mode={llm_mode}, ' if llm_mode is not None else ''}"
             f"temperature={llm.get('LLM_TEMPERATURE')}, max_tokens={llm.get('LLM_MAX_TOKENS')}, "
             f"timeout_sec={llm.get('LLM_CONN_TIMEOUT_SEC')}, max_retry={llm.get('LLM_CONN_MAX_RETRY')}, "
-            f"retry_interval_sec={llm.get('LLM_CONN_RETRY_INTERVAL_SEC')}."
+            f"retry_interval_sec={llm.get('LLM_CONN_RETRY_INTERVAL_SEC')}, "
+            f"startup_greeting_timeout_sec={llm.get('MCP_STARTUP_GREETING_TIMEOUT_SEC')}."
         ),
         (
             "TTS: "
             f"provider=pocket-tts, voice={voice.get('POCKET_TTS_VOICE')}, "
             f"temperature={voice.get('POCKET_TTS_TEMPERATURE')}, "
-            f"lsd_decode_steps={voice.get('POCKET_TTS_LSD_DECODE_STEPS')}."
+            f"lsd_decode_steps={voice.get('POCKET_TTS_LSD_DECODE_STEPS')}, "
+            f"timeout_sec={voice.get('POCKET_TTS_CONN_TIMEOUT_SEC')}."
         ),
         (
             "LiveKit runtime: "

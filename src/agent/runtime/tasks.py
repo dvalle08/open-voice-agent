@@ -9,14 +9,14 @@ from typing import Any
 from livekit.agents import AgentSession, llm
 from livekit.agents.types import APIConnectOptions
 
-from src.agent.models.llm_runtime import MCP_STARTUP_GREETING_TIMEOUT_SEC, run_startup_greeting
+from src.agent.models.llm_runtime import run_startup_greeting
 from src.core.logger import logger
 
 
 async def monitor_startup_greeting_handle(
     greeting_handle: Any,
     *,
-    timeout_sec: float = MCP_STARTUP_GREETING_TIMEOUT_SEC,
+    timeout_sec: float = 0.0,
 ) -> None:
     speech_id = getattr(greeting_handle, "id", None)
     wait_for_playout = getattr(greeting_handle, "wait_for_playout", None)
@@ -30,7 +30,10 @@ async def monitor_startup_greeting_handle(
         return
 
     try:
-        await asyncio.wait_for(wait_for_playout(), timeout=timeout_sec)
+        if timeout_sec <= 0:
+            await wait_for_playout()
+        else:
+            await asyncio.wait_for(wait_for_playout(), timeout=timeout_sec)
     except TimeoutError:
         logger.warning(
             "MCP startup greeting timed out after %.2fs; interrupting speech_id=%s",
@@ -57,6 +60,7 @@ def schedule_startup_greeting_task(
     session: AgentSession,
     *,
     mcp_runtime_active: bool,
+    timeout_sec: float = 0.0,
 ) -> asyncio.Task[Any] | None:
     greeting_handle = run_startup_greeting(
         session,
@@ -67,12 +71,13 @@ def schedule_startup_greeting_task(
 
     speech_id = getattr(greeting_handle, "id", None)
     logger.info(
-        "Scheduling startup greeting monitor task: mcp_runtime_active=%s speech_id=%s",
+        "Scheduling startup greeting monitor task: mcp_runtime_active=%s speech_id=%s timeout_sec=%.2f",
         mcp_runtime_active,
         speech_id,
+        timeout_sec,
     )
     task = asyncio.create_task(
-        monitor_startup_greeting_handle(greeting_handle),
+        monitor_startup_greeting_handle(greeting_handle, timeout_sec=timeout_sec),
         name="startup-greeting-monitor",
     )
     setattr(task, "_open_voice_startup_greeting_handle", greeting_handle)

@@ -74,6 +74,12 @@ class VoiceSettings(CoreSettings):
         ge=1,
         description="LSD decoding steps (higher = better quality, slower)",
     )
+    POCKET_TTS_CONN_TIMEOUT_SEC: float = Field(
+        default=45.0,
+        gt=0.0,
+        le=300.0,
+        description="Pocket TTS synthesis timeout in seconds for one request attempt",
+    )
 
     # LiveKit Audio Input Settings
     LIVEKIT_SAMPLE_RATE: int = Field(
@@ -244,6 +250,15 @@ class LLMSettings(CoreSettings):
         le=120.0,
         description="Warn when a finalized user turn does not reach LLM stage within this timeout",
     )
+    MCP_STARTUP_GREETING_TIMEOUT_SEC: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=300.0,
+        description=(
+            "Forced timeout in seconds for the MCP startup greeting. "
+            "Set to 0 to disable forced interruption."
+        ),
+    )
 
     @property
     def OLLAMA_BASE_URL(self) -> str:
@@ -269,9 +284,9 @@ class LiveKitSettings(CoreSettings):
     LIVEKIT_API_KEY: Optional[str] = Field(default=None)
     LIVEKIT_API_SECRET: Optional[str] = Field(default=None)
     LIVEKIT_AGENT_NAME: str = Field(default="open-voice-agent")
-    LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=3, ge=0)
+    LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=1, ge=0)
     LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC: float = Field(
-        default=60.0,
+        default=60,
         gt=0.0,
         description="Maximum time to wait for a LiveKit idle worker process to initialize",
     )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.core.settings import LLMSettings, LiveKitSettings
+from src.core.settings import LLMSettings, LiveKitSettings, VoiceSettings
 
 
 def test_llm_runtime_tuning_defaults_are_declared() -> None:
@@ -21,6 +21,7 @@ def test_llm_runtime_tuning_defaults_are_declared() -> None:
     assert fields["LLM_CONN_MAX_RETRY"].default == 1
     assert fields["LLM_CONN_RETRY_INTERVAL_SEC"].default == 1.0
     assert fields["TURN_LLM_STALL_TIMEOUT_SEC"].default == 12.0
+    assert fields["MCP_STARTUP_GREETING_TIMEOUT_SEC"].default == 0.0
     assert settings.OLLAMA_BASE_URL == "https://ollama.com/v1"
 
 
@@ -30,6 +31,12 @@ def test_livekit_runtime_tuning_defaults_are_declared() -> None:
     assert fields["LIVEKIT_NUM_IDLE_PROCESSES"].default == 1
     assert fields["LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC"].default == 20.0
     assert fields["LIVEKIT_JOB_MEMORY_WARN_MB"].default == 6144
+
+
+def test_voice_runtime_tuning_defaults_are_declared() -> None:
+    fields = VoiceSettings.model_fields
+
+    assert fields["POCKET_TTS_CONN_TIMEOUT_SEC"].default == 45.0
 
 
 def test_llm_runtime_tuning_switches_to_local_ollama_base_url_when_cloud_mode_disabled() -> None:
@@ -58,6 +65,14 @@ def test_llm_runtime_tuning_validation_rejects_invalid_values() -> None:
 
     with pytest.raises(ValidationError):
         LLMSettings(TURN_LLM_STALL_TIMEOUT_SEC=0.0)
+
+    with pytest.raises(ValidationError):
+        LLMSettings(MCP_STARTUP_GREETING_TIMEOUT_SEC=-0.1)
+
+
+def test_voice_runtime_tuning_validation_rejects_invalid_values() -> None:
+    with pytest.raises(ValidationError):
+        VoiceSettings(POCKET_TTS_CONN_TIMEOUT_SEC=0.0)
 
 
 def test_livekit_runtime_tuning_validation_rejects_invalid_values() -> None:
