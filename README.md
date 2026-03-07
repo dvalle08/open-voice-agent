@@ -93,7 +93,7 @@ uv sync
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your LiveKit credentials and LLM provider choice
+# Edit .env with your LiveKit credentials plus LLM/TTS provider choices
 
 # Terminal 1: Start the LiveKit agent
 uv run src/agent/agent.py start
@@ -145,6 +145,35 @@ LLM_PROVIDER=nvidia
 NVIDIA_API_KEY=nvapi-xxx
 NVIDIA_MODEL=meta/llama-3.1-8b-instruct
 ```
+
+### TTS Provider (choose one)
+
+**Local (PocketTTS):**
+```bash
+TTS_PROVIDER=pocket
+POCKET_TTS_VOICE=alba
+```
+
+**API (Deepgram):**
+```bash
+TTS_PROVIDER=deepgram
+DEEPGRAM_API_KEY=your_deepgram_api_key_here
+```
+
+**API or self-hosted (NVIDIA Riva):**
+```bash
+TTS_PROVIDER=nvidia
+NVIDIA_TTS_VOICE=Magpie-Multilingual.EN-US.Leo
+NVIDIA_TTS_LANGUAGE_CODE=en-US
+NVIDIA_TTS_SERVER=grpc.nvcf.nvidia.com:443
+NVIDIA_TTS_FUNCTION_ID=877104f7-e885-42b9-8de8-f6e4c6303969
+NVIDIA_TTS_USE_SSL=true
+# Optional override; otherwise falls back to NVIDIA_API_KEY
+NVIDIA_TTS_API_KEY=
+```
+
+- `NVIDIA_TTS_API_KEY` overrides the shared `NVIDIA_API_KEY` when set.
+- For self-hosted Riva, point `NVIDIA_TTS_SERVER` at your server and set `NVIDIA_TTS_USE_SSL=false` if TLS is disabled.
 
 See `.env.example` for all available options.
 
@@ -202,7 +231,7 @@ POCKET_TTS_CONN_TIMEOUT_SEC=45.0
 ```
 
 - `LLM_CONN_*` controls timeout/retry behavior for LLM requests.
-- `POCKET_TTS_CONN_TIMEOUT_SEC` controls the timeout for one PocketTTS synthesis attempt.
+- `POCKET_TTS_CONN_TIMEOUT_SEC` controls the timeout for one TTS synthesis attempt across PocketTTS, Deepgram, and NVIDIA Riva.
 - `MCP_STARTUP_GREETING_TIMEOUT_SEC=0.0` disables forced interruption of the startup greeting; set a positive value to restore a cutoff.
 - `TURN_LLM_STALL_TIMEOUT_SEC` emits a backend warning if a finalized user turn never reaches the LLM stage.
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.core.settings import LLMSettings, LiveKitSettings, VoiceSettings
+from src.core.settings import LLMSettings, LiveKitSettings, Settings, VoiceSettings
 
 
 def test_llm_runtime_tuning_defaults_are_declared() -> None:
@@ -37,6 +37,8 @@ def test_voice_runtime_tuning_defaults_are_declared() -> None:
     fields = VoiceSettings.model_fields
 
     assert fields["TTS_PROVIDER"].default == "deepgram"
+    assert fields["NVIDIA_TTS_VOICE"].default == "Magpie-Multilingual.EN-US.Leo"
+    assert fields["NVIDIA_TTS_USE_SSL"].default is True
     assert fields["POCKET_TTS_CONN_TIMEOUT_SEC"].default == 45.0
 
 
@@ -77,7 +79,7 @@ def test_voice_runtime_tuning_validation_rejects_invalid_values() -> None:
 
     with pytest.raises(
         ValidationError,
-        match="TTS_PROVIDER must be either 'pocket' or 'deepgram'",
+        match="TTS_PROVIDER must be either 'pocket', 'deepgram', or 'nvidia'",
     ):
         VoiceSettings(TTS_PROVIDER="invalid")
 
@@ -93,6 +95,46 @@ def test_voice_runtime_tuning_accepts_deepgram_provider_with_key() -> None:
 
     assert settings.TTS_PROVIDER == "deepgram"
     assert settings.DEEPGRAM_API_KEY == "test-key"
+
+
+def test_voice_runtime_tuning_accepts_nvidia_provider() -> None:
+    settings = VoiceSettings(TTS_PROVIDER="NVIDIA")
+
+    assert settings.TTS_PROVIDER == "nvidia"
+
+
+def test_settings_require_nvidia_tts_or_shared_key_when_ssl_enabled() -> None:
+    with pytest.raises(
+        ValidationError,
+        match=(
+            "NVIDIA_TTS_API_KEY or NVIDIA_API_KEY is required when "
+            "TTS_PROVIDER=nvidia and NVIDIA_TTS_USE_SSL=true"
+        ),
+    ):
+        Settings(
+            voice=VoiceSettings(TTS_PROVIDER="nvidia", NVIDIA_TTS_USE_SSL=True),
+            llm=LLMSettings(OLLAMA_API_KEY="test-key", NVIDIA_API_KEY=None),
+        )
+
+
+def test_settings_allow_nvidia_tts_without_key_when_ssl_disabled() -> None:
+    settings = Settings(
+        voice=VoiceSettings(TTS_PROVIDER="nvidia", NVIDIA_TTS_USE_SSL=False),
+        llm=LLMSettings(OLLAMA_API_KEY="test-key", NVIDIA_API_KEY=None),
+    )
+
+    assert settings.voice.TTS_PROVIDER == "nvidia"
+    assert settings.voice.NVIDIA_TTS_USE_SSL is False
+
+
+def test_settings_allow_nvidia_tts_with_shared_nvidia_api_key() -> None:
+    settings = Settings(
+        voice=VoiceSettings(TTS_PROVIDER="nvidia", NVIDIA_TTS_USE_SSL=True),
+        llm=LLMSettings(OLLAMA_API_KEY="test-key", NVIDIA_API_KEY="shared-key"),
+    )
+
+    assert settings.voice.TTS_PROVIDER == "nvidia"
+    assert settings.llm.NVIDIA_API_KEY == "shared-key"
 
 
 def test_livekit_runtime_tuning_validation_rejects_invalid_values() -> None:

@@ -577,9 +577,36 @@ def test_build_assistant_instructions_hide_pocket_specific_details_for_deepgram(
     assert "lsd_decode_steps=" not in instructions
 
 
+def test_build_assistant_instructions_hide_pocket_specific_details_for_nvidia_tts() -> None:
+    settings = Settings()
+    settings.voice.TTS_PROVIDER = "nvidia"
+    settings.voice.NVIDIA_TTS_VOICE = "Magpie-Multilingual.EN-US.Leo"
+    settings.voice.NVIDIA_TTS_LANGUAGE_CODE = "en-US"
+    settings.voice.NVIDIA_TTS_SERVER = "grpc.nvcf.nvidia.com:443"
+    settings.voice.NVIDIA_TTS_USE_SSL = True
+    settings.llm.NVIDIA_API_KEY = "nvapi-secret-test-value"
+
+    instructions = build_assistant_instructions(
+        current_date=date(2026, 3, 7),
+        current_settings=settings,
+    )
+
+    assert (
+        "TTS provider=nvidia, voice=Magpie-Multilingual.EN-US.Leo, "
+        "language_code=en-US, server=grpc.nvcf.nvidia.com:443, "
+        "use_ssl=True, timeout_sec=45.0."
+    ) in instructions
+    assert "language_code=en-US" in instructions
+    assert "server=grpc.nvcf.nvidia.com:443" in instructions
+    assert "use_ssl=True" in instructions
+    assert "voice=alba" not in instructions
+    assert "lsd_decode_steps=" not in instructions
+
+
 def test_build_assistant_instructions_redacts_sensitive_values() -> None:
     settings = Settings()
     settings.voice.DEEPGRAM_API_KEY = "deepgram-secret-test-value"
+    settings.voice.NVIDIA_TTS_API_KEY = "nvidia-tts-secret-test-value"
     settings.llm.NVIDIA_API_KEY = "nvapi-secret-test-value"
     settings.stt.NVIDIA_STT_API_KEY = "nvidia-stt-secret-test-value"
     settings.livekit.LIVEKIT_API_KEY = "livekit-api-key-test-value"
@@ -591,6 +618,7 @@ def test_build_assistant_instructions_redacts_sensitive_values() -> None:
     )
 
     assert "deepgram-secret-test-value" not in instructions
+    assert "nvidia-tts-secret-test-value" not in instructions
     assert "nvapi-secret-test-value" not in instructions
     assert "nvidia-stt-secret-test-value" not in instructions
     assert "livekit-api-key-test-value" not in instructions

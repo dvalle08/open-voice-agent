@@ -42,6 +42,15 @@ def _format_agent_config_summary(current_settings: Settings) -> str:
             "TTS provider=deepgram, model=plugin-default, "
             f"timeout_sec={voice.get('POCKET_TTS_CONN_TIMEOUT_SEC')}"
         )
+    elif tts_provider == "nvidia":
+        tts_summary = (
+            "TTS provider=nvidia, "
+            f"voice={voice.get('NVIDIA_TTS_VOICE')}, "
+            f"language_code={voice.get('NVIDIA_TTS_LANGUAGE_CODE')}, "
+            f"server={voice.get('NVIDIA_TTS_SERVER')}, "
+            f"use_ssl={voice.get('NVIDIA_TTS_USE_SSL')}, "
+            f"timeout_sec={voice.get('POCKET_TTS_CONN_TIMEOUT_SEC')}"
+        )
     else:
         tts_summary = (
             f"TTS provider={tts_provider or 'pocket'}, "
@@ -94,6 +103,7 @@ def _format_agent_config_summary(current_settings: Settings) -> str:
         (
             "Credential state (redacted): "
             f"DEEPGRAM_API_KEY={voice.get('DEEPGRAM_API_KEY')}, "
+            f"NVIDIA_TTS_API_KEY={voice.get('NVIDIA_TTS_API_KEY')}, "
             f"NVIDIA_API_KEY={llm.get('NVIDIA_API_KEY')}, "
             f"NVIDIA_STT_API_KEY={stt.get('NVIDIA_STT_API_KEY')}, "
             f"OLLAMA_API_KEY={llm.get('OLLAMA_API_KEY')}, "

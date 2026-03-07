@@ -50,6 +50,12 @@ def _resolve_tts_footer_component() -> tuple[str, str]:
     if provider == "deepgram":
         return ("https://deepgram.com/", "Deepgram (aura-2-thalia-en)")
 
+    if provider == "nvidia":
+        return (
+            "https://docs.livekit.io/agents/models/tts/nvidia/",
+            f"NVIDIA Riva (voice: {settings.voice.NVIDIA_TTS_VOICE})",
+        )
+
     return ("#", f"Unknown TTS ({provider})")
 
 

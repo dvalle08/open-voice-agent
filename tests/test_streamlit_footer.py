@@ -32,3 +32,20 @@ def test_generate_footer_html_uses_deepgram_tts_provider(
     assert "https://deepgram.com/" in html
     assert "Deepgram (aura-2-thalia-en)" in html
     assert "PocketTTS (voice:" not in html
+
+
+def test_generate_footer_html_uses_nvidia_tts_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(streamlit_app.settings.voice, "TTS_PROVIDER", "nvidia")
+    monkeypatch.setattr(
+        streamlit_app.settings.voice,
+        "NVIDIA_TTS_VOICE",
+        "Magpie-Multilingual.EN-US.Leo",
+    )
+
+    html = streamlit_app.generate_footer_html()
+
+    assert "https://docs.livekit.io/agents/models/tts/nvidia/" in html
+    assert "NVIDIA Riva (voice: Magpie-Multilingual.EN-US.Leo)" in html
+    assert "PocketTTS (voice:" not in html

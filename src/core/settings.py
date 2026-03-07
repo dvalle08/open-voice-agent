@@ -61,11 +61,38 @@ class CoreSettings(BaseSettings):
 class VoiceSettings(CoreSettings):
     TTS_PROVIDER: str = Field(
         default="deepgram",
-        description="TTS provider: 'pocket' or 'deepgram'",
+        description="TTS provider: 'pocket', 'deepgram', or 'nvidia'",
     )
     DEEPGRAM_API_KEY: Optional[str] = Field(
         default=None,
         description="Deepgram API key for TTS when TTS_PROVIDER=deepgram",
+    )
+    NVIDIA_TTS_API_KEY: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional NVIDIA API key override for TTS when TTS_PROVIDER=nvidia; "
+            "falls back to NVIDIA_API_KEY when unset"
+        ),
+    )
+    NVIDIA_TTS_VOICE: str = Field(
+        default="Magpie-Multilingual.EN-US.Leo",
+        description="Default NVIDIA Riva TTS voice name",
+    )
+    NVIDIA_TTS_LANGUAGE_CODE: str = Field(
+        default="en-US",
+        description="Language code for NVIDIA TTS",
+    )
+    NVIDIA_TTS_SERVER: str = Field(
+        default="grpc.nvcf.nvidia.com:443",
+        description="NVIDIA Riva TTS server address",
+    )
+    NVIDIA_TTS_FUNCTION_ID: str = Field(
+        default="877104f7-e885-42b9-8de8-f6e4c6303969",
+        description="NVIDIA Cloud Functions function ID for TTS",
+    )
+    NVIDIA_TTS_USE_SSL: bool = Field(
+        default=True,
+        description="Use SSL/TLS for NVIDIA TTS requests",
     )
     POCKET_TTS_VOICE: str = Field(
         default="alba",
@@ -154,8 +181,8 @@ class VoiceSettings(CoreSettings):
     @model_validator(mode="after")
     def validate_tts_settings(self) -> "VoiceSettings":
         provider = (self.TTS_PROVIDER or "").strip().lower()
-        if provider not in {"pocket", "deepgram"}:
-            raise ValueError("TTS_PROVIDER must be either 'pocket' or 'deepgram'")
+        if provider not in {"pocket", "deepgram", "nvidia"}:
+            raise ValueError("TTS_PROVIDER must be either 'pocket', 'deepgram', or 'nvidia'")
 
         self.TTS_PROVIDER = provider
 
@@ -379,6 +406,19 @@ class Settings(CoreSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     livekit: LiveKitSettings = Field(default_factory=LiveKitSettings)
     langfuse: LangfuseSettings = Field(default_factory=LangfuseSettings)
+
+    @model_validator(mode="after")
+    def validate_cross_provider_settings(self) -> "Settings":
+        if self.voice.TTS_PROVIDER == "nvidia" and self.voice.NVIDIA_TTS_USE_SSL:
+            tts_api_key = (self.voice.NVIDIA_TTS_API_KEY or "").strip()
+            shared_api_key = (self.llm.NVIDIA_API_KEY or "").strip()
+            if not tts_api_key and not shared_api_key:
+                raise ValueError(
+                    "NVIDIA_TTS_API_KEY or NVIDIA_API_KEY is required when "
+                    "TTS_PROVIDER=nvidia and NVIDIA_TTS_USE_SSL=true"
+                )
+
+        return self
 
 
 try:

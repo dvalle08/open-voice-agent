@@ -48,3 +48,51 @@ def test_create_tts_uses_deepgram_provider(monkeypatch) -> None:
         "model": "aura-2-thalia-en",
         "api_key": "deepgram-test-key",
     }
+
+
+def test_create_tts_uses_nvidia_provider_with_shared_api_key_fallback(monkeypatch) -> None:
+    nvidia_calls: dict[str, object] = {}
+
+    class _FakeNvidiaTTS:
+        def __init__(
+            self,
+            *,
+            voice: str,
+            language_code: str,
+            server: str,
+            function_id: str,
+            use_ssl: bool,
+            api_key: str | None = None,
+        ) -> None:
+            nvidia_calls["voice"] = voice
+            nvidia_calls["language_code"] = language_code
+            nvidia_calls["server"] = server
+            nvidia_calls["function_id"] = function_id
+            nvidia_calls["use_ssl"] = use_ssl
+            nvidia_calls["api_key"] = api_key
+
+    monkeypatch.setattr(settings.voice, "TTS_PROVIDER", "nvidia")
+    monkeypatch.setattr(settings.voice, "NVIDIA_TTS_API_KEY", None)
+    monkeypatch.setattr(settings.voice, "NVIDIA_TTS_VOICE", "Magpie-Multilingual.EN-US.Leo")
+    monkeypatch.setattr(settings.voice, "NVIDIA_TTS_LANGUAGE_CODE", "en-US")
+    monkeypatch.setattr(settings.voice, "NVIDIA_TTS_SERVER", "grpc.nvcf.nvidia.com:443")
+    monkeypatch.setattr(
+        settings.voice,
+        "NVIDIA_TTS_FUNCTION_ID",
+        "877104f7-e885-42b9-8de8-f6e4c6303969",
+    )
+    monkeypatch.setattr(settings.voice, "NVIDIA_TTS_USE_SSL", True)
+    monkeypatch.setattr(settings.llm, "NVIDIA_API_KEY", "shared-nvidia-test-key")
+    monkeypatch.setattr(tts_factory.nvidia, "TTS", _FakeNvidiaTTS)
+
+    tts_engine = tts_factory.create_tts()
+
+    assert isinstance(tts_engine, _FakeNvidiaTTS)
+    assert nvidia_calls == {
+        "voice": "Magpie-Multilingual.EN-US.Leo",
+        "language_code": "en-US",
+        "server": "grpc.nvcf.nvidia.com:443",
+        "function_id": "877104f7-e885-42b9-8de8-f6e4c6303969",
+        "use_ssl": True,
+        "api_key": "shared-nvidia-test-key",
+    }
