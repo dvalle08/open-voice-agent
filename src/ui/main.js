@@ -241,13 +241,19 @@ function handleTraceUpdate(payload) {
   const traceUrl = buildLangfuseTraceUrl(langfuseHost, langfuseProjectId, traceId);
 
   traceHistory = traceHistory.filter((item) => item.traceId !== traceId);
-  traceHistory.unshift({
+  traceHistory.push({
     traceId,
     traceUrl,
     createdAt: timestamp,
   });
+  traceHistory.sort((a, b) => {
+    if (a.createdAt !== b.createdAt) {
+      return a.createdAt - b.createdAt;
+    }
+    return a.traceId.localeCompare(b.traceId);
+  });
   if (traceHistory.length > TRACE_HISTORY_LIMIT) {
-    traceHistory = traceHistory.slice(0, TRACE_HISTORY_LIMIT);
+    traceHistory = traceHistory.slice(-TRACE_HISTORY_LIMIT);
   }
   updateTraceDropdownUI();
 }
