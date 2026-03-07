@@ -196,7 +196,7 @@ class LLMSettings(CoreSettings):
         description="OpenAI-compatible Ollama endpoint",
     )
     OLLAMA_MODEL: str = Field(
-        default= "ministral-3:8b", #"qwen3:8b" #"qwen3.5:4b", #"ministral-3:8b", #"qwen2.5:7b"
+        default= "kimi-k2.5", #"ministral-3:8b", #"qwen2.5:7b" #"qwen3:8b" #"qwen3.5:4b",
         description="Ollama model tag",
     )
     OLLAMA_API_KEY: Optional[str] = Field(
@@ -261,6 +261,14 @@ class LangfuseSettings(CoreSettings):
     LANGFUSE_BASE_URL: Optional[str] = Field(
         default=None,
         description="Alternative to LANGFUSE_HOST",
+    )
+    LANGFUSE_PROJECT_ID: Optional[str] = Field(
+        default="cmlrbwznk04ogad07cosnpxoh",
+        description="Langfuse project ID used to build UI deep links",
+    )
+    LANGFUSE_PUBLIC_TRACES: bool = Field(
+        default=True,
+        description="Mark emitted Langfuse traces as public for shareable URLs",
     )
     LANGFUSE_TRACE_FINALIZE_TIMEOUT_MS: float = Field(
         default=8000.0,

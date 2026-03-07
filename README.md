@@ -167,12 +167,22 @@ LLM_PROVIDER=ollama
 LANGFUSE_ENABLED=true
 LANGFUSE_HOST=https://cloud.langfuse.com
 # LANGFUSE_BASE_URL=https://us.cloud.langfuse.com  # optional alternative
+LANGFUSE_PROJECT_ID=clkpwwm0m000gmm094odg11gi
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_PUBLIC_TRACES=false
 ```
 
 Each finalized user transcript creates a new trace with spans `stt`, `llm`, and `tts`.
 The Streamlit client generates a new `session_id` on each Connect click and sends it to the agent.
+The header includes a live traces dropdown that updates as finalized turns arrive.
+Each entry shows the full `trace_id`, local created-at time, and an `Open Trace` link to:
+`https://cloud.langfuse.com/project/<project_id>/traces/<trace_id>`.
+
+Notes:
+
+- `LANGFUSE_PROJECT_ID` is required to build trace deep links in the UI.
+- Session pages are intentionally not linked from the frontend because they are project-member scoped in Langfuse Cloud.
 
 ### LLM runtime resilience
 

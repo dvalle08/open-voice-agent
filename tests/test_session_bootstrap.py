@@ -23,6 +23,11 @@ def test_build_session_bootstrap_payload_returns_fresh_room_and_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(settings.langfuse, "LANGFUSE_ENABLED", True)
+    monkeypatch.setattr(settings.langfuse, "LANGFUSE_HOST", "https://cloud.langfuse.com/")
+    monkeypatch.setattr(settings.langfuse, "LANGFUSE_BASE_URL", None)
+    monkeypatch.setattr(settings.langfuse, "LANGFUSE_PROJECT_ID", "project-xyz")
+    monkeypatch.setattr(settings.langfuse, "LANGFUSE_PUBLIC_TRACES", True)
 
     def fake_create_room_token(*, room_name: str) -> LiveKitToken:
         return LiveKitToken(
@@ -62,6 +67,14 @@ def test_build_session_bootstrap_payload_returns_fresh_room_and_session(
     assert second.token == f"token-{second.room_name}"
     assert first.dispatch_worker_id == "worker-123"
     assert second.dispatch_worker_id == "worker-123"
+    assert first.langfuse_enabled is True
+    assert second.langfuse_enabled is True
+    assert first.langfuse_host == "https://cloud.langfuse.com"
+    assert second.langfuse_host == "https://cloud.langfuse.com"
+    assert first.langfuse_project_id == "project-xyz"
+    assert second.langfuse_project_id == "project-xyz"
+    assert first.langfuse_public_traces is True
+    assert second.langfuse_public_traces is True
 
     assert len(captured_calls) == 2
     for payload, call in ((first, captured_calls[0]), (second, captured_calls[1])):
@@ -96,6 +109,37 @@ def test_build_session_bootstrap_payload_handles_missing_worker_assignment(
 
     assert payload.dispatch_id == "dispatch-1"
     assert payload.dispatch_worker_id is None
+
+
+def test_build_session_bootstrap_payload_disables_langfuse_links_when_project_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings.langfuse, "LANGFUSE_ENABLED", True)
+    monkeypatch.setattr(settings.langfuse, "LANGFUSE_HOST", "https://cloud.langfuse.com")
+    monkeypatch.setattr(settings.langfuse, "LANGFUSE_BASE_URL", None)
+    monkeypatch.setattr(settings.langfuse, "LANGFUSE_PROJECT_ID", "   ")
+    monkeypatch.setattr(settings.langfuse, "LANGFUSE_PUBLIC_TRACES", False)
+    monkeypatch.setattr(
+        session_bootstrap,
+        "create_room_token",
+        lambda *, room_name: LiveKitToken(
+            token=f"token-{room_name}",
+            room_name=room_name,
+            identity="web-test",
+        ),
+    )
+    monkeypatch.setattr(
+        session_bootstrap,
+        "ensure_agent_dispatched_sync",
+        lambda **_: _make_dispatch(dispatch_id="dispatch-1", worker_id="worker-1"),
+    )
+
+    payload = session_bootstrap.build_session_bootstrap_payload()
+
+    assert payload.langfuse_enabled is False
+    assert payload.langfuse_host == "https://cloud.langfuse.com"
+    assert payload.langfuse_project_id is None
+    assert payload.langfuse_public_traces is False
 
 
 def test_build_session_bootstrap_payload_retries_transient_failure(

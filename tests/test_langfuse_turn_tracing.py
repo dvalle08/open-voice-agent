@@ -277,6 +277,11 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
 
     fake_tracer = _FakeTracer()
     monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+    monkeypatch.setattr(
+        metrics_collector_module.settings.langfuse,
+        "LANGFUSE_PUBLIC_TRACES",
+        False,
+    )
 
     room = _FakeRoom()
     collector = MetricsCollector(
@@ -340,6 +345,7 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
     assert root.attributes["participant_id"] == "web-123"
     assert root.attributes["turn_id"]
     assert root.attributes["langfuse.trace.output"] == "hi, how can I help?"
+    assert root.attributes["langfuse.trace.public"] is False
     assert root.attributes["latency_ms.eou_delay"] == pytest.approx(1100.0)
     assert root.attributes["latency_ms.stt_finalization"] == pytest.approx(250.0)
     assert root.attributes["latency_ms.stt_total"] == pytest.approx(1350.0)
@@ -422,6 +428,50 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
     assert len(trace_updates) == 1
     assert trace_updates[0]["session_id"] == "session-abc"
     assert trace_updates[0]["trace_id"]
+
+
+def test_turn_trace_marks_public_when_langfuse_public_traces_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+    monkeypatch.setattr(
+        metrics_collector_module.settings.langfuse,
+        "LANGFUSE_PUBLIC_TRACES",
+        True,
+    )
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-public",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("hello", is_final=True)
+        await collector.on_metrics_collected(_make_stt_metrics("stt-public"))
+        await collector.on_metrics_collected(
+            _make_eou_metrics("speech-public", delay=0.8, transcription_delay=0.1)
+        )
+        await collector.on_metrics_collected(_make_llm_metrics("speech-public"))
+        await collector.on_conversation_item_added(role="assistant", content="hi")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-public"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    root = fake_tracer.spans[0]
+    assert root.attributes["langfuse.trace.public"] is True
 
 
 def test_turn_trace_includes_tool_spans_between_llm_and_tts(

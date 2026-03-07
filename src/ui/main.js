@@ -59,10 +59,198 @@ const toolDescEl = document.getElementById("live-tool-desc");
 const toolListEl = document.getElementById("live-tool-list");
 const postToolStageRowEl = document.getElementById("post-tool-stage-row");
 const totalTurnCardEl = document.getElementById("total-turn-card");
+const traceDropdownEl = document.getElementById("trace-dropdown");
+const traceDropdownToggleEl = document.getElementById("trace-dropdown-toggle");
+const traceDropdownLabelEl = document.getElementById("trace-dropdown-label");
+const traceDropdownMenuEl = document.getElementById("trace-dropdown-menu");
+const traceDropdownListEl = document.getElementById("trace-dropdown-list");
+const traceDropdownEmptyEl = document.getElementById("trace-dropdown-empty");
 let activeLiveSpeechId = null;
 let liveTurnValues = createEmptyLiveTurnValues();
 let toolPhaseExpanded = true;
 let toolTurnActive = false;
+let langfuseEnabled = false;
+let langfuseHost = null;
+let langfuseProjectId = null;
+let traceHistory = [];
+const TRACE_HISTORY_LIMIT = 100;
+
+function normalizeNonEmptyString(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeLangfuseHost(value) {
+  const normalized = normalizeNonEmptyString(value);
+  if (!normalized) return null;
+  const withoutSlash = normalized.replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(withoutSlash)) return null;
+  return withoutSlash;
+}
+
+function buildLangfuseTraceUrl(host, projectId, traceId) {
+  return `${host}/project/${encodeURIComponent(projectId)}/traces/${encodeURIComponent(traceId)}`;
+}
+
+function formatTraceCreatedAtLocal(epochSeconds) {
+  if (typeof epochSeconds !== "number" || !Number.isFinite(epochSeconds)) {
+    return "--";
+  }
+  const date = new Date(epochSeconds * 1000);
+  if (Number.isNaN(date.getTime())) {
+    return "--";
+  }
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function closeTraceDropdown() {
+  if (traceDropdownMenuEl) {
+    traceDropdownMenuEl.hidden = true;
+  }
+  if (traceDropdownToggleEl) {
+    traceDropdownToggleEl.setAttribute("aria-expanded", "false");
+  }
+}
+
+function renderTraceHistory() {
+  if (!traceDropdownListEl || !traceDropdownEmptyEl) return;
+  traceDropdownListEl.innerHTML = "";
+  if (traceHistory.length === 0) {
+    traceDropdownEmptyEl.hidden = false;
+    return;
+  }
+
+  traceDropdownEmptyEl.hidden = true;
+  traceHistory.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "trace-entry";
+
+    const meta = document.createElement("div");
+    meta.className = "trace-entry-meta";
+
+    const idEl = document.createElement("span");
+    idEl.className = "trace-entry-id";
+    idEl.textContent = item.traceId;
+    idEl.title = item.traceId;
+
+    const timeEl = document.createElement("span");
+    timeEl.className = "trace-entry-time";
+    timeEl.textContent = `Created at ${formatTraceCreatedAtLocal(item.createdAt)}`;
+
+    const openLink = document.createElement("a");
+    openLink.className = "trace-entry-open";
+    openLink.href = item.traceUrl;
+    openLink.target = "_blank";
+    openLink.rel = "noopener noreferrer";
+    openLink.textContent = "Open Trace";
+
+    meta.appendChild(idEl);
+    meta.appendChild(timeEl);
+    row.appendChild(meta);
+    row.appendChild(openLink);
+    traceDropdownListEl.appendChild(row);
+  });
+}
+
+function updateTraceDropdownUI() {
+  const hasLinkConfig = Boolean(langfuseEnabled && langfuseHost && langfuseProjectId);
+  let label = "Connect to initialize trace links.";
+  let toggleDisabled = true;
+
+  if (!langfuseEnabled) {
+    label = "Langfuse tracing is disabled for this session.";
+  } else if (!hasLinkConfig) {
+    label = "Langfuse host/project is missing.";
+  } else if (traceHistory.length === 0) {
+    label = "Waiting for first trace...";
+    toggleDisabled = false;
+  } else {
+    label = `Traces (${traceHistory.length})`;
+    toggleDisabled = false;
+  }
+
+  if (traceDropdownLabelEl) {
+    traceDropdownLabelEl.textContent = label;
+  }
+
+  if (traceDropdownToggleEl) {
+    traceDropdownToggleEl.disabled = toggleDisabled;
+    if (toggleDisabled) {
+      closeTraceDropdown();
+    }
+  }
+
+  if (traceDropdownEmptyEl) {
+    if (!langfuseEnabled) {
+      traceDropdownEmptyEl.textContent = "Langfuse tracing is disabled.";
+    } else if (!hasLinkConfig) {
+      traceDropdownEmptyEl.textContent = "Langfuse host/project is missing; links unavailable.";
+    } else {
+      traceDropdownEmptyEl.textContent = "No traces yet.";
+    }
+  }
+
+  renderTraceHistory();
+}
+
+function resetTracePanel() {
+  langfuseEnabled = false;
+  langfuseHost = null;
+  langfuseProjectId = null;
+  traceHistory = [];
+  closeTraceDropdown();
+  updateTraceDropdownUI();
+}
+
+function configureTracePanelFromBootstrap(bootstrap) {
+  langfuseEnabled = bootstrap && bootstrap.langfuse_enabled === true;
+  langfuseHost = normalizeLangfuseHost(bootstrap ? bootstrap.langfuse_host : null);
+  langfuseProjectId = normalizeNonEmptyString(bootstrap ? bootstrap.langfuse_project_id : null);
+  traceHistory = [];
+  closeTraceDropdown();
+  updateTraceDropdownUI();
+}
+
+function handleTraceUpdate(payload) {
+  if (!payload || payload.type !== "trace_update") return;
+  if (!currentSessionId) return;
+
+  const payloadSessionId = normalizeNonEmptyString(payload.session_id);
+  if (payloadSessionId && payloadSessionId !== currentSessionId) return;
+
+  const traceId = normalizeNonEmptyString(payload.trace_id);
+  if (!traceId) return;
+
+  if (!(langfuseEnabled && langfuseHost && langfuseProjectId)) {
+    updateTraceDropdownUI();
+    return;
+  }
+
+  const timestampRaw = (typeof payload.timestamp === "number" && Number.isFinite(payload.timestamp))
+    ? payload.timestamp
+    : (Date.now() / 1000);
+  const timestamp = timestampRaw > 1e12 ? (timestampRaw / 1000) : timestampRaw;
+  const traceUrl = buildLangfuseTraceUrl(langfuseHost, langfuseProjectId, traceId);
+
+  traceHistory = traceHistory.filter((item) => item.traceId !== traceId);
+  traceHistory.unshift({
+    traceId,
+    traceUrl,
+    createdAt: timestamp,
+  });
+  if (traceHistory.length > TRACE_HISTORY_LIMIT) {
+    traceHistory = traceHistory.slice(0, TRACE_HISTORY_LIMIT);
+  }
+  updateTraceDropdownUI();
+}
 
 function createEmptyLiveTurnValues() {
   return {
@@ -363,6 +551,30 @@ window.addEventListener('DOMContentLoaded', () => {
   }
   setToolPhaseExpanded(true);
   clearToolPipelineView();
+  if (traceDropdownToggleEl) {
+    traceDropdownToggleEl.addEventListener("click", () => {
+      if (!traceDropdownMenuEl) return;
+      const nextOpen = traceDropdownMenuEl.hidden;
+      traceDropdownMenuEl.hidden = !nextOpen;
+      traceDropdownToggleEl.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+    });
+  }
+  document.addEventListener("click", (event) => {
+    if (!traceDropdownEl) return;
+    if (!traceDropdownEl.contains(event.target)) {
+      closeTraceDropdown();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeTraceDropdown();
+    }
+  });
+  if (traceDropdownListEl) {
+    traceDropdownListEl.addEventListener("click", () => {
+      closeTraceDropdown();
+    });
+  }
 });
 
 function setStatus(text, state) {
@@ -618,6 +830,7 @@ async function connectToRoom() {
 
     currentSessionId = bootstrap.session_id || crypto.randomUUID();
     currentRoomName = bootstrap.room_name || null;
+    configureTracePanelFromBootstrap(bootstrap);
 
     if (!bootstrap.token) {
       throw new Error("Session bootstrap did not return a token");
@@ -664,6 +877,7 @@ async function connectToRoom() {
       localTrack = null;
       currentSessionId = null;
       currentRoomName = null;
+      resetTracePanel();
       muted = false;
       resetMuteButton();
       if (remoteAudioTrack) {
@@ -695,6 +909,8 @@ async function connectToRoom() {
             renderTurn(metricsData);
           } else if (metricsData.type === "turn_pipeline_summary") {
             renderTurnPipelineSummary(metricsData);
+          } else if (metricsData.type === "trace_update") {
+            handleTraceUpdate(metricsData);
           }
         } catch (error) {
           console.error("Failed to parse metrics:", error);
@@ -734,6 +950,7 @@ async function connectToRoom() {
     }
     currentSessionId = null;
     currentRoomName = null;
+    resetTracePanel();
     muted = false;
     resetMuteButton();
     if (remoteAudioTrack) {
@@ -795,6 +1012,7 @@ async function disconnectRoom() {
     if (disconnectSeq === activeConnectionSeq) {
       currentSessionId = null;
       currentRoomName = null;
+      resetTracePanel();
       muted = false;
       resetMuteButton();
       cleanupWave();
@@ -866,6 +1084,7 @@ setConnectionState(CONNECTION_STATES.IDLE);
 setHandoffCardVisible(false);
 setTotalCardMode(false);
 clearToolPipelineView();
+resetTracePanel();
 
 connectBtn.addEventListener("click", () => {
   connectToRoom().catch((error) => {

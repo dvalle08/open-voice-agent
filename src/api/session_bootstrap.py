@@ -36,6 +36,10 @@ class SessionBootstrapPayload:
     session_id: str
     dispatch_id: str | None
     dispatch_worker_id: str | None
+    langfuse_enabled: bool
+    langfuse_host: str | None
+    langfuse_project_id: str | None
+    langfuse_public_traces: bool
 
 
 def build_session_bootstrap_payload() -> SessionBootstrapPayload:
@@ -85,6 +89,9 @@ def _build_session_bootstrap_payload_once() -> SessionBootstrapPayload:
             assigned_worker_id = state.worker_id
             break
 
+    langfuse_host = _normalize_langfuse_host()
+    langfuse_project_id = _normalize_langfuse_project_id()
+
     payload = SessionBootstrapPayload(
         room_name=room_name,
         token=token_data.token,
@@ -92,6 +99,14 @@ def _build_session_bootstrap_payload_once() -> SessionBootstrapPayload:
         session_id=session_id,
         dispatch_id=getattr(dispatch, "id", None),
         dispatch_worker_id=assigned_worker_id,
+        langfuse_enabled=bool(
+            settings.langfuse.LANGFUSE_ENABLED
+            and langfuse_host
+            and langfuse_project_id
+        ),
+        langfuse_host=langfuse_host,
+        langfuse_project_id=langfuse_project_id,
+        langfuse_public_traces=bool(settings.langfuse.LANGFUSE_PUBLIC_TRACES),
     )
     logger.info(
         "Prepared session bootstrap payload room=%s participant=%s dispatch_id=%s worker_id=%s",
@@ -101,6 +116,22 @@ def _build_session_bootstrap_payload_once() -> SessionBootstrapPayload:
         payload.dispatch_worker_id or "unassigned",
     )
     return payload
+
+
+def _normalize_langfuse_host() -> str | None:
+    host = settings.langfuse.LANGFUSE_HOST or settings.langfuse.LANGFUSE_BASE_URL
+    if not isinstance(host, str):
+        return None
+    normalized = host.strip().rstrip("/")
+    return normalized or None
+
+
+def _normalize_langfuse_project_id() -> str | None:
+    project_id = settings.langfuse.LANGFUSE_PROJECT_ID
+    if not isinstance(project_id, str):
+        return None
+    normalized = project_id.strip()
+    return normalized or None
 
 
 def _is_retryable_bootstrap_error(exc: Exception) -> bool:

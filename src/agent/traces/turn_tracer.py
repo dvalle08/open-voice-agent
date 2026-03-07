@@ -1997,6 +1997,7 @@ def _set_root_attributes(
         "langfuse.trace.name": "turn",
         "langfuse.trace.input": turn.user_transcript,
         "langfuse.trace.output": trace_output,
+        "langfuse.trace.public": bool(settings.langfuse.LANGFUSE_PUBLIC_TRACES),
         "langfuse.trace.metadata.room_id": turn.room_id,
         "langfuse.trace.metadata.participant_id": turn.participant_id,
         "langfuse.trace.metadata.turn_id": turn.turn_id,
