@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import date
 from typing import Any
 
 import pytest
@@ -15,7 +16,10 @@ from src.agent.models.llm_runtime import (
     resolve_mcp_runtime_mode,
     run_startup_greeting,
 )
-from src.agent.prompts.assistant import ASSISTANT_INSTRUCTIONS
+from src.agent.prompts.assistant import (
+    ASSISTANT_INSTRUCTIONS,
+    build_assistant_instructions,
+)
 from src.agent.prompts.runtime import MCP_STARTUP_GREETING
 from src.agent.runtime.tasks import (
     cancel_task_for_shutdown,
@@ -506,6 +510,17 @@ def test_assistant_instructions_enforce_ultra_short_answers() -> None:
 def test_assistant_instructions_disable_tools_for_self_description() -> None:
     assert "For self-description requests" in ASSISTANT_INSTRUCTIONS
     assert "do not call tools" in ASSISTANT_INSTRUCTIONS
+
+
+def test_build_assistant_instructions_includes_current_date() -> None:
+    instructions = build_assistant_instructions(current_date=date(2026, 3, 7))
+    assert "Current date: March 7, 2026." in instructions
+
+
+def test_assistant_instructions_include_capabilities_and_limitations() -> None:
+    instructions = build_assistant_instructions(current_date=date(2026, 3, 7))
+    assert "direct answer mode and tool-assisted mode" in instructions
+    assert "If needed tools are unavailable for a request" in instructions
 
 
 def testrun_llm_warmup_consumes_first_chunk_and_closes_stream() -> None:

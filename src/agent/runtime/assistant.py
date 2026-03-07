@@ -25,7 +25,7 @@ from livekit.agents.voice.events import (
     UserInputTranscribedEvent,
 )
 
-from src.agent.prompts.assistant import ASSISTANT_INSTRUCTIONS
+from src.agent.prompts.assistant import build_assistant_instructions
 from src.agent.tools.feedback import ToolFeedbackController
 from src.agent.tools.pre_tool_feedback import inject_pre_tool_feedback
 from src.agent.traces.errors import error_detail, error_recoverable, error_type_name
@@ -43,7 +43,7 @@ class Assistant(Agent):
         tool_feedback: ToolFeedbackController | None = None,
     ) -> None:
         super().__init__(
-            instructions=ASSISTANT_INSTRUCTIONS,
+            instructions=build_assistant_instructions(),
         )
         self._metrics_collector = metrics_collector
         self._room_name = room_name

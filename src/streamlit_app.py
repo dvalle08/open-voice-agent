@@ -57,10 +57,12 @@ def generate_footer_html() -> str:
     llm_provider = settings.llm.LLM_PROVIDER.lower()
     if llm_provider == "nvidia":
         llm_url = "https://build.nvidia.com/"
-        llm_display = extract_display_name(settings.llm.NVIDIA_MODEL, "nvidia")
+        llm_model_display = extract_display_name(settings.llm.NVIDIA_MODEL, "nvidia")
+        llm_display = f"NVIDIA ({llm_model_display})"
     elif llm_provider == "ollama":
         llm_url = "https://ollama.com/"
-        llm_display = extract_display_name(settings.llm.OLLAMA_MODEL, "ollama")
+        llm_model_display = extract_display_name(settings.llm.OLLAMA_MODEL, "ollama")
+        llm_display = f"Ollama ({llm_model_display})"
     else:
         llm_url = "#"
         llm_display = f"Unknown LLM ({llm_provider})"

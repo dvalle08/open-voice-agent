@@ -14,4 +14,4 @@ def test_generate_footer_html_uses_ollama_provider(
     html = streamlit_app.generate_footer_html()
 
     assert "https://ollama.com/" in html
-    assert "qwen2.5:7b" in html
+    assert "Ollama (qwen2.5:7b)" in html
