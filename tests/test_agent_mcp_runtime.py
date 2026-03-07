@@ -496,22 +496,40 @@ def test_build_llm_runtime_passes_ollama_disable_thinking_payload(
 
 def test_assistant_instructions_enforce_ultra_short_answers() -> None:
     assert "Answer as quickly as possible." in ASSISTANT_INSTRUCTIONS
-    assert "Keep answers short by default, usually one short sentence." in ASSISTANT_INSTRUCTIONS
+    assert "Give the shortest complete answer." in ASSISTANT_INSTRUCTIONS
+    assert "Default to one short sentence." in ASSISTANT_INSTRUCTIONS
+    assert "If a few words are enough, use a few words." in ASSISTANT_INSTRUCTIONS
+    assert "Expand only when the user asks or accuracy requires it." in ASSISTANT_INSTRUCTIONS
+    assert "The user only speaks to you, not types, so do not ask them to write, type, paste, or use chat." in ASSISTANT_INSTRUCTIONS
 
 
 def test_assistant_instructions_prioritize_knowledge_before_tools() -> None:
-    assert "Answer from your own knowledge and the current configuration summary first." in ASSISTANT_INSTRUCTIONS
-    assert "If helpful, offer to explain how you work or to look something up." in ASSISTANT_INSTRUCTIONS
+    assert "Answer from your own knowledge first, then from the setup summary." in ASSISTANT_INSTRUCTIONS
 
 
 def test_assistant_instructions_limit_huggingface_and_livekit_tools() -> None:
-    assert "Use Hugging Face tools only when the answer is not in your own knowledge or the current configuration summary." in ASSISTANT_INSTRUCTIONS
-    assert "Use LiveKit tools only for LiveKit-specific questions" in ASSISTANT_INSTRUCTIONS
+    assert "Do not claim you can generate or edit images." in ASSISTANT_INSTRUCTIONS
+    assert "Use Hugging Face tools only when needed and only if they are available in the current session." in ASSISTANT_INSTRUCTIONS
+    assert "Use LiveKit tools only for LiveKit-specific questions not covered by your own knowledge or the setup summary." in ASSISTANT_INSTRUCTIONS
 
 
-def test_assistant_instructions_handle_self_description_from_summary() -> None:
-    assert "For self-description or setup questions" in ASSISTANT_INSTRUCTIONS
-    assert "answer directly from these instructions and the current configuration summary" in ASSISTANT_INSTRUCTIONS
+def test_assistant_instructions_describe_pipeline_identity() -> None:
+    assert (
+        "You are Open Voice Agent, a real-time voice pipeline."
+        in ASSISTANT_INSTRUCTIONS
+    )
+    assert (
+        "You are a pipeline, not a single model."
+        in ASSISTANT_INSTRUCTIONS
+    )
+    assert (
+        "For self-description, describe the pipeline briefly and mention VAD, turn detection, STT, LLM, and TTS only when relevant."
+        in ASSISTANT_INSTRUCTIONS
+    )
+
+
+def test_assistant_instructions_handle_setup_questions_from_summary() -> None:
+    assert "For setup questions, answer from the setup summary." in ASSISTANT_INSTRUCTIONS
 
 
 def test_build_assistant_instructions_includes_current_date() -> None:
@@ -521,7 +539,12 @@ def test_build_assistant_instructions_includes_current_date() -> None:
 
 def test_assistant_instructions_include_capabilities_and_limitations() -> None:
     instructions = build_assistant_instructions(current_date=date(2026, 3, 7))
-    assert "If helpful, offer to explain how you work or to look something up." in instructions
+    assert "Priority 1. Identity." in instructions
+    assert "Priority 2. Response style." in instructions
+    assert "Priority 3. Tools." in instructions
+    assert "Priority 4. Safety and setup." in instructions
+    assert "The user only speaks to you, not types" in instructions
+    assert "Do not claim you can generate or edit images." in instructions
     assert "Only call tools that are available in the current session." in instructions
     assert "Never invent tools." in instructions
     assert "Use plain voice-friendly text only" in instructions
@@ -530,11 +553,12 @@ def test_assistant_instructions_include_capabilities_and_limitations() -> None:
 def test_build_assistant_instructions_include_configuration_summary() -> None:
     instructions = build_assistant_instructions(current_date=date(2026, 3, 7))
 
-    assert "Current configuration summary" in instructions
-    assert "STT: provider=" in instructions
-    assert "LLM: provider=" in instructions
-    assert "TTS: provider=pocket-tts" in instructions
-    assert "LiveKit audio:" in instructions
+    assert "Setup summary:" in instructions
+    assert "Voice stack: STT provider=" in instructions
+    assert "LLM provider=" in instructions
+    assert "TTS provider=pocket-tts" in instructions
+    assert "LiveKit: runtime agent_name=" in instructions
+    assert "audio sample_rate=" in instructions
     assert "MCP runtime:" in instructions
 
 
