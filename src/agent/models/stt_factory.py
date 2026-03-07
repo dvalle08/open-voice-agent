@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from livekit.plugins import nvidia
+from livekit.plugins import deepgram, nvidia
 
 from src.core.logger import logger
 from src.core.settings import settings
@@ -38,6 +38,18 @@ def create_stt():
             api_key=api_key,
         )
 
+    if provider == "deepgram":
+        logger.info(
+            "Initializing Deepgram STT: %s (language: %s)",
+            settings.stt.DEEPGRAM_STT_MODEL,
+            settings.stt.DEEPGRAM_STT_LANGUAGE,
+        )
+        return deepgram.STT(
+            model=settings.stt.DEEPGRAM_STT_MODEL,
+            language=settings.stt.DEEPGRAM_STT_LANGUAGE,
+            api_key=settings.voice.DEEPGRAM_API_KEY,
+        )
+
     if provider == "moonshine":
         logger.info(
             f"Initializing Moonshine STT: {settings.stt.MOONSHINE_MODEL_ID} "
@@ -48,4 +60,6 @@ def create_stt():
             language=settings.stt.MOONSHINE_LANGUAGE,
         )
 
-    raise ValueError(f"Unknown STT provider: {provider}. Must be 'nvidia' or 'moonshine'")
+    raise ValueError(
+        f"Unknown STT provider: {provider}. Must be 'moonshine', 'nvidia', or 'deepgram'"
+    )

@@ -24,6 +24,9 @@ def _format_agent_config_summary(current_settings: Settings) -> str:
     if stt_provider == "nvidia":
         stt_model = stt.get("NVIDIA_STT_MODEL")
         stt_language = stt.get("NVIDIA_STT_LANGUAGE_CODE")
+    elif stt_provider == "deepgram":
+        stt_model = stt.get("DEEPGRAM_STT_MODEL")
+        stt_language = stt.get("DEEPGRAM_STT_LANGUAGE")
     else:
         stt_model = stt.get("MOONSHINE_MODEL_ID")
         stt_language = stt.get("MOONSHINE_LANGUAGE")

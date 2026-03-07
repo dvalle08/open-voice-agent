@@ -62,6 +62,15 @@ def fallback_participant_prefix() -> str | None:
     return None
 
 
+def _resolve_stt_metrics_model_name() -> str:
+    provider = settings.stt.STT_PROVIDER.lower()
+    if provider == "moonshine":
+        return settings.stt.MOONSHINE_MODEL_ID
+    if provider == "deepgram":
+        return settings.stt.DEEPGRAM_STT_MODEL
+    return settings.stt.NVIDIA_STT_MODEL
+
+
 def _build_session_connect_options() -> tuple[APIConnectOptions, SessionConnectOptions]:
     llm_conn_options = build_api_connect_options(
         max_retry=settings.llm.LLM_CONN_MAX_RETRY,
@@ -120,11 +129,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
     initial_room_id = getattr(room_info, "sid", None) or ctx.room.name
     metrics_collector = MetricsCollector(
         room=ctx.room,
-        model_name=(
-            settings.stt.MOONSHINE_MODEL_ID
-            if settings.stt.STT_PROVIDER == "moonshine"
-            else settings.stt.NVIDIA_STT_MODEL
-        ),
+        model_name=_resolve_stt_metrics_model_name(),
         room_name=ctx.room.name,
         room_id=initial_room_id,
         participant_id=initial_participant_id,

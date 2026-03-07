@@ -603,6 +603,23 @@ def test_build_assistant_instructions_hide_pocket_specific_details_for_nvidia_tt
     assert "lsd_decode_steps=" not in instructions
 
 
+def test_build_assistant_instructions_include_deepgram_stt_details() -> None:
+    settings = Settings()
+    settings.voice.DEEPGRAM_API_KEY = "deepgram-secret-test-value"
+    settings.stt.STT_PROVIDER = "deepgram"
+    settings.stt.DEEPGRAM_STT_MODEL = "nova-3"
+    settings.stt.DEEPGRAM_STT_LANGUAGE = "en-US"
+
+    instructions = build_assistant_instructions(
+        current_date=date(2026, 3, 7),
+        current_settings=settings,
+    )
+
+    assert "STT provider=deepgram, model=nova-3, language=en-US;" in instructions
+    assert "usefulsensors/moonshine-streaming-medium" not in instructions
+    assert "parakeet-1.1b-en-US-asr-streaming-silero-vad-sortformer" not in instructions
+
+
 def test_build_assistant_instructions_redacts_sensitive_values() -> None:
     settings = Settings()
     settings.voice.DEEPGRAM_API_KEY = "deepgram-secret-test-value"

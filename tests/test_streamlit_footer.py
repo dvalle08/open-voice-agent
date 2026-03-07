@@ -10,6 +10,7 @@ def test_generate_footer_html_uses_ollama_provider(
 ) -> None:
     monkeypatch.setattr(streamlit_app.settings.llm, "LLM_PROVIDER", "ollama")
     monkeypatch.setattr(streamlit_app.settings.llm, "OLLAMA_MODEL", "qwen2.5:7b")
+    monkeypatch.setattr(streamlit_app.settings.stt, "STT_PROVIDER", "moonshine")
     monkeypatch.setattr(streamlit_app.settings.voice, "TTS_PROVIDER", "pocket")
     monkeypatch.setattr(streamlit_app.settings.voice, "POCKET_TTS_VOICE", "alba")
 
@@ -25,6 +26,7 @@ def test_generate_footer_html_uses_ollama_provider(
 def test_generate_footer_html_uses_deepgram_tts_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(streamlit_app.settings.stt, "STT_PROVIDER", "moonshine")
     monkeypatch.setattr(streamlit_app.settings.voice, "TTS_PROVIDER", "deepgram")
 
     html = streamlit_app.generate_footer_html()
@@ -37,6 +39,7 @@ def test_generate_footer_html_uses_deepgram_tts_provider(
 def test_generate_footer_html_uses_nvidia_tts_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(streamlit_app.settings.stt, "STT_PROVIDER", "moonshine")
     monkeypatch.setattr(streamlit_app.settings.voice, "TTS_PROVIDER", "nvidia")
     monkeypatch.setattr(
         streamlit_app.settings.voice,
@@ -49,3 +52,20 @@ def test_generate_footer_html_uses_nvidia_tts_provider(
     assert "https://docs.livekit.io/agents/models/tts/nvidia/" in html
     assert "NVIDIA Riva (voice: Magpie-Multilingual.EN-US.Leo)" in html
     assert "PocketTTS (voice:" not in html
+
+
+def test_generate_footer_html_uses_deepgram_stt_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(streamlit_app.settings.stt, "STT_PROVIDER", "deepgram")
+    monkeypatch.setattr(streamlit_app.settings.stt, "DEEPGRAM_STT_MODEL", "nova-3")
+    monkeypatch.setattr(streamlit_app.settings.llm, "LLM_PROVIDER", "ollama")
+    monkeypatch.setattr(streamlit_app.settings.llm, "OLLAMA_MODEL", "qwen2.5:7b")
+    monkeypatch.setattr(streamlit_app.settings.voice, "TTS_PROVIDER", "pocket")
+    monkeypatch.setattr(streamlit_app.settings.voice, "POCKET_TTS_VOICE", "alba")
+
+    html = streamlit_app.generate_footer_html()
+
+    assert "https://deepgram.com/" in html
+    assert "Deepgram (Nova 3)" in html
+    assert "Moonshine STT" not in html

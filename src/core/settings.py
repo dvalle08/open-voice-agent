@@ -60,12 +60,15 @@ class CoreSettings(BaseSettings):
 
 class VoiceSettings(CoreSettings):
     TTS_PROVIDER: str = Field(
-        default="deepgram",
+        default="nvidia",
         description="TTS provider: 'pocket', 'deepgram', or 'nvidia'",
     )
     DEEPGRAM_API_KEY: Optional[str] = Field(
         default=None,
-        description="Deepgram API key for TTS when TTS_PROVIDER=deepgram",
+        description=(
+            "Shared Deepgram API key for STT/TTS when STT_PROVIDER=deepgram "
+            "or TTS_PROVIDER=deepgram"
+        ),
     )
     NVIDIA_TTS_API_KEY: Optional[str] = Field(
         default=None,
@@ -186,19 +189,14 @@ class VoiceSettings(CoreSettings):
 
         self.TTS_PROVIDER = provider
 
-        if provider == "deepgram" and not (self.DEEPGRAM_API_KEY or "").strip():
-            raise ValueError(
-                "DEEPGRAM_API_KEY is required when TTS_PROVIDER=deepgram"
-            )
-
         return self
 
 
 class STTSettings(CoreSettings):
     # Provider selection
     STT_PROVIDER: str = Field(
-        default="moonshine",
-        description="STT provider: 'nvidia' or 'moonshine'"
+        default="deepgram",
+        description="STT provider: 'moonshine', 'nvidia', or 'deepgram'"
     )
 
     # Moonshine STT settings
@@ -224,6 +222,23 @@ class STTSettings(CoreSettings):
         default="en-US",
         description="Language code for NVIDIA STT"
     )
+    DEEPGRAM_STT_MODEL: str = Field(
+        default="nova-3",
+        description="Deepgram STT model ID",
+    )
+    DEEPGRAM_STT_LANGUAGE: str = Field(
+        default="en-US",
+        description="Language code for Deepgram STT",
+    )
+
+    @model_validator(mode="after")
+    def validate_stt_settings(self) -> "STTSettings":
+        provider = (self.STT_PROVIDER or "").strip().lower()
+        if provider not in {"moonshine", "nvidia", "deepgram"}:
+            raise ValueError("STT_PROVIDER must be either 'moonshine', 'nvidia', or 'deepgram'")
+
+        self.STT_PROVIDER = provider
+        return self
 
 
 class LLMSettings(CoreSettings):
@@ -417,6 +432,15 @@ class Settings(CoreSettings):
                     "NVIDIA_TTS_API_KEY or NVIDIA_API_KEY is required when "
                     "TTS_PROVIDER=nvidia and NVIDIA_TTS_USE_SSL=true"
                 )
+
+        if (
+            self.voice.TTS_PROVIDER == "deepgram"
+            or self.stt.STT_PROVIDER == "deepgram"
+        ) and not (self.voice.DEEPGRAM_API_KEY or "").strip():
+            raise ValueError(
+                "DEEPGRAM_API_KEY is required when TTS_PROVIDER=deepgram "
+                "or STT_PROVIDER=deepgram"
+            )
 
         return self
 

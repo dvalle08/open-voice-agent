@@ -146,6 +146,32 @@ NVIDIA_API_KEY=nvapi-xxx
 NVIDIA_MODEL=meta/llama-3.1-8b-instruct
 ```
 
+### STT Provider (choose one)
+
+**Local (Moonshine):**
+```bash
+STT_PROVIDER=moonshine
+MOONSHINE_MODEL_ID=usefulsensors/moonshine-streaming-medium
+MOONSHINE_LANGUAGE=en
+```
+
+**API (Deepgram):**
+```bash
+STT_PROVIDER=deepgram
+DEEPGRAM_STT_MODEL=nova-3
+DEEPGRAM_STT_LANGUAGE=en-US
+DEEPGRAM_API_KEY=your_deepgram_api_key_here
+```
+
+**API (NVIDIA Riva):**
+```bash
+STT_PROVIDER=nvidia
+NVIDIA_STT_MODEL=parakeet-1.1b-en-US-asr-streaming-silero-vad-sortformer
+NVIDIA_STT_LANGUAGE_CODE=en-US
+# Optional override; otherwise falls back to NVIDIA_API_KEY
+NVIDIA_STT_API_KEY=
+```
+
 ### TTS Provider (choose one)
 
 **Local (PocketTTS):**
@@ -174,6 +200,7 @@ NVIDIA_TTS_API_KEY=
 
 - `NVIDIA_TTS_API_KEY` overrides the shared `NVIDIA_API_KEY` when set.
 - For self-hosted Riva, point `NVIDIA_TTS_SERVER` at your server and set `NVIDIA_TTS_USE_SSL=false` if TLS is disabled.
+- `DEEPGRAM_API_KEY` is shared across Deepgram STT and TTS in this app.
 
 See `.env.example` for all available options.
 
@@ -258,6 +285,7 @@ If the UI only shows silence/STT activity and never reaches LLM/TTS:
   - `nvidia`: `NVIDIA_API_KEY` and `NVIDIA_MODEL`
   - `ollama` local: `OLLAMA_CLOUD_MODE=false`, local server reachable at `http://localhost:11434/v1`, and model pulled in Ollama
   - `ollama` cloud: `OLLAMA_CLOUD_MODE=true`, valid `OLLAMA_API_KEY`, and model ID from `/v1/models`
+- Verify Deepgram credentials when using `STT_PROVIDER=deepgram` or `TTS_PROVIDER=deepgram`.
 - Verify NVIDIA STT credentials when using `STT_PROVIDER=nvidia`; the agent logs which STT key source is used.
 - If local memory warnings are noisy, raise `LIVEKIT_JOB_MEMORY_WARN_MB` (for local setups, `6144` is a practical baseline).
 

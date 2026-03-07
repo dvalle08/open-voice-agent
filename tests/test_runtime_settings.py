@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.core.settings import LLMSettings, LiveKitSettings, Settings, VoiceSettings
+from src.core.settings import LLMSettings, LiveKitSettings, STTSettings, Settings, VoiceSettings
 
 
 def test_llm_runtime_tuning_defaults_are_declared() -> None:
@@ -40,6 +40,14 @@ def test_voice_runtime_tuning_defaults_are_declared() -> None:
     assert fields["NVIDIA_TTS_VOICE"].default == "Magpie-Multilingual.EN-US.Leo"
     assert fields["NVIDIA_TTS_USE_SSL"].default is True
     assert fields["POCKET_TTS_CONN_TIMEOUT_SEC"].default == 45.0
+
+
+def test_stt_runtime_tuning_defaults_are_declared() -> None:
+    fields = STTSettings.model_fields
+
+    assert fields["STT_PROVIDER"].default == "moonshine"
+    assert fields["DEEPGRAM_STT_MODEL"].default == "nova-3"
+    assert fields["DEEPGRAM_STT_LANGUAGE"].default == "en-US"
 
 
 def test_llm_runtime_tuning_switches_to_local_ollama_base_url_when_cloud_mode_disabled() -> None:
@@ -83,13 +91,6 @@ def test_voice_runtime_tuning_validation_rejects_invalid_values() -> None:
     ):
         VoiceSettings(TTS_PROVIDER="invalid")
 
-    with pytest.raises(
-        ValidationError,
-        match="DEEPGRAM_API_KEY is required when TTS_PROVIDER=deepgram",
-    ):
-        VoiceSettings(TTS_PROVIDER="deepgram", DEEPGRAM_API_KEY=" ")
-
-
 def test_voice_runtime_tuning_accepts_deepgram_provider_with_key() -> None:
     settings = VoiceSettings(TTS_PROVIDER="DeepGram", DEEPGRAM_API_KEY="test-key")
 
@@ -101,6 +102,60 @@ def test_voice_runtime_tuning_accepts_nvidia_provider() -> None:
     settings = VoiceSettings(TTS_PROVIDER="NVIDIA")
 
     assert settings.TTS_PROVIDER == "nvidia"
+
+
+def test_stt_runtime_tuning_accepts_deepgram_provider() -> None:
+    settings = STTSettings(STT_PROVIDER="DeepGram")
+
+    assert settings.STT_PROVIDER == "deepgram"
+
+
+def test_stt_runtime_tuning_validation_rejects_invalid_provider() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="STT_PROVIDER must be either 'moonshine', 'nvidia', or 'deepgram'",
+    ):
+        STTSettings(STT_PROVIDER="invalid")
+
+
+def test_settings_require_shared_deepgram_key_for_tts_provider() -> None:
+    with pytest.raises(
+        ValidationError,
+        match=(
+            "DEEPGRAM_API_KEY is required when TTS_PROVIDER=deepgram "
+            "or STT_PROVIDER=deepgram"
+        ),
+    ):
+        Settings(
+            voice=VoiceSettings(TTS_PROVIDER="deepgram", DEEPGRAM_API_KEY=" "),
+            llm=LLMSettings(OLLAMA_API_KEY="test-key"),
+        )
+
+
+def test_settings_require_shared_deepgram_key_for_stt_provider() -> None:
+    with pytest.raises(
+        ValidationError,
+        match=(
+            "DEEPGRAM_API_KEY is required when TTS_PROVIDER=deepgram "
+            "or STT_PROVIDER=deepgram"
+        ),
+    ):
+        Settings(
+            voice=VoiceSettings(TTS_PROVIDER="pocket", DEEPGRAM_API_KEY=" "),
+            stt=STTSettings(STT_PROVIDER="deepgram"),
+            llm=LLMSettings(OLLAMA_API_KEY="test-key"),
+        )
+
+
+def test_settings_allow_shared_deepgram_key_for_stt_provider() -> None:
+    settings = Settings(
+        voice=VoiceSettings(TTS_PROVIDER="pocket", DEEPGRAM_API_KEY="deepgram-key"),
+        stt=STTSettings(STT_PROVIDER="deepgram"),
+        llm=LLMSettings(OLLAMA_API_KEY="test-key"),
+    )
+
+    assert settings.stt.STT_PROVIDER == "deepgram"
+    assert settings.voice.DEEPGRAM_API_KEY == "deepgram-key"
 
 
 def test_settings_require_nvidia_tts_or_shared_key_when_ssl_enabled() -> None:

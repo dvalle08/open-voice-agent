@@ -74,6 +74,15 @@ def test_importing_session_registers_multilingual_turn_detector_runner() -> None
     assert "lk_end_of_utterance_multilingual" in _InferenceRunner.registered_runners
 
 
+def test_resolve_stt_metrics_model_name_uses_deepgram_model(monkeypatch) -> None:
+    monkeypatch.setattr(settings.stt, "STT_PROVIDER", "deepgram")
+    monkeypatch.setattr(settings.stt, "DEEPGRAM_STT_MODEL", "nova-3")
+
+    model_name = runtime_session._resolve_stt_metrics_model_name()
+
+    assert model_name == "nova-3"
+
+
 def test_session_handler_runs_llm_warmup_before_session_start(monkeypatch) -> None:
     order: list[str] = []
     created_sessions: list[object] = []
@@ -124,4 +133,3 @@ def test_session_handler_runs_llm_warmup_before_session_start(monkeypatch) -> No
     assert order == ["llm", "start"]
     assert len(created_sessions) == 1
     assert created_sessions[0].start_calls
-

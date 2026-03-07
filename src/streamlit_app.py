@@ -70,6 +70,10 @@ def generate_footer_html() -> str:
     elif stt_provider == "nvidia":
         stt_url = "https://build.nvidia.com/"
         stt_display = extract_display_name(settings.stt.NVIDIA_STT_MODEL, "nvidia")
+    elif stt_provider == "deepgram":
+        stt_url = "https://deepgram.com/"
+        stt_model_display = extract_display_name(settings.stt.DEEPGRAM_STT_MODEL, "deepgram")
+        stt_display = f"Deepgram ({stt_model_display})"
     else:
         stt_url = "#"
         stt_display = f"Unknown STT ({stt_provider})"
