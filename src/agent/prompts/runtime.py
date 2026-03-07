@@ -1,7 +1,7 @@
 """Runtime user-facing utterances and fallback text."""
 
 MCP_STARTUP_GREETING = (
-    "Hi, I'm Open Voice Agent. I can answer directly or use MCP tools—like searching the Hub, models, datasets, or docs—when needed. "
+    "Hi, I'm Open Voice Agent. I can chat naturally, explain my current STT, LLM, TTS, and LiveKit setup, or use MCP tools like Hugging Face and LiveKit Docs when needed. "
     "How can I help today?"
 )
 TOOL_PRE_SPEECH_FALLBACK = "Let me check that."

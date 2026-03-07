@@ -178,12 +178,20 @@ class LLMSettings(CoreSettings):
         default=True,
         description=(
             "Enable LiveKit MCP runtime. "
-            "When enabled, agent sessions expose tools from MCP_SERVER_URL for supported providers."
+            "When enabled, agent sessions expose tools from MCP_SERVER_URL and MCP_EXTRA_SERVER_URLS "
+            "for supported providers."
         ),
     )
     MCP_SERVER_URL: str = Field(
         default="https://huggingface.co/mcp",
-        description="MCP server URL used by the LiveKit MCP runtime",
+        description="Primary MCP server URL used by the LiveKit MCP runtime",
+    )
+    MCP_EXTRA_SERVER_URLS: str = Field(
+        default="https://docs.livekit.io/mcp",
+        description=(
+            "Comma-separated extra MCP server URLs. "
+            "Set empty to disable extra MCP servers."
+        ),
     )
 
     # NVIDIA settings

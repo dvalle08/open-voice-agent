@@ -12,8 +12,9 @@ def test_llm_runtime_tuning_defaults_are_declared() -> None:
     assert fields["LLM_PROVIDER"].default == "ollama"
     assert fields["MCP_ENABLED"].default is True
     assert fields["MCP_SERVER_URL"].default == "https://huggingface.co/mcp"
+    assert fields["MCP_EXTRA_SERVER_URLS"].default == "https://docs.livekit.io/mcp"
     assert fields["OLLAMA_BASE_URL"].default == "http://localhost:11434/v1"
-    assert fields["OLLAMA_MODEL"].default == "qwen2.5:7b"
+    assert fields["OLLAMA_MODEL"].default == "qwen3-coder-next"
     assert fields["OLLAMA_API_KEY"].default == "ollama"
     assert fields["LLM_CONN_TIMEOUT_SEC"].default == 20.0
     assert fields["LLM_CONN_MAX_RETRY"].default == 1

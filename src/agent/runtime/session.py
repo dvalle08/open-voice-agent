@@ -46,6 +46,7 @@ llm_runtime = build_llm_runtime(
     ollama_api_key=settings.llm.OLLAMA_API_KEY,
     mcp_enabled=settings.llm.MCP_ENABLED,
     mcp_server_url=settings.llm.MCP_SERVER_URL,
+    mcp_extra_server_urls=settings.llm.MCP_EXTRA_SERVER_URLS,
 )
 
 server = AgentServer(
@@ -175,6 +176,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         ollama_api_key=settings.llm.OLLAMA_API_KEY,
         mcp_enabled=settings.llm.MCP_ENABLED,
         mcp_server_url=settings.llm.MCP_SERVER_URL,
+        mcp_extra_server_urls=settings.llm.MCP_EXTRA_SERVER_URLS,
     )
     mcp_runtime_active = llm_runtime.mcp_runtime_active
     tool_feedback = ToolFeedbackController(enabled=mcp_runtime_active)

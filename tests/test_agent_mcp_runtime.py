@@ -13,6 +13,7 @@ from src.agent.models.llm_runtime import (
     build_llm_runtime,
     build_mcp_http_timeout,
     install_mcp_generate_reply_guard,
+    resolve_mcp_server_urls,
     resolve_mcp_runtime_mode,
     run_startup_greeting,
 )
@@ -29,6 +30,7 @@ from src.agent.runtime.tasks import (
     schedule_startup_greeting_task,
 )
 from src.agent.tools.pre_tool_feedback import inject_pre_tool_feedback
+from src.core.settings import Settings
 
 
 class _FakeSpeechHandle:
@@ -359,12 +361,33 @@ def test_build_llm_runtime_supports_ollama_with_mcp() -> None:
         ollama_api_key=None,
         mcp_enabled=True,
         mcp_server_url="https://huggingface.co/mcp",
+        mcp_extra_server_urls="https://docs.livekit.io/mcp",
     )
 
     assert runtime.provider == "ollama"
     assert runtime.model == "qwen2.5:7b"
     assert runtime.mcp_runtime_active is True
     assert runtime.mcp_servers is not None
+    assert [server.url for server in runtime.mcp_servers] == [
+        "https://huggingface.co/mcp",
+        "https://docs.livekit.io/mcp",
+    ]
+
+
+def test_resolve_mcp_server_urls_trims_ignores_empty_and_deduplicates() -> None:
+    urls = resolve_mcp_server_urls(
+        mcp_server_url=" https://huggingface.co/mcp ",
+        mcp_extra_server_urls=(
+            "https://docs.livekit.io/mcp, , https://huggingface.co/mcp, "
+            "https://docs.livekit.io/mcp, https://example.com/mcp"
+        ),
+    )
+
+    assert urls == [
+        "https://huggingface.co/mcp",
+        "https://docs.livekit.io/mcp",
+        "https://example.com/mcp",
+    ]
 
 
 def test_build_llm_runtime_rejects_cloud_alias_model_for_ollama_cloud_v1() -> None:
@@ -384,6 +407,7 @@ def test_build_llm_runtime_rejects_cloud_alias_model_for_ollama_cloud_v1() -> No
             ollama_api_key="test-key",
             mcp_enabled=True,
             mcp_server_url="https://huggingface.co/mcp",
+            mcp_extra_server_urls="https://docs.livekit.io/mcp",
         )
 
 
@@ -404,6 +428,7 @@ def test_build_llm_runtime_rejects_cloud_alias_model_for_api_ollama_cloud_v1() -
             ollama_api_key="test-key",
             mcp_enabled=True,
             mcp_server_url="https://huggingface.co/mcp",
+            mcp_extra_server_urls="https://docs.livekit.io/mcp",
         )
 
 
@@ -421,6 +446,7 @@ def test_build_llm_runtime_requires_nvidia_key() -> None:
             ollama_api_key="ollama",
             mcp_enabled=False,
             mcp_server_url="https://huggingface.co/mcp",
+            mcp_extra_server_urls="https://docs.livekit.io/mcp",
         )
 
 
@@ -451,6 +477,7 @@ def test_build_llm_runtime_passes_nvidia_disable_thinking_payload(
         ollama_api_key="ollama",
         mcp_enabled=False,
         mcp_server_url="https://huggingface.co/mcp",
+        mcp_extra_server_urls="https://docs.livekit.io/mcp",
     )
 
     assert runtime.llm is fake_llm
@@ -486,6 +513,7 @@ def test_build_llm_runtime_passes_ollama_disable_thinking_payload(
         ollama_api_key="ollama",
         mcp_enabled=False,
         mcp_server_url="https://huggingface.co/mcp",
+        mcp_extra_server_urls="https://docs.livekit.io/mcp",
     )
 
     assert runtime.llm is fake_llm
@@ -494,7 +522,8 @@ def test_build_llm_runtime_passes_ollama_disable_thinking_payload(
 
 def test_assistant_instructions_discourage_tools_for_small_talk() -> None:
     assert "greetings, acknowledgements, thanks, and casual small talk" in ASSISTANT_INSTRUCTIONS
-    assert "do not call tools" in ASSISTANT_INSTRUCTIONS
+    assert "one to two short sentences" in ASSISTANT_INSTRUCTIONS
+    assert "do not call tools unless the user explicitly asks you to look something up" in ASSISTANT_INSTRUCTIONS
 
 
 def test_assistant_instructions_restrict_tool_usage_to_clear_intent() -> None:
@@ -509,6 +538,7 @@ def test_assistant_instructions_enforce_ultra_short_answers() -> None:
 
 def test_assistant_instructions_disable_tools_for_self_description() -> None:
     assert "For self-description requests" in ASSISTANT_INSTRUCTIONS
+    assert "current configuration summary" in ASSISTANT_INSTRUCTIONS
     assert "do not call tools" in ASSISTANT_INSTRUCTIONS
 
 
@@ -521,6 +551,38 @@ def test_assistant_instructions_include_capabilities_and_limitations() -> None:
     instructions = build_assistant_instructions(current_date=date(2026, 3, 7))
     assert "direct answer mode and tool-assisted mode" in instructions
     assert "If needed tools are unavailable for a request" in instructions
+    assert "LiveKit questions beyond your local configuration" in instructions
+
+
+def test_build_assistant_instructions_include_configuration_summary() -> None:
+    instructions = build_assistant_instructions(current_date=date(2026, 3, 7))
+
+    assert "Current configuration summary" in instructions
+    assert "STT: provider=" in instructions
+    assert "LLM: provider=" in instructions
+    assert "TTS: provider=pocket-tts" in instructions
+    assert "LiveKit audio:" in instructions
+    assert "MCP runtime:" in instructions
+
+
+def test_build_assistant_instructions_redacts_sensitive_values() -> None:
+    settings = Settings()
+    settings.llm.NVIDIA_API_KEY = "nvapi-secret-test-value"
+    settings.stt.NVIDIA_STT_API_KEY = "nvidia-stt-secret-test-value"
+    settings.livekit.LIVEKIT_API_KEY = "livekit-api-key-test-value"
+    settings.livekit.LIVEKIT_API_SECRET = "livekit-api-secret-test-value"
+
+    instructions = build_assistant_instructions(
+        current_date=date(2026, 3, 7),
+        current_settings=settings,
+    )
+
+    assert "nvapi-secret-test-value" not in instructions
+    assert "nvidia-stt-secret-test-value" not in instructions
+    assert "livekit-api-key-test-value" not in instructions
+    assert "livekit-api-secret-test-value" not in instructions
+    assert "Credential state (redacted):" in instructions
+    assert "<redacted>" in instructions
 
 
 def testrun_llm_warmup_consumes_first_chunk_and_closes_stream() -> None:

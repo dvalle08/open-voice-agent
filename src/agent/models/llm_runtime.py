@@ -52,6 +52,25 @@ def resolve_mcp_runtime_mode(
     return MCPRuntimeDecision(enabled=True, reason="mcp_enabled")
 
 
+def resolve_mcp_server_urls(
+    *,
+    mcp_server_url: str,
+    mcp_extra_server_urls: str,
+) -> list[str]:
+    candidates = [mcp_server_url, *(mcp_extra_server_urls or "").split(",")]
+    deduplicated: list[str] = []
+    seen: set[str] = set()
+
+    for candidate in candidates:
+        normalized = (candidate or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduplicated.append(normalized)
+
+    return deduplicated
+
+
 def build_llm_runtime(
     *,
     llm_provider: str,
@@ -65,6 +84,7 @@ def build_llm_runtime(
     ollama_api_key: str | None,
     mcp_enabled: bool,
     mcp_server_url: str,
+    mcp_extra_server_urls: str,
 ) -> LLMRuntimeConfig:
     provider = (llm_provider or "").strip().lower()
     timeout = build_mcp_http_timeout(llm_timeout_sec)
@@ -73,7 +93,15 @@ def build_llm_runtime(
         llm_provider=provider,
         nvidia_api_key=nvidia_api_key,
     )
-    mcp_servers = [mcp.MCPServerHTTP(url=mcp_server_url)] if mcp_decision.enabled else None
+    mcp_server_urls: list[str] = []
+    if mcp_decision.enabled:
+        mcp_server_urls = resolve_mcp_server_urls(
+            mcp_server_url=mcp_server_url,
+            mcp_extra_server_urls=mcp_extra_server_urls,
+        )
+        mcp_servers = [mcp.MCPServerHTTP(url=url) for url in mcp_server_urls]
+    else:
+        mcp_servers = None
 
     if provider == "nvidia":
         if not nvidia_api_key:
@@ -107,8 +135,8 @@ def build_llm_runtime(
         )
     elif mcp_decision.enabled:
         logger.info(
-            "MCP runtime enabled: mcp_server=%s llm_provider=%s llm_model=%s llm_timeout_sec=%.2f",
-            mcp_server_url,
+            "MCP runtime enabled: mcp_servers=%s llm_provider=%s llm_model=%s llm_timeout_sec=%.2f",
+            mcp_server_urls,
             provider,
             model,
             llm_timeout_sec,

@@ -151,12 +151,14 @@ See `.env.example` for all available options.
 ```bash
 MCP_ENABLED=true
 MCP_SERVER_URL=https://huggingface.co/mcp
+MCP_EXTRA_SERVER_URLS=https://docs.livekit.io/mcp
 # Works with either provider:
 LLM_PROVIDER=ollama
 # or LLM_PROVIDER=nvidia (+ NVIDIA_API_KEY)
 ```
 
-- MCP endpoint defaults to `https://huggingface.co/mcp` (no auth configured).
+- Primary MCP endpoint defaults to `https://huggingface.co/mcp` (no auth configured).
+- Extra MCP endpoints can be configured with `MCP_EXTRA_SERVER_URLS` (comma-separated), defaulting to LiveKit Docs.
 - MCP tools are available when `MCP_ENABLED=true` and `LLM_PROVIDER` is `nvidia` or `ollama`.
 - In MCP mode, startup greeting is sent with `session.say(...)` and manual `session.generate_reply(...)` calls are disabled by policy.
 - There is no legacy LangGraph fallback path.
