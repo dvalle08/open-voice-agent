@@ -209,7 +209,7 @@ class LLMSettings(CoreSettings):
         ),
     )
     OLLAMA_MODEL: str = Field(
-        default= "qwen3-coder-next", #"ministral-3:8b", #"qwen2.5:7b" #"qwen3:8b" #"qwen3.5:4b",
+        default= "ministral-3:14b-cloud", #"ministral-3:8b-cloud", #"qwen3-coder-next",#minimax-m2.5 #"ministral-3:8b", #"qwen2.5:7b" #"qwen3:8b" #"qwen3.5:4b",
         description="Ollama model tag",
     )
     OLLAMA_API_KEY: Optional[str] = Field(

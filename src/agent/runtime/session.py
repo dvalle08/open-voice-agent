@@ -34,20 +34,7 @@ from src.core.logger import logger
 from src.core.settings import settings
 from src.plugins.pocket_tts import PocketTTS
 
-llm_runtime = build_llm_runtime(
-    llm_provider=settings.llm.LLM_PROVIDER,
-    llm_temperature=settings.llm.LLM_TEMPERATURE,
-    llm_max_tokens=settings.llm.LLM_MAX_TOKENS,
-    llm_timeout_sec=settings.llm.LLM_CONN_TIMEOUT_SEC,
-    nvidia_api_key=settings.llm.NVIDIA_API_KEY,
-    nvidia_model=settings.llm.NVIDIA_MODEL,
-    ollama_base_url=settings.llm.OLLAMA_BASE_URL,
-    ollama_model=settings.llm.OLLAMA_MODEL,
-    ollama_api_key=settings.llm.OLLAMA_API_KEY,
-    mcp_enabled=settings.llm.MCP_ENABLED,
-    mcp_server_url=settings.llm.MCP_SERVER_URL,
-    mcp_extra_server_urls=settings.llm.MCP_EXTRA_SERVER_URLS,
-)
+llm_runtime = build_llm_runtime(settings.llm)
 
 server = AgentServer(
     num_idle_processes=settings.livekit.LIVEKIT_NUM_IDLE_PROCESSES,
@@ -164,20 +151,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         lsd_decode_steps=settings.voice.POCKET_TTS_LSD_DECODE_STEPS,
     )
     llm_conn_options, session_conn_options = _build_session_connect_options()
-    llm_runtime = build_llm_runtime(
-        llm_provider=settings.llm.LLM_PROVIDER,
-        llm_temperature=settings.llm.LLM_TEMPERATURE,
-        llm_max_tokens=settings.llm.LLM_MAX_TOKENS,
-        llm_timeout_sec=settings.llm.LLM_CONN_TIMEOUT_SEC,
-        nvidia_api_key=settings.llm.NVIDIA_API_KEY,
-        nvidia_model=settings.llm.NVIDIA_MODEL,
-        ollama_base_url=settings.llm.OLLAMA_BASE_URL,
-        ollama_model=settings.llm.OLLAMA_MODEL,
-        ollama_api_key=settings.llm.OLLAMA_API_KEY,
-        mcp_enabled=settings.llm.MCP_ENABLED,
-        mcp_server_url=settings.llm.MCP_SERVER_URL,
-        mcp_extra_server_urls=settings.llm.MCP_EXTRA_SERVER_URLS,
-    )
+    llm_runtime = build_llm_runtime(settings.llm)
     mcp_runtime_active = llm_runtime.mcp_runtime_active
     tool_feedback = ToolFeedbackController(enabled=mcp_runtime_active)
     logger.info(

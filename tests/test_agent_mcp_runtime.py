@@ -30,7 +30,7 @@ from src.agent.runtime.tasks import (
     schedule_startup_greeting_task,
 )
 from src.agent.tools.pre_tool_feedback import inject_pre_tool_feedback
-from src.core.settings import Settings
+from src.core.settings import LLMSettings, Settings
 
 
 class _FakeSpeechHandle:
@@ -117,6 +117,25 @@ class _FakeLLMClient:
     def chat(self, **kwargs: object) -> _FakeLLMStream:
         self.chat_calls.append(kwargs)
         return self._stream
+
+
+def _build_llm_settings(**overrides: Any) -> LLMSettings:
+    defaults: dict[str, Any] = {
+        "LLM_PROVIDER": "ollama",
+        "OLLAMA_CLOUD_MODE": False,
+        "OLLAMA_MODEL": "qwen2.5:7b",
+        "OLLAMA_API_KEY": "ollama",
+        "MCP_ENABLED": False,
+        "MCP_SERVER_URL": "https://huggingface.co/mcp",
+        "MCP_EXTRA_SERVER_URLS": "https://docs.livekit.io/mcp",
+        "LLM_TEMPERATURE": 0.7,
+        "LLM_MAX_TOKENS": 1024,
+        "LLM_CONN_TIMEOUT_SEC": 12.0,
+        "NVIDIA_MODEL": "meta/llama-3.1-8b-instruct",
+        "NVIDIA_API_KEY": None,
+    }
+    defaults.update(overrides)
+    return LLMSettings(**defaults)
 
 
 class _FakeToolFeedback:
@@ -350,18 +369,10 @@ def testbuild_mcp_http_timeout_enforces_positive_minimum() -> None:
 
 def test_build_llm_runtime_supports_ollama_with_mcp() -> None:
     runtime = build_llm_runtime(
-        llm_provider="ollama",
-        llm_temperature=0.7,
-        llm_max_tokens=1024,
-        llm_timeout_sec=12.0,
-        nvidia_api_key=None,
-        nvidia_model="meta/llama-3.1-8b-instruct",
-        ollama_base_url="http://localhost:11434/v1",
-        ollama_model="qwen2.5:7b",
-        ollama_api_key=None,
-        mcp_enabled=True,
-        mcp_server_url="https://huggingface.co/mcp",
-        mcp_extra_server_urls="https://docs.livekit.io/mcp",
+        _build_llm_settings(
+            MCP_ENABLED=True,
+            OLLAMA_API_KEY=None,
+        )
     )
 
     assert runtime.provider == "ollama"
@@ -396,57 +407,22 @@ def test_build_llm_runtime_rejects_cloud_alias_model_for_ollama_cloud_v1() -> No
         match=r"cannot use ':cloud' aliases.*https://ollama\.com/v1",
     ):
         build_llm_runtime(
-            llm_provider="ollama",
-            llm_temperature=0.7,
-            llm_max_tokens=1024,
-            llm_timeout_sec=12.0,
-            nvidia_api_key=None,
-            nvidia_model="meta/llama-3.1-8b-instruct",
-            ollama_base_url="https://ollama.com/v1",
-            ollama_model="qwen3.5:cloud",
-            ollama_api_key="test-key",
-            mcp_enabled=True,
-            mcp_server_url="https://huggingface.co/mcp",
-            mcp_extra_server_urls="https://docs.livekit.io/mcp",
-        )
-
-
-def test_build_llm_runtime_rejects_cloud_alias_model_for_api_ollama_cloud_v1() -> None:
-    with pytest.raises(
-        ValueError,
-        match=r"cannot use ':cloud' aliases.*https://ollama\.com/v1",
-    ):
-        build_llm_runtime(
-            llm_provider="ollama",
-            llm_temperature=0.7,
-            llm_max_tokens=1024,
-            llm_timeout_sec=12.0,
-            nvidia_api_key=None,
-            nvidia_model="meta/llama-3.1-8b-instruct",
-            ollama_base_url="https://api.ollama.com/v1",
-            ollama_model="qwen3.5:cloud",
-            ollama_api_key="test-key",
-            mcp_enabled=True,
-            mcp_server_url="https://huggingface.co/mcp",
-            mcp_extra_server_urls="https://docs.livekit.io/mcp",
+            _build_llm_settings(
+                OLLAMA_CLOUD_MODE=True,
+                OLLAMA_MODEL="qwen3.5:cloud",
+                OLLAMA_API_KEY="test-key",
+                MCP_ENABLED=True,
+            )
         )
 
 
 def test_build_llm_runtime_requires_nvidia_key() -> None:
     with pytest.raises(ValueError, match="NVIDIA_API_KEY is required"):
         build_llm_runtime(
-            llm_provider="nvidia",
-            llm_temperature=0.7,
-            llm_max_tokens=1024,
-            llm_timeout_sec=12.0,
-            nvidia_api_key=None,
-            nvidia_model="meta/llama-3.1-8b-instruct",
-            ollama_base_url="http://localhost:11434/v1",
-            ollama_model="qwen2.5:7b",
-            ollama_api_key="ollama",
-            mcp_enabled=False,
-            mcp_server_url="https://huggingface.co/mcp",
-            mcp_extra_server_urls="https://docs.livekit.io/mcp",
+            _build_llm_settings(
+                LLM_PROVIDER="nvidia",
+                NVIDIA_API_KEY=None,
+            )
         )
 
 
@@ -466,21 +442,15 @@ def test_build_llm_runtime_passes_nvidia_disable_thinking_payload(
     )
 
     runtime = build_llm_runtime(
-        llm_provider="nvidia",
-        llm_temperature=0.7,
-        llm_max_tokens=1024,
-        llm_timeout_sec=12.0,
-        nvidia_api_key="nvapi-test",
-        nvidia_model="qwen/qwen3-next-80b-a3b-instruct",
-        ollama_base_url="http://localhost:11434/v1",
-        ollama_model="qwen2.5:7b",
-        ollama_api_key="ollama",
-        mcp_enabled=False,
-        mcp_server_url="https://huggingface.co/mcp",
-        mcp_extra_server_urls="https://docs.livekit.io/mcp",
+        _build_llm_settings(
+            LLM_PROVIDER="nvidia",
+            NVIDIA_API_KEY="nvapi-test",
+            NVIDIA_MODEL="qwen/qwen3-next-80b-a3b-instruct",
+        )
     )
 
     assert runtime.llm is fake_llm
+    assert captured_kwargs["base_url"] == "https://integrate.api.nvidia.com/v1"
     assert captured_kwargs["extra_body"] == {
         "chat_template_kwargs": {"enable_thinking": False}
     }
@@ -501,45 +471,31 @@ def test_build_llm_runtime_passes_ollama_disable_thinking_payload(
         _fake_openai_llm,
     )
 
-    runtime = build_llm_runtime(
-        llm_provider="ollama",
-        llm_temperature=0.7,
-        llm_max_tokens=1024,
-        llm_timeout_sec=12.0,
-        nvidia_api_key=None,
-        nvidia_model="meta/llama-3.1-8b-instruct",
-        ollama_base_url="http://localhost:11434/v1",
-        ollama_model="qwen2.5:7b",
-        ollama_api_key="ollama",
-        mcp_enabled=False,
-        mcp_server_url="https://huggingface.co/mcp",
-        mcp_extra_server_urls="https://docs.livekit.io/mcp",
-    )
+    runtime = build_llm_runtime(_build_llm_settings())
 
     assert runtime.llm is fake_llm
+    assert captured_kwargs["base_url"] == "http://localhost:11434/v1"
     assert captured_kwargs["extra_body"] == {"think": False}
 
 
-def test_assistant_instructions_discourage_tools_for_small_talk() -> None:
-    assert "greetings, acknowledgements, thanks, and casual small talk" in ASSISTANT_INSTRUCTIONS
-    assert "one to two short sentences" in ASSISTANT_INSTRUCTIONS
-    assert "do not call tools unless the user explicitly asks you to look something up" in ASSISTANT_INSTRUCTIONS
-
-
-def test_assistant_instructions_restrict_tool_usage_to_clear_intent() -> None:
-    assert "only when user intent clearly requires external or up-to-date information" in ASSISTANT_INSTRUCTIONS
-    assert "If a request can be answered directly from context and general knowledge, do not call tools." in ASSISTANT_INSTRUCTIONS
-
-
 def test_assistant_instructions_enforce_ultra_short_answers() -> None:
-    assert "answer with the fewest words possible" in ASSISTANT_INSTRUCTIONS
-    assert "Keep most responses to one short sentence." in ASSISTANT_INSTRUCTIONS
+    assert "Answer as quickly as possible." in ASSISTANT_INSTRUCTIONS
+    assert "Keep answers short by default, usually one short sentence." in ASSISTANT_INSTRUCTIONS
 
 
-def test_assistant_instructions_disable_tools_for_self_description() -> None:
-    assert "For self-description requests" in ASSISTANT_INSTRUCTIONS
-    assert "current configuration summary" in ASSISTANT_INSTRUCTIONS
-    assert "do not call tools" in ASSISTANT_INSTRUCTIONS
+def test_assistant_instructions_prioritize_knowledge_before_tools() -> None:
+    assert "Answer from your own knowledge and the current configuration summary first." in ASSISTANT_INSTRUCTIONS
+    assert "If helpful, offer to explain how you work or to look something up." in ASSISTANT_INSTRUCTIONS
+
+
+def test_assistant_instructions_limit_huggingface_and_livekit_tools() -> None:
+    assert "Use Hugging Face tools only when the answer is not in your own knowledge or the current configuration summary." in ASSISTANT_INSTRUCTIONS
+    assert "Use LiveKit tools only for LiveKit-specific questions" in ASSISTANT_INSTRUCTIONS
+
+
+def test_assistant_instructions_handle_self_description_from_summary() -> None:
+    assert "For self-description or setup questions" in ASSISTANT_INSTRUCTIONS
+    assert "answer directly from these instructions and the current configuration summary" in ASSISTANT_INSTRUCTIONS
 
 
 def test_build_assistant_instructions_includes_current_date() -> None:
@@ -549,9 +505,10 @@ def test_build_assistant_instructions_includes_current_date() -> None:
 
 def test_assistant_instructions_include_capabilities_and_limitations() -> None:
     instructions = build_assistant_instructions(current_date=date(2026, 3, 7))
-    assert "direct answer mode and tool-assisted mode" in instructions
-    assert "If needed tools are unavailable for a request" in instructions
-    assert "LiveKit questions beyond your local configuration" in instructions
+    assert "If helpful, offer to explain how you work or to look something up." in instructions
+    assert "Only call tools that are available in the current session." in instructions
+    assert "Never invent tools." in instructions
+    assert "Use plain voice-friendly text only" in instructions
 
 
 def test_build_assistant_instructions_include_configuration_summary() -> None:

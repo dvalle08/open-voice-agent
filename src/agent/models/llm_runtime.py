@@ -10,6 +10,7 @@ from livekit.plugins import openai as openai_plugin
 
 from src.agent.prompts.runtime import MCP_STARTUP_GREETING
 from src.core.logger import logger
+from src.core.settings import LLMSettings
 
 NVIDIA_OPENAI_BASE_URL = "https://integrate.api.nvidia.com/v1"
 MCP_STARTUP_GREETING_TIMEOUT_SEC = 8.0
@@ -72,62 +73,50 @@ def resolve_mcp_server_urls(
 
 
 def build_llm_runtime(
-    *,
-    llm_provider: str,
-    llm_temperature: float,
-    llm_max_tokens: int,
-    llm_timeout_sec: float,
-    nvidia_api_key: str | None,
-    nvidia_model: str,
-    ollama_base_url: str,
-    ollama_model: str,
-    ollama_api_key: str | None,
-    mcp_enabled: bool,
-    mcp_server_url: str,
-    mcp_extra_server_urls: str,
+    llm_settings: LLMSettings,
 ) -> LLMRuntimeConfig:
-    provider = (llm_provider or "").strip().lower()
-    timeout = build_mcp_http_timeout(llm_timeout_sec)
+    provider = (llm_settings.LLM_PROVIDER or "").strip().lower()
+    timeout = build_mcp_http_timeout(llm_settings.LLM_CONN_TIMEOUT_SEC)
     mcp_decision = resolve_mcp_runtime_mode(
-        mcp_enabled=mcp_enabled,
+        mcp_enabled=llm_settings.MCP_ENABLED,
         llm_provider=provider,
-        nvidia_api_key=nvidia_api_key,
+        nvidia_api_key=llm_settings.NVIDIA_API_KEY,
     )
     mcp_server_urls: list[str] = []
     if mcp_decision.enabled:
         mcp_server_urls = resolve_mcp_server_urls(
-            mcp_server_url=mcp_server_url,
-            mcp_extra_server_urls=mcp_extra_server_urls,
+            mcp_server_url=llm_settings.MCP_SERVER_URL,
+            mcp_extra_server_urls=llm_settings.MCP_EXTRA_SERVER_URLS,
         )
         mcp_servers = [mcp.MCPServerHTTP(url=url) for url in mcp_server_urls]
     else:
         mcp_servers = None
 
     if provider == "nvidia":
-        if not nvidia_api_key:
+        if not llm_settings.NVIDIA_API_KEY:
             raise ValueError(
                 "NVIDIA_API_KEY is required when LLM_PROVIDER=nvidia"
             )
-        model = nvidia_model
+        model = llm_settings.NVIDIA_MODEL
         base_url = NVIDIA_OPENAI_BASE_URL
-        api_key = nvidia_api_key
+        api_key = llm_settings.NVIDIA_API_KEY
         extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
     elif provider == "ollama":
-        model = (ollama_model or "").strip()
+        model = (llm_settings.OLLAMA_MODEL or "").strip()
         if not model:
             raise ValueError("OLLAMA_MODEL is required when LLM_PROVIDER=ollama")
-        base_url = (ollama_base_url or "").strip()
+        base_url = (llm_settings.OLLAMA_BASE_URL or "").strip()
         if not base_url:
             raise ValueError("OLLAMA_BASE_URL is required when LLM_PROVIDER=ollama")
         validate_ollama_model_for_endpoint(base_url=base_url, model=model)
-        api_key = resolve_ollama_api_key(ollama_api_key)
+        api_key = resolve_ollama_api_key(llm_settings.OLLAMA_API_KEY)
         extra_body = {"think": False}
     else:
         raise ValueError(
             f"Unknown LLM provider: {provider}. Must be 'nvidia' or 'ollama'"
         )
 
-    if mcp_enabled and not mcp_decision.enabled:
+    if llm_settings.MCP_ENABLED and not mcp_decision.enabled:
         logger.warning(
             "MCP runtime requested but unavailable: reason=%s provider=%s",
             mcp_decision.reason,
@@ -139,7 +128,7 @@ def build_llm_runtime(
             mcp_server_urls,
             provider,
             model,
-            llm_timeout_sec,
+            llm_settings.LLM_CONN_TIMEOUT_SEC,
         )
     else:
         logger.info("MCP runtime disabled (MCP_ENABLED=false)")
@@ -148,8 +137,8 @@ def build_llm_runtime(
         model=model,
         api_key=api_key,
         base_url=base_url,
-        temperature=llm_temperature,
-        max_completion_tokens=llm_max_tokens,
+        temperature=llm_settings.LLM_TEMPERATURE,
+        max_completion_tokens=llm_settings.LLM_MAX_TOKENS,
         timeout=timeout,
         _strict_tool_schema=False,
         extra_body=extra_body,
