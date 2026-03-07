@@ -36,6 +36,7 @@ def test_livekit_runtime_tuning_defaults_are_declared() -> None:
 def test_voice_runtime_tuning_defaults_are_declared() -> None:
     fields = VoiceSettings.model_fields
 
+    assert fields["TTS_PROVIDER"].default == "deepgram"
     assert fields["POCKET_TTS_CONN_TIMEOUT_SEC"].default == 45.0
 
 
@@ -73,6 +74,25 @@ def test_llm_runtime_tuning_validation_rejects_invalid_values() -> None:
 def test_voice_runtime_tuning_validation_rejects_invalid_values() -> None:
     with pytest.raises(ValidationError):
         VoiceSettings(POCKET_TTS_CONN_TIMEOUT_SEC=0.0)
+
+    with pytest.raises(
+        ValidationError,
+        match="TTS_PROVIDER must be either 'pocket' or 'deepgram'",
+    ):
+        VoiceSettings(TTS_PROVIDER="invalid")
+
+    with pytest.raises(
+        ValidationError,
+        match="DEEPGRAM_API_KEY is required when TTS_PROVIDER=deepgram",
+    ):
+        VoiceSettings(TTS_PROVIDER="deepgram", DEEPGRAM_API_KEY=" ")
+
+
+def test_voice_runtime_tuning_accepts_deepgram_provider_with_key() -> None:
+    settings = VoiceSettings(TTS_PROVIDER="DeepGram", DEEPGRAM_API_KEY="test-key")
+
+    assert settings.TTS_PROVIDER == "deepgram"
+    assert settings.DEEPGRAM_API_KEY == "test-key"
 
 
 def test_livekit_runtime_tuning_validation_rejects_invalid_values() -> None:

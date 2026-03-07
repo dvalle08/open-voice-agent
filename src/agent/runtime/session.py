@@ -19,6 +19,7 @@ from src.agent.models.llm_runtime import (
     install_mcp_generate_reply_guard,
     run_startup_greeting,
 )
+from src.agent.models.tts_factory import create_tts
 from src.agent.runtime.connect_options import build_api_connect_options
 from src.agent.models.stt_factory import create_stt
 from src.agent.runtime.assistant import Assistant
@@ -32,7 +33,6 @@ from src.agent.traces.langfuse import setup_langfuse_tracer
 from src.agent.traces.metrics_collector import MetricsCollector
 from src.core.logger import logger
 from src.core.settings import settings
-from src.plugins.pocket_tts import PocketTTS
 
 
 def _build_server() -> AgentServer:
@@ -151,11 +151,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
             )
         )
 
-    tts_engine = PocketTTS(
-        voice=settings.voice.POCKET_TTS_VOICE,
-        temperature=settings.voice.POCKET_TTS_TEMPERATURE,
-        lsd_decode_steps=settings.voice.POCKET_TTS_LSD_DECODE_STEPS,
-    )
+    tts_engine = create_tts()
     llm_conn_options, session_conn_options = _build_session_connect_options()
     llm_runtime = build_llm_runtime(settings.llm)
     mcp_runtime_active = llm_runtime.mcp_runtime_active

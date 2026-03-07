@@ -787,6 +787,19 @@ wheels = [
 ]
 
 [[package]]
+name = "livekit-plugins-deepgram"
+version = "1.3.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "livekit-agents", extra = ["codecs"] },
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cd/df/c260c8ec2e561ed74293257c978e0ee8c506648d2c48ca426ac584fa9901/livekit_plugins_deepgram-1.3.3.tar.gz", hash = "sha256:d60bbaea9e97b5b0af99df3b59a059e0efe98e230f008f982875045c93bd2a21", size = 15308, upload-time = "2025-11-19T21:20:56.199Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/31/ef747638ce66b6d52d188ee179ad5d3e7237a5cd5ca879ee23ed0d903910/livekit_plugins_deepgram-1.3.3-py3-none-any.whl", hash = "sha256:b1b127b26ff4a443255dd4d8a406adc4c5964e5254813450c2356367bd2f9a25", size = 21207, upload-time = "2025-11-19T21:20:54.975Z" },
+]
+
+[[package]]
 name = "livekit-plugins-noise-cancellation"
 version = "0.2.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1192,6 +1205,7 @@ source = { editable = "." }
 dependencies = [
     { name = "livekit-agents", extra = ["mcp", "openai", "silero", "turn-detector"] },
     { name = "livekit-api" },
+    { name = "livekit-plugins-deepgram" },
     { name = "livekit-plugins-noise-cancellation" },
     { name = "livekit-plugins-nvidia" },
     { name = "opentelemetry-api" },
@@ -1211,6 +1225,7 @@ dependencies = [
 requires-dist = [
     { name = "livekit-agents", extras = ["silero", "turn-detector", "mcp", "openai"], specifier = ">=1.3.3,<1.4" },
     { name = "livekit-api", specifier = "==1.1.0" },
+    { name = "livekit-plugins-deepgram", specifier = ">=1.3.3" },
     { name = "livekit-plugins-noise-cancellation", specifier = "~=0.2" },
     { name = "livekit-plugins-nvidia", specifier = ">=1.3.3" },
     { name = "opentelemetry-api", specifier = ">=1.34.0,<1.35.0" },

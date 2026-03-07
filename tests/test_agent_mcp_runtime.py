@@ -556,14 +556,30 @@ def test_build_assistant_instructions_include_configuration_summary() -> None:
     assert "Setup summary:" in instructions
     assert "Voice stack: STT provider=" in instructions
     assert "LLM provider=" in instructions
-    assert "TTS provider=pocket-tts" in instructions
+    assert "TTS provider=" in instructions
     assert "LiveKit: runtime agent_name=" in instructions
     assert "audio sample_rate=" in instructions
     assert "MCP runtime:" in instructions
 
 
+def test_build_assistant_instructions_hide_pocket_specific_details_for_deepgram() -> None:
+    settings = Settings()
+    settings.voice.TTS_PROVIDER = "deepgram"
+    settings.voice.DEEPGRAM_API_KEY = "deepgram-secret-test-value"
+
+    instructions = build_assistant_instructions(
+        current_date=date(2026, 3, 7),
+        current_settings=settings,
+    )
+
+    assert "TTS provider=deepgram, model=plugin-default" in instructions
+    assert "voice=alba" not in instructions
+    assert "lsd_decode_steps=" not in instructions
+
+
 def test_build_assistant_instructions_redacts_sensitive_values() -> None:
     settings = Settings()
+    settings.voice.DEEPGRAM_API_KEY = "deepgram-secret-test-value"
     settings.llm.NVIDIA_API_KEY = "nvapi-secret-test-value"
     settings.stt.NVIDIA_STT_API_KEY = "nvidia-stt-secret-test-value"
     settings.livekit.LIVEKIT_API_KEY = "livekit-api-key-test-value"
@@ -574,6 +590,7 @@ def test_build_assistant_instructions_redacts_sensitive_values() -> None:
         current_settings=settings,
     )
 
+    assert "deepgram-secret-test-value" not in instructions
     assert "nvapi-secret-test-value" not in instructions
     assert "nvidia-stt-secret-test-value" not in instructions
     assert "livekit-api-key-test-value" not in instructions

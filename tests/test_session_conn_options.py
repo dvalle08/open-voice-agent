@@ -1,9 +1,39 @@
 from __future__ import annotations
 
+import asyncio
+import types
+
 from livekit.agents.inference_runner import _InferenceRunner
 
 from src.agent.runtime import session as runtime_session
 from src.core.settings import settings
+
+
+class _FakeJobContext:
+    def __init__(self) -> None:
+        self.room = types.SimpleNamespace(name="room-name")
+        self.job = types.SimpleNamespace(
+            id="job-id",
+            participant=types.SimpleNamespace(identity="participant-id"),
+            room=types.SimpleNamespace(sid="room-sid"),
+            metadata="",
+        )
+        self.shutdown_callbacks: list[object] = []
+
+    def add_shutdown_callback(self, callback) -> None:
+        self.shutdown_callbacks.append(callback)
+
+
+class _FakeToolFeedbackController:
+    def __init__(self, *, enabled: bool) -> None:
+        self.enabled = enabled
+        self.start_calls: list[dict[str, object]] = []
+
+    async def start(self, *, room, session) -> None:
+        self.start_calls.append({"room": room, "session": session})
+
+    async def aclose(self) -> None:
+        return None
 
 
 def test_build_session_connect_options_uses_separate_tts_timeout_and_shared_retry_settings(
@@ -42,3 +72,56 @@ def test_build_server_uses_livekit_process_initialization_settings(monkeypatch) 
 
 def test_importing_session_registers_multilingual_turn_detector_runner() -> None:
     assert "lk_end_of_utterance_multilingual" in _InferenceRunner.registered_runners
+
+
+def test_session_handler_runs_llm_warmup_before_session_start(monkeypatch) -> None:
+    order: list[str] = []
+    created_sessions: list[object] = []
+    ctx = _FakeJobContext()
+
+    class _FakeAgentSession:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.start_calls: list[dict[str, object]] = []
+            created_sessions.append(self)
+
+        async def start(self, **kwargs) -> None:
+            order.append("start")
+            self.start_calls.append(kwargs)
+
+    monkeypatch.setattr(runtime_session, "setup_langfuse_tracer", lambda: None)
+    monkeypatch.setattr(runtime_session, "MetricsCollector", lambda **kwargs: object())
+    monkeypatch.setattr(runtime_session, "create_tts", lambda: object())
+    monkeypatch.setattr(
+        runtime_session,
+        "build_llm_runtime",
+        lambda _settings: types.SimpleNamespace(
+            llm=object(),
+            provider="ollama",
+            model="test-model",
+            mcp_runtime_active=False,
+            mcp_servers=None,
+        ),
+    )
+    monkeypatch.setattr(runtime_session, "create_stt", lambda: "stt")
+    monkeypatch.setattr(runtime_session, "ToolFeedbackController", _FakeToolFeedbackController)
+    monkeypatch.setattr(runtime_session, "AgentSession", _FakeAgentSession)
+    monkeypatch.setattr(runtime_session, "Assistant", lambda **kwargs: "assistant")
+    monkeypatch.setattr(runtime_session, "install_mcp_generate_reply_guard", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runtime_session, "run_startup_greeting", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runtime_session.silero.VAD, "load", lambda **kwargs: "vad")
+    monkeypatch.setattr(runtime_session, "MultilingualModel", lambda: "turn-detector")
+    monkeypatch.setattr(runtime_session.room_io, "AudioInputOptions", lambda **kwargs: kwargs)
+    monkeypatch.setattr(runtime_session.room_io, "RoomOptions", lambda **kwargs: kwargs)
+
+    async def _fake_run_llm_warmup(**kwargs) -> None:
+        order.append("llm")
+
+    monkeypatch.setattr(runtime_session, "run_llm_warmup", _fake_run_llm_warmup)
+
+    asyncio.run(runtime_session.session_handler(ctx))
+
+    assert order == ["llm", "start"]
+    assert len(created_sessions) == 1
+    assert created_sessions[0].start_calls
+

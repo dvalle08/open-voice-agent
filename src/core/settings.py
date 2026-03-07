@@ -59,6 +59,14 @@ class CoreSettings(BaseSettings):
 
 
 class VoiceSettings(CoreSettings):
+    TTS_PROVIDER: str = Field(
+        default="deepgram",
+        description="TTS provider: 'pocket' or 'deepgram'",
+    )
+    DEEPGRAM_API_KEY: Optional[str] = Field(
+        default=None,
+        description="Deepgram API key for TTS when TTS_PROVIDER=deepgram",
+    )
     POCKET_TTS_VOICE: str = Field(
         default="alba",
         description="Default voice (alba, marius, javert, jean, fantine, cosette, eponine, azelma) or path to audio file",
@@ -142,6 +150,21 @@ class VoiceSettings(CoreSettings):
         default=True,
         description="Enable speculative LLM/TTS generation before final turn commit",
     )
+
+    @model_validator(mode="after")
+    def validate_tts_settings(self) -> "VoiceSettings":
+        provider = (self.TTS_PROVIDER or "").strip().lower()
+        if provider not in {"pocket", "deepgram"}:
+            raise ValueError("TTS_PROVIDER must be either 'pocket' or 'deepgram'")
+
+        self.TTS_PROVIDER = provider
+
+        if provider == "deepgram" and not (self.DEEPGRAM_API_KEY or "").strip():
+            raise ValueError(
+                "DEEPGRAM_API_KEY is required when TTS_PROVIDER=deepgram"
+            )
+
+        return self
 
 
 class STTSettings(CoreSettings):
@@ -286,7 +309,7 @@ class LiveKitSettings(CoreSettings):
     LIVEKIT_AGENT_NAME: str = Field(default="open-voice-agent")
     LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=1, ge=0)
     LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC: float = Field(
-        default=60,
+        default=20.0,
         gt=0.0,
         description="Maximum time to wait for a LiveKit idle worker process to initialize",
     )

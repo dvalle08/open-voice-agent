@@ -36,6 +36,21 @@ def _format_agent_config_summary(current_settings: Settings) -> str:
         llm_model = llm.get("OLLAMA_MODEL")
         llm_mode = llm.get("OLLAMA_CLOUD_MODE")
 
+    tts_provider = str(voice.get("TTS_PROVIDER", "")).lower()
+    if tts_provider == "deepgram":
+        tts_summary = (
+            "TTS provider=deepgram, model=plugin-default, "
+            f"timeout_sec={voice.get('POCKET_TTS_CONN_TIMEOUT_SEC')}"
+        )
+    else:
+        tts_summary = (
+            f"TTS provider={tts_provider or 'pocket'}, "
+            f"voice={voice.get('POCKET_TTS_VOICE')}, "
+            f"temperature={voice.get('POCKET_TTS_TEMPERATURE')}, "
+            f"lsd_decode_steps={voice.get('POCKET_TTS_LSD_DECODE_STEPS')}, "
+            f"timeout_sec={voice.get('POCKET_TTS_CONN_TIMEOUT_SEC')}"
+        )
+
     mcp_extra_servers = llm.get("MCP_EXTRA_SERVER_URLS") or "<none>"
 
     sections = [
@@ -48,10 +63,7 @@ def _format_agent_config_summary(current_settings: Settings) -> str:
             f"timeout_sec={llm.get('LLM_CONN_TIMEOUT_SEC')}, max_retry={llm.get('LLM_CONN_MAX_RETRY')}, "
             f"retry_interval_sec={llm.get('LLM_CONN_RETRY_INTERVAL_SEC')}, "
             f"startup_greeting_timeout_sec={llm.get('MCP_STARTUP_GREETING_TIMEOUT_SEC')}; "
-            f"TTS provider=pocket-tts, voice={voice.get('POCKET_TTS_VOICE')}, "
-            f"temperature={voice.get('POCKET_TTS_TEMPERATURE')}, "
-            f"lsd_decode_steps={voice.get('POCKET_TTS_LSD_DECODE_STEPS')}, "
-            f"timeout_sec={voice.get('POCKET_TTS_CONN_TIMEOUT_SEC')}."
+            f"{tts_summary}."
         ),
         (
             "Turn handling: "
@@ -81,6 +93,7 @@ def _format_agent_config_summary(current_settings: Settings) -> str:
         ),
         (
             "Credential state (redacted): "
+            f"DEEPGRAM_API_KEY={voice.get('DEEPGRAM_API_KEY')}, "
             f"NVIDIA_API_KEY={llm.get('NVIDIA_API_KEY')}, "
             f"NVIDIA_STT_API_KEY={stt.get('NVIDIA_STT_API_KEY')}, "
             f"OLLAMA_API_KEY={llm.get('OLLAMA_API_KEY')}, "
