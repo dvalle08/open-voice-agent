@@ -34,12 +34,18 @@ from src.core.logger import logger
 from src.core.settings import settings
 from src.plugins.pocket_tts import PocketTTS
 
-llm_runtime = build_llm_runtime(settings.llm)
 
-server = AgentServer(
-    num_idle_processes=settings.livekit.LIVEKIT_NUM_IDLE_PROCESSES,
-    job_memory_warn_mb=settings.livekit.LIVEKIT_JOB_MEMORY_WARN_MB,
-)
+def _build_server() -> AgentServer:
+    return AgentServer(
+        num_idle_processes=settings.livekit.LIVEKIT_NUM_IDLE_PROCESSES,
+        job_memory_warn_mb=settings.livekit.LIVEKIT_JOB_MEMORY_WARN_MB,
+        initialize_process_timeout=(
+            settings.livekit.LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC
+        ),
+    )
+
+
+server = _build_server()
 
 
 def fallback_session_prefix() -> str | None:

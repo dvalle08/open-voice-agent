@@ -269,7 +269,12 @@ class LiveKitSettings(CoreSettings):
     LIVEKIT_API_KEY: Optional[str] = Field(default=None)
     LIVEKIT_API_SECRET: Optional[str] = Field(default=None)
     LIVEKIT_AGENT_NAME: str = Field(default="open-voice-agent")
-    LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=1, ge=0)
+    LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=3, ge=0)
+    LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC: float = Field(
+        default=60.0,
+        gt=0.0,
+        description="Maximum time to wait for a LiveKit idle worker process to initialize",
+    )
     LIVEKIT_JOB_MEMORY_WARN_MB: float = Field(
         default=6144,
         gt=0,

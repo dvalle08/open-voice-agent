@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.core.settings import LLMSettings
+from src.core.settings import LLMSettings, LiveKitSettings
 
 
 def test_llm_runtime_tuning_defaults_are_declared() -> None:
@@ -15,13 +15,21 @@ def test_llm_runtime_tuning_defaults_are_declared() -> None:
     assert fields["MCP_SERVER_URL"].default == "https://huggingface.co/mcp"
     assert fields["MCP_EXTRA_SERVER_URLS"].default == "https://docs.livekit.io/mcp"
     assert fields["OLLAMA_CLOUD_MODE"].default is True
-    assert fields["OLLAMA_MODEL"].default == "qwen3-coder-next"
+    assert fields["OLLAMA_MODEL"].default == "ministral-3:14b-cloud"
     assert fields["OLLAMA_API_KEY"].default == "ollama"
     assert fields["LLM_CONN_TIMEOUT_SEC"].default == 20.0
     assert fields["LLM_CONN_MAX_RETRY"].default == 1
     assert fields["LLM_CONN_RETRY_INTERVAL_SEC"].default == 1.0
     assert fields["TURN_LLM_STALL_TIMEOUT_SEC"].default == 12.0
     assert settings.OLLAMA_BASE_URL == "https://ollama.com/v1"
+
+
+def test_livekit_runtime_tuning_defaults_are_declared() -> None:
+    fields = LiveKitSettings.model_fields
+
+    assert fields["LIVEKIT_NUM_IDLE_PROCESSES"].default == 1
+    assert fields["LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC"].default == 20.0
+    assert fields["LIVEKIT_JOB_MEMORY_WARN_MB"].default == 6144
 
 
 def test_llm_runtime_tuning_switches_to_local_ollama_base_url_when_cloud_mode_disabled() -> None:
@@ -50,3 +58,8 @@ def test_llm_runtime_tuning_validation_rejects_invalid_values() -> None:
 
     with pytest.raises(ValidationError):
         LLMSettings(TURN_LLM_STALL_TIMEOUT_SEC=0.0)
+
+
+def test_livekit_runtime_tuning_validation_rejects_invalid_values() -> None:
+    with pytest.raises(ValidationError):
+        LiveKitSettings(LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC=0.0)

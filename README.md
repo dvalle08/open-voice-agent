@@ -202,6 +202,18 @@ TURN_LLM_STALL_TIMEOUT_SEC=8.0
 - `LLM_CONN_*` controls timeout/retry behavior for both LLM and PocketTTS requests.
 - `TURN_LLM_STALL_TIMEOUT_SEC` emits a backend warning if a finalized user turn never reaches the LLM stage.
 
+### LiveKit worker startup
+
+Tune idle worker warm-up with:
+
+```bash
+LIVEKIT_NUM_IDLE_PROCESSES=1
+LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC=20.0
+```
+
+- `LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC` maps to LiveKit's idle worker bootstrap timeout.
+- `20.0` seconds is the intended baseline when keeping the current worker behavior and avoiding idle worker init timeouts.
+
 ### Troubleshooting: STT works but no voice reply
 
 If the UI only shows silence/STT activity and never reaches LLM/TTS:
