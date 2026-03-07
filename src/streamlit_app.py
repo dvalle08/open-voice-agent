@@ -38,6 +38,21 @@ def extract_display_name(model_id: str, provider: str) -> str:
     return name.replace("-", " ").title()
 
 
+def _resolve_tts_footer_component() -> tuple[str, str]:
+    provider = settings.voice.TTS_PROVIDER.lower()
+
+    if provider == "pocket":
+        return (
+            "https://huggingface.co/kyutai/pocket-tts",
+            f"PocketTTS (voice: {settings.voice.POCKET_TTS_VOICE})",
+        )
+
+    if provider == "deepgram":
+        return ("https://deepgram.com/", "Deepgram (aura-2-thalia-en)")
+
+    return ("#", f"Unknown TTS ({provider})")
+
+
 def generate_footer_html() -> str:
     """Generate dynamic 'Powered by' footer HTML based on current settings."""
     # STT Component
@@ -67,11 +82,13 @@ def generate_footer_html() -> str:
         llm_url = "#"
         llm_display = f"Unknown LLM ({llm_provider})"
 
+    tts_url, tts_display = _resolve_tts_footer_component()
+
     # Build footer HTML
     return f"""Powered by open-source core components:
         <a href="{stt_url}" target="_blank" rel="noopener noreferrer">{stt_display}</a> ·
         <a href="{llm_url}" target="_blank" rel="noopener noreferrer">{llm_display}</a> ·
-        <a href="https://huggingface.co/kyutai/pocket-tts" target="_blank" rel="noopener noreferrer">PocketTTS</a> ·
+        <a href="{tts_url}" target="_blank" rel="noopener noreferrer">{tts_display}</a> ·
         <a href="https://livekit.io/" target="_blank" rel="noopener noreferrer">LiveKit</a>"""
 
 

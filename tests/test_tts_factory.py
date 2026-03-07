@@ -33,7 +33,8 @@ def test_create_tts_uses_deepgram_provider(monkeypatch) -> None:
     deepgram_calls: dict[str, object] = {}
 
     class _FakeDeepgramTTS:
-        def __init__(self, *, api_key: str | None = None) -> None:
+        def __init__(self, *, model: str, api_key: str | None = None) -> None:
+            deepgram_calls["model"] = model
             deepgram_calls["api_key"] = api_key
 
     monkeypatch.setattr(settings.voice, "TTS_PROVIDER", "deepgram")
@@ -43,4 +44,7 @@ def test_create_tts_uses_deepgram_provider(monkeypatch) -> None:
     tts_engine = tts_factory.create_tts()
 
     assert isinstance(tts_engine, _FakeDeepgramTTS)
-    assert deepgram_calls == {"api_key": "deepgram-test-key"}
+    assert deepgram_calls == {
+        "model": "aura-2-thalia-en",
+        "api_key": "deepgram-test-key",
+    }
