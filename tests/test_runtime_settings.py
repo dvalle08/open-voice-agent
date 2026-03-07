@@ -8,18 +8,34 @@ from src.core.settings import LLMSettings
 
 def test_llm_runtime_tuning_defaults_are_declared() -> None:
     fields = LLMSettings.model_fields
+    settings = LLMSettings(OLLAMA_API_KEY="test-key")
 
     assert fields["LLM_PROVIDER"].default == "ollama"
     assert fields["MCP_ENABLED"].default is True
     assert fields["MCP_SERVER_URL"].default == "https://huggingface.co/mcp"
     assert fields["MCP_EXTRA_SERVER_URLS"].default == "https://docs.livekit.io/mcp"
-    assert fields["OLLAMA_BASE_URL"].default == "http://localhost:11434/v1"
+    assert fields["OLLAMA_CLOUD_MODE"].default is True
     assert fields["OLLAMA_MODEL"].default == "qwen3-coder-next"
     assert fields["OLLAMA_API_KEY"].default == "ollama"
     assert fields["LLM_CONN_TIMEOUT_SEC"].default == 20.0
     assert fields["LLM_CONN_MAX_RETRY"].default == 1
     assert fields["LLM_CONN_RETRY_INTERVAL_SEC"].default == 1.0
     assert fields["TURN_LLM_STALL_TIMEOUT_SEC"].default == 12.0
+    assert settings.OLLAMA_BASE_URL == "https://ollama.com/v1"
+
+
+def test_llm_runtime_tuning_switches_to_local_ollama_base_url_when_cloud_mode_disabled() -> None:
+    settings = LLMSettings(OLLAMA_CLOUD_MODE=False, OLLAMA_API_KEY=None)
+
+    assert settings.OLLAMA_BASE_URL == "http://localhost:11434/v1"
+
+
+def test_llm_runtime_tuning_requires_api_key_for_ollama_cloud_mode() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="OLLAMA_API_KEY is required when LLM_PROVIDER=ollama and OLLAMA_CLOUD_MODE=true",
+    ):
+        LLMSettings(OLLAMA_API_KEY=" ")
 
 
 def test_llm_runtime_tuning_validation_rejects_invalid_values() -> None:

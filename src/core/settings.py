@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 
@@ -15,6 +15,8 @@ load_dotenv(ENV_FILE, override=True)
 logger.info(f"Loaded environment from: {ENV_FILE}")
 
 SENSITIVE_KEY_MARKERS = ("key", "token", "secret", "password")
+OLLAMA_LOCAL_BASE_URL = "http://localhost:11434/v1"
+OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -199,9 +201,12 @@ class LLMSettings(CoreSettings):
     NVIDIA_MODEL: str = Field(default="qwen/qwen3-next-80b-a3b-instruct") #meta/llama-3.1-8b-instruct #"qwen/qwen3-next-80b-a3b-instruct", "qwen/qwen3.5-397b-a17b"
 
     # Ollama settings
-    OLLAMA_BASE_URL: str = Field(
-        default="http://localhost:11434/v1",
-        description="OpenAI-compatible Ollama endpoint",
+    OLLAMA_CLOUD_MODE: bool = Field(
+        default=True,
+        description=(
+            "Use Ollama Cloud OpenAI-compatible endpoint. "
+            "When false, use the local Ollama endpoint."
+        ),
     )
     OLLAMA_MODEL: str = Field(
         default= "qwen3-coder-next", #"ministral-3:8b", #"qwen2.5:7b" #"qwen3:8b" #"qwen3.5:4b",
@@ -239,6 +244,24 @@ class LLMSettings(CoreSettings):
         le=120.0,
         description="Warn when a finalized user turn does not reach LLM stage within this timeout",
     )
+
+    @property
+    def OLLAMA_BASE_URL(self) -> str:
+        if self.OLLAMA_CLOUD_MODE:
+            return OLLAMA_CLOUD_BASE_URL
+        return OLLAMA_LOCAL_BASE_URL
+
+    @model_validator(mode="after")
+    def validate_ollama_cloud_settings(self) -> "LLMSettings":
+        provider = (self.LLM_PROVIDER or "").strip().lower()
+        api_key = (self.OLLAMA_API_KEY or "").strip()
+
+        if provider == "ollama" and self.OLLAMA_CLOUD_MODE and not api_key:
+            raise ValueError(
+                "OLLAMA_API_KEY is required when LLM_PROVIDER=ollama and OLLAMA_CLOUD_MODE=true"
+            )
+
+        return self
 
 
 class LiveKitSettings(CoreSettings):

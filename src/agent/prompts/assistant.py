@@ -31,8 +31,10 @@ def _format_agent_config_summary(current_settings: Settings) -> str:
     llm_provider = str(llm.get("LLM_PROVIDER", "")).lower()
     if llm_provider == "nvidia":
         llm_model = llm.get("NVIDIA_MODEL")
+        llm_mode = None
     else:
         llm_model = llm.get("OLLAMA_MODEL")
+        llm_mode = llm.get("OLLAMA_CLOUD_MODE")
 
     mcp_extra_servers = llm.get("MCP_EXTRA_SERVER_URLS") or "<none>"
 
@@ -41,6 +43,7 @@ def _format_agent_config_summary(current_settings: Settings) -> str:
         (
             "LLM: "
             f"provider={llm_provider}, model={llm_model}, "
+            f"{f'cloud_mode={llm_mode}, ' if llm_mode is not None else ''}"
             f"temperature={llm.get('LLM_TEMPERATURE')}, max_tokens={llm.get('LLM_MAX_TOKENS')}, "
             f"timeout_sec={llm.get('LLM_CONN_TIMEOUT_SEC')}, max_retry={llm.get('LLM_CONN_MAX_RETRY')}, "
             f"retry_interval_sec={llm.get('LLM_CONN_RETRY_INTERVAL_SEC')}."

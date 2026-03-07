@@ -116,7 +116,7 @@ docker run -p 8501:8501 --env-file .env open-voice-agent
 **Local (Ollama):**
 ```bash
 LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_CLOUD_MODE=false
 OLLAMA_MODEL=qwen2.5:7b
 OLLAMA_API_KEY=ollama
 ```
@@ -124,12 +124,14 @@ OLLAMA_API_KEY=ollama
 **Ollama Cloud (OpenAI-compatible):**
 ```bash
 LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=https://ollama.com/v1
+OLLAMA_CLOUD_MODE=true
 OLLAMA_MODEL=qwen3-next:80b
 OLLAMA_API_KEY=your_ollama_api_key_here
 ```
 
+- `OLLAMA_CLOUD_MODE=true` derives `https://ollama.com/v1`; `false` derives `http://localhost:11434/v1`.
 - For `https://ollama.com/v1`, `OLLAMA_MODEL` must be an exact ID returned by `GET /v1/models`.
+- `OLLAMA_API_KEY` is required when `OLLAMA_CLOUD_MODE=true`.
 - Do not use `:cloud` aliases (for example `qwen3.5:cloud`) with the OpenAI-compatible endpoint.
 - Quick check:
   ```bash
@@ -208,8 +210,8 @@ If the UI only shows silence/STT activity and never reaches LLM/TTS:
 - Check backend logs for `Agent session pipeline error` with `source=...` and `error_type=...`.
 - Verify your selected LLM provider config:
   - `nvidia`: `NVIDIA_API_KEY` and `NVIDIA_MODEL`
-  - `ollama` local: local server reachable at `OLLAMA_BASE_URL` and model pulled in Ollama
-  - `ollama` cloud: `OLLAMA_BASE_URL=https://ollama.com/v1` and model ID from `/v1/models`
+  - `ollama` local: `OLLAMA_CLOUD_MODE=false`, local server reachable at `http://localhost:11434/v1`, and model pulled in Ollama
+  - `ollama` cloud: `OLLAMA_CLOUD_MODE=true`, valid `OLLAMA_API_KEY`, and model ID from `/v1/models`
 - Verify NVIDIA STT credentials when using `STT_PROVIDER=nvidia`; the agent logs which STT key source is used.
 - If local memory warnings are noisy, raise `LIVEKIT_JOB_MEMORY_WARN_MB` (for local setups, `6144` is a practical baseline).
 
