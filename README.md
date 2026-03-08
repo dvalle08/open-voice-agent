@@ -1,22 +1,20 @@
 ---
-
-## title: Open Voice Agent
+title: Open Voice Agent
 emoji: 🎤
 colorFrom: blue
 colorTo: purple
 sdk: docker
 app_port: 8501
 pinned: false
-
+---
 # 🎤 Open Voice Agent
 
 > A real-time voice AI agent powered by open-source components.
 
 **[Live Demo on HuggingFace Spaces](https://huggingface.co/spaces/dvalle08/open-voice-agent)**
 
-
-
-Open Voice Agent Demo
+<!-- Replace with your actual GIF after recording -->
+![Open Voice Agent Demo](assets/demo2.gif)
 
 ---
 
