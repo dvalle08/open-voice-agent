@@ -202,6 +202,17 @@ class TurnState:
     first_audio_monotonic: Optional[float] = None
 
 
+@dataclass
+class PendingUserUtterance:
+    """Logical user utterance that may span multiple final STT chunks."""
+
+    transcript: str
+    committed: bool = False
+    stt_observed: bool = False
+    llm_started: bool = False
+    watchdog_id: Optional[str] = None
+
+
 # ------------------------------------------------------------------
 # Facade
 # ------------------------------------------------------------------
@@ -241,12 +252,11 @@ class MetricsCollector:
         )
 
         self._publisher = ChannelPublisher(room)
-        self._pending_transcripts: deque[str] = deque()
+        self._pending_user_utterances: deque[PendingUserUtterance] = deque()
         self._pending_agent_transcripts: deque[str] = deque()
         self._pending_speech_ids_for_first_audio: deque[str] = deque()
         self._latest_agent_speech_id: Optional[str] = None
         self._turns: dict[str, TurnState] = {}
-        self._pending_llm_watchdog_ids: deque[str] = deque()
         self._llm_stall_tasks: dict[str, asyncio.Task[None]] = {}
         self._latest_vad_metrics: Optional[VADMetrics] = None
         self._latest_vad_metric_attributes: Optional[dict[str, Any]] = None
@@ -318,18 +328,34 @@ class MetricsCollector:
         normalized = transcript.strip()
         if not normalized:
             return
-        self._pending_transcripts.append(normalized)
+        utterance = self._current_open_user_utterance()
+        if utterance is None:
+            utterance = PendingUserUtterance(transcript=normalized)
+            utterance.watchdog_id = self._start_llm_stall_watchdog(transcript=normalized)
+            self._pending_user_utterances.append(utterance)
+        else:
+            utterance.transcript = _merge_user_transcripts(
+                utterance.transcript,
+                normalized,
+            )
+            if utterance.watchdog_id is not None:
+                self._update_llm_stall_watchdog(
+                    utterance.watchdog_id,
+                    utterance.transcript,
+                )
         if not self._first_final_user_turn_logged:
             self._first_final_user_turn_logged = True
             logger.info(
                 "First finalized user transcript received: room=%s chars=%s preview=%r",
                 self._room_name,
-                len(normalized),
-                normalized[:80],
+                len(utterance.transcript),
+                utterance.transcript[:80],
             )
-        self._start_llm_stall_watchdog(transcript=normalized)
         room_id = await self._resolve_room_id()
-        await self._tracer.create_turn(user_transcript=normalized, room_id=room_id)
+        await self._tracer.create_turn(
+            user_transcript=utterance.transcript,
+            room_id=room_id,
+        )
 
     async def on_conversation_item_added(
         self,
@@ -345,7 +371,28 @@ class MetricsCollector:
         if not normalized:
             return
         if role == "user":
-            _append_if_new(self._pending_transcripts, normalized)
+            utterance = self._latest_user_utterance()
+            if utterance is None:
+                utterance = PendingUserUtterance(
+                    transcript=normalized,
+                    committed=True,
+                )
+                self._pending_user_utterances.append(utterance)
+            else:
+                utterance.transcript = normalized
+                utterance.committed = True
+                if utterance.watchdog_id is not None:
+                    self._update_llm_stall_watchdog(
+                        utterance.watchdog_id,
+                        utterance.transcript,
+                    )
+            user_event_created_at = (
+                item_created_at if item_created_at is not None else event_created_at
+            )
+            await self._tracer.attach_user_text(
+                normalized,
+                event_created_at=user_event_created_at,
+            )
             return
         assistant_event_created_at = (
             item_created_at if item_created_at is not None else event_created_at
@@ -519,8 +566,10 @@ class MetricsCollector:
         if isinstance(collected_metrics, metrics.STTMetrics):
             speech_id = collected_metrics.request_id
             turn_metrics = self._get_or_create_turn(speech_id, role="user")
-            if self._pending_transcripts:
-                turn_metrics.transcript = self._pending_transcripts.popleft()
+            utterance = self._next_user_utterance_for_stt()
+            if utterance is not None:
+                turn_metrics.transcript = utterance.transcript
+                utterance.stt_observed = True
             turn_metrics.stt = STTMetrics(
                 type=collected_metrics.type,
                 label=collected_metrics.label,
@@ -605,6 +654,7 @@ class MetricsCollector:
         elif isinstance(collected_metrics, metrics.EOUMetrics):
             speech_id = collected_metrics.speech_id
             if speech_id:
+                self._mark_oldest_open_user_utterance_committed()
                 state = self._get_or_create_state(speech_id)
                 if state.speech_end_monotonic is None:
                     state.speech_end_monotonic = monotonic()
@@ -788,12 +838,44 @@ class MetricsCollector:
             s for s in self._pending_speech_ids_for_first_audio if s != speech_id
         )
 
-    def _start_llm_stall_watchdog(self, *, transcript: str) -> None:
-        if self._llm_stall_timeout_sec <= 0:
+    def _current_open_user_utterance(self) -> Optional[PendingUserUtterance]:
+        utterance = self._latest_user_utterance()
+        if utterance is None or utterance.committed:
+            return None
+        return utterance
+
+    def _latest_user_utterance(self) -> Optional[PendingUserUtterance]:
+        if not self._pending_user_utterances:
+            return None
+        return self._pending_user_utterances[-1]
+
+    def _next_user_utterance_for_stt(self) -> Optional[PendingUserUtterance]:
+        for utterance in self._pending_user_utterances:
+            if utterance.stt_observed:
+                continue
+            return utterance
+        return None
+
+    def _mark_oldest_open_user_utterance_committed(self) -> None:
+        for utterance in self._pending_user_utterances:
+            if utterance.committed:
+                continue
+            utterance.committed = True
+            self._prune_resolved_user_utterances()
             return
 
+    def _prune_resolved_user_utterances(self) -> None:
+        while self._pending_user_utterances:
+            utterance = self._pending_user_utterances[0]
+            if not utterance.committed or not utterance.llm_started:
+                break
+            self._pending_user_utterances.popleft()
+
+    def _start_llm_stall_watchdog(self, *, transcript: str) -> str | None:
+        if self._llm_stall_timeout_sec <= 0:
+            return None
+
         watchdog_id = str(uuid.uuid4())
-        self._pending_llm_watchdog_ids.append(watchdog_id)
         task = asyncio.create_task(
             self._warn_if_turn_stalled_before_llm(
                 watchdog_id=watchdog_id,
@@ -807,14 +889,36 @@ class MetricsCollector:
             self._llm_stall_tasks.pop(watchdog_id, None)
 
         task.add_done_callback(_on_done)
+        return watchdog_id
+
+    def _update_llm_stall_watchdog(self, watchdog_id: str, transcript: str) -> None:
+        utterance = self._find_user_utterance_by_watchdog(watchdog_id)
+        if utterance is None or utterance.llm_started:
+            return
+        utterance.transcript = transcript
 
     def _mark_llm_stage_reached(self) -> None:
-        while self._pending_llm_watchdog_ids:
-            watchdog_id = self._pending_llm_watchdog_ids.popleft()
-            task = self._llm_stall_tasks.pop(watchdog_id, None)
-            if task:
-                task.cancel()
-                return
+        for utterance in self._pending_user_utterances:
+            if utterance.llm_started:
+                continue
+            utterance.llm_started = True
+            watchdog_id = utterance.watchdog_id
+            utterance.watchdog_id = None
+            if watchdog_id is not None:
+                task = self._llm_stall_tasks.pop(watchdog_id, None)
+                if task:
+                    task.cancel()
+            self._prune_resolved_user_utterances()
+            return
+
+    def _find_user_utterance_by_watchdog(
+        self,
+        watchdog_id: str,
+    ) -> Optional[PendingUserUtterance]:
+        for utterance in self._pending_user_utterances:
+            if utterance.watchdog_id == watchdog_id:
+                return utterance
+        return None
 
     async def _warn_if_turn_stalled_before_llm(
         self,
@@ -827,21 +931,21 @@ class MetricsCollector:
         except asyncio.CancelledError:
             return
 
-        if watchdog_id not in self._pending_llm_watchdog_ids:
+        utterance = self._find_user_utterance_by_watchdog(watchdog_id)
+        if utterance is None or utterance.llm_started:
             return
 
-        self._pending_llm_watchdog_ids = deque(
-            wid for wid in self._pending_llm_watchdog_ids if wid != watchdog_id
-        )
-
-        preview = transcript[:80]
+        utterance.watchdog_id = None
+        utterance.llm_started = True
+        preview = utterance.transcript[:80] if utterance.transcript else transcript[:80]
         logger.warning(
             "Turn stalled before LLM stage: timeout=%.2fs room=%s transcript_chars=%s transcript_preview=%r",
             self._llm_stall_timeout_sec,
             self._room_name,
-            len(transcript),
+            len(utterance.transcript or transcript),
             preview,
         )
+        self._prune_resolved_user_utterances()
 
     async def _resolve_room_id(self) -> str:
         if self._room_id and self._room_id != self._room_name:
@@ -879,6 +983,32 @@ def _append_if_new(queue: deque[str], value: str) -> None:
     if queue and queue[-1] == value:
         return
     queue.append(value)
+
+
+def _merge_user_transcripts(existing: str, incoming: str) -> str:
+    left = existing.strip()
+    right = incoming.strip()
+    if not left:
+        return right
+    if not right:
+        return left
+    if left == right:
+        return left
+    if right.startswith(left):
+        return right
+    if left.startswith(right):
+        return left
+
+    left_words = left.split()
+    right_words = right.split()
+    max_overlap = min(len(left_words), len(right_words))
+    for overlap in range(max_overlap, 0, -1):
+        left_suffix = [word.casefold() for word in left_words[-overlap:]]
+        right_prefix = [word.casefold() for word in right_words[:overlap]]
+        if left_suffix == right_prefix:
+            merged_words = [*left_words, *right_words[overlap:]]
+            return " ".join(merged_words).strip()
+    return f"{left} {right}".strip()
 
 
 def _trace_turn_has_tool_activity(trace_turn: Optional[TraceTurn]) -> bool:

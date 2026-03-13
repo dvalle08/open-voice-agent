@@ -60,7 +60,7 @@ class CoreSettings(BaseSettings):
 
 class VoiceSettings(CoreSettings):
     TTS_PROVIDER: str = Field(
-        default="nvidia",
+        default="pocket",
         description="TTS provider: 'pocket', 'deepgram', or 'nvidia'",
     )
     DEEPGRAM_API_KEY: Optional[str] = Field(
@@ -129,7 +129,7 @@ class VoiceSettings(CoreSettings):
         description="Number of audio input channels (1=mono)",
     )
     LIVEKIT_FRAME_SIZE_MS: int = Field(
-        default=20,
+        default=60,
         ge=10,
         le=100,
         description="Audio frame size in milliseconds (smaller = faster VAD response)",
@@ -153,31 +153,34 @@ class VoiceSettings(CoreSettings):
         description="Minimum speech duration (seconds) before VAD activation",
     )
     VAD_MIN_SILENCE_DURATION: float = Field(
-        default=0.30,
+        default=0.55,
         ge=0.1,
         le=2.0,
         description="Minimum silence duration (seconds) before VAD deactivation",
     )
     VAD_THRESHOLD: float = Field(
-        default=0.6,
+        default=0.5,
         ge=0.0,
         le=1.0,
         description="VAD activation threshold (higher = less sensitive, 0.5 is Silero default)",
     )
     MIN_ENDPOINTING_DELAY: float = Field(
-        default=0.15,
+        default=0.5,
         ge=0.0,
         le=10.0,
-        description="Minimum endpointing delay (seconds) before committing user turn",
+        description=(
+            "Minimum endpointing delay (seconds) before committing user turn; "
+            "slightly higher values reduce false turn splits"
+        ),
     )
     MAX_ENDPOINTING_DELAY: float = Field(
-        default=1.5,
+        default=3.0,
         ge=0.1,
         le=10.0,
         description="Maximum endpointing delay (seconds) when turn detector expects continuation",
     )
     PREEMPTIVE_GENERATION: bool = Field(
-        default=True,
+        default=False,
         description="Enable speculative LLM/TTS generation before final turn commit",
     )
 
@@ -280,7 +283,7 @@ class LLMSettings(CoreSettings):
         ),
     )
     OLLAMA_MODEL: str = Field(
-        default= "ministral-3:14b-cloud", #"ministral-3:8b-cloud", #"qwen3-coder-next",#minimax-m2.5 #"ministral-3:8b", #"qwen2.5:7b" #"qwen3:8b" #"qwen3.5:4b",
+        default= "ministral-3:14b", #"ministral-3:14b-cloud", #"ministral-3:8b-cloud", #"qwen3-coder-next",#minimax-m2.5 #"ministral-3:8b", #"qwen2.5:7b" #"qwen3:8b" #"qwen3.5:4b",
         description="Ollama model tag",
     )
     OLLAMA_API_KEY: Optional[str] = Field(
@@ -290,7 +293,7 @@ class LLMSettings(CoreSettings):
 
     # Common LLM parameters
     LLM_TEMPERATURE: float = Field(default=0.7, ge=0.0, le=2.0)
-    LLM_MAX_TOKENS: int = Field(default=1024, gt=0)
+    LLM_MAX_TOKENS: int = Field(default=256, gt=0)
     LLM_CONN_TIMEOUT_SEC: float = Field(
         default=20.0,
         gt=0.0,
@@ -349,7 +352,7 @@ class LiveKitSettings(CoreSettings):
     LIVEKIT_API_KEY: Optional[str] = Field(default=None)
     LIVEKIT_API_SECRET: Optional[str] = Field(default=None)
     LIVEKIT_AGENT_NAME: str = Field(default="open-voice-agent")
-    LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=1, ge=0)
+    LIVEKIT_NUM_IDLE_PROCESSES: int = Field(default=0, ge=0)
     LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC: float = Field(
         default=20.0,
         gt=0.0,
@@ -412,6 +415,15 @@ class LangfuseSettings(CoreSettings):
         ge=0.0,
         le=10000.0,
         description="Best-effort tracer flush timeout in milliseconds",
+    )
+    LANGFUSE_CONTINUATION_COALESCE_WINDOW_MS: float = Field(
+        default=1500.0,
+        ge=0.0,
+        le=10000.0,
+        description=(
+            "Window to merge an immediately-following continuation into a prior aborted "
+            "turn trace; set to 0 to disable"
+        ),
     )
 
 

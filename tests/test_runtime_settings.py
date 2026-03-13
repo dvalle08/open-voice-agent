@@ -3,7 +3,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.core.settings import LLMSettings, LiveKitSettings, STTSettings, Settings, VoiceSettings
+from src.core.settings import (
+    LLMSettings,
+    LangfuseSettings,
+    LiveKitSettings,
+    STTSettings,
+    Settings,
+    VoiceSettings,
+)
 
 
 def test_llm_runtime_tuning_defaults_are_declared() -> None:
@@ -15,7 +22,7 @@ def test_llm_runtime_tuning_defaults_are_declared() -> None:
     assert fields["MCP_SERVER_URL"].default == "https://huggingface.co/mcp"
     assert fields["MCP_EXTRA_SERVER_URLS"].default == "https://docs.livekit.io/mcp"
     assert fields["OLLAMA_CLOUD_MODE"].default is True
-    assert fields["OLLAMA_MODEL"].default == "ministral-3:14b-cloud"
+    assert fields["OLLAMA_MODEL"].default == "ministral-3:14b"
     assert fields["OLLAMA_API_KEY"].default == "ollama"
     assert fields["LLM_CONN_TIMEOUT_SEC"].default == 20.0
     assert fields["LLM_CONN_MAX_RETRY"].default == 1
@@ -28,7 +35,7 @@ def test_llm_runtime_tuning_defaults_are_declared() -> None:
 def test_livekit_runtime_tuning_defaults_are_declared() -> None:
     fields = LiveKitSettings.model_fields
 
-    assert fields["LIVEKIT_NUM_IDLE_PROCESSES"].default == 1
+    assert fields["LIVEKIT_NUM_IDLE_PROCESSES"].default == 0
     assert fields["LIVEKIT_INITIALIZE_PROCESS_TIMEOUT_SEC"].default == 20.0
     assert fields["LIVEKIT_JOB_MEMORY_WARN_MB"].default == 6144
 
@@ -36,16 +43,25 @@ def test_livekit_runtime_tuning_defaults_are_declared() -> None:
 def test_voice_runtime_tuning_defaults_are_declared() -> None:
     fields = VoiceSettings.model_fields
 
-    assert fields["TTS_PROVIDER"].default == "deepgram"
+    assert fields["TTS_PROVIDER"].default == "pocket"
     assert fields["NVIDIA_TTS_VOICE"].default == "Magpie-Multilingual.EN-US.Leo"
     assert fields["NVIDIA_TTS_USE_SSL"].default is True
     assert fields["POCKET_TTS_CONN_TIMEOUT_SEC"].default == 45.0
+    assert fields["MIN_ENDPOINTING_DELAY"].default == 0.8
+
+
+def test_langfuse_runtime_tuning_defaults_are_declared() -> None:
+    fields = LangfuseSettings.model_fields
+
+    assert fields["LANGFUSE_TRACE_FINALIZE_TIMEOUT_MS"].default == 8000.0
+    assert fields["LANGFUSE_POST_TOOL_RESPONSE_TIMEOUT_MS"].default == 30000.0
+    assert fields["LANGFUSE_CONTINUATION_COALESCE_WINDOW_MS"].default == 1500.0
 
 
 def test_stt_runtime_tuning_defaults_are_declared() -> None:
     fields = STTSettings.model_fields
 
-    assert fields["STT_PROVIDER"].default == "moonshine"
+    assert fields["STT_PROVIDER"].default == "deepgram"
     assert fields["DEEPGRAM_STT_MODEL"].default == "nova-3"
     assert fields["DEEPGRAM_STT_LANGUAGE"].default == "en-US"
 

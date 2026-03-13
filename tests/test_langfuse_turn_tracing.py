@@ -1676,6 +1676,328 @@ def test_creates_new_trace_for_each_finalized_transcript(
     assert turn_spans[0].trace_id != turn_spans[1].trace_id
 
 
+def test_multiple_final_transcripts_are_merged_into_one_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-merged-finals",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("What", is_final=True)
+        await collector.on_user_input_transcribed(
+            "the difference between speech to text and speech recognition?",
+            is_final=True,
+        )
+        await collector.on_metrics_collected(_make_stt_metrics("stt-merged"))
+        await collector.on_metrics_collected(
+            _make_eou_metrics("speech-merged", delay=0.9, transcription_delay=0.2)
+        )
+        await collector.on_conversation_item_added(
+            role="user",
+            content="What the difference between speech to text and speech recognition?",
+        )
+        await collector.on_metrics_collected(_make_llm_metrics("speech-merged"))
+        await collector.on_conversation_item_added(role="assistant", content="Speech to text writes words down.")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-merged"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    root = turn_spans[0]
+    stt_span = next(span for span in fake_tracer.spans if span.name == "STTMetrics")
+    assert (
+        root.attributes["langfuse.trace.input"]
+        == "What the difference between speech to text and speech recognition?"
+    )
+    assert (
+        stt_span.attributes["user_transcript"]
+        == "What the difference between speech to text and speech recognition?"
+    )
+    assert root.attributes["langfuse.trace.metadata.coalesced_turn_count"] == 0
+
+
+def test_immediate_continuation_coalesces_aborted_prior_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+    monkeypatch.setattr(
+        metrics_collector_module.settings.langfuse,
+        "LANGFUSE_CONTINUATION_COALESCE_WINDOW_MS",
+        1500.0,
+    )
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-coalesce",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("What", is_final=True)
+        await collector.on_metrics_collected(
+            _make_eou_metrics("speech-a", delay=0.7, transcription_delay=0.2)
+        )
+        await collector.on_metrics_collected(_make_llm_metrics("speech-a"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-a"))
+
+        await collector.on_user_input_transcribed(
+            "the difference between speech to text and speech recognition?",
+            is_final=True,
+        )
+        await collector.on_metrics_collected(
+            _make_eou_metrics("speech-b", delay=0.7, transcription_delay=0.2)
+        )
+        await collector.on_conversation_item_added(
+            role="user",
+            content="What the difference between speech to text and speech recognition?",
+        )
+        await collector.on_metrics_collected(_make_llm_metrics("speech-b"))
+        await collector.on_conversation_item_added(role="assistant", content="Speech to text writes words down.")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-b"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    root = turn_spans[0]
+    assert (
+        root.attributes["langfuse.trace.input"]
+        == "What the difference between speech to text and speech recognition?"
+    )
+    assert root.attributes["langfuse.trace.metadata.coalesced_turn_count"] == 1
+    assert root.attributes["langfuse.trace.metadata.coalesced_fragment_count"] == 1
+    assert root.attributes["langfuse.trace.metadata.coalesced_inputs"] == ["What"]
+
+
+def test_visible_assistant_reply_prevents_continuation_coalescing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-no-coalesce-visible-reply",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("first turn", is_final=True)
+        await collector.on_metrics_collected(_make_stt_metrics("stt-first-visible"))
+        await collector.on_metrics_collected(_make_eou_metrics("speech-first-visible"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-first-visible"))
+        await collector.on_conversation_item_added(role="assistant", content="first reply")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-first-visible"))
+
+        await collector.on_user_input_transcribed("second turn", is_final=True)
+        await collector.on_metrics_collected(_make_stt_metrics("stt-second-visible"))
+        await collector.on_metrics_collected(_make_eou_metrics("speech-second-visible"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-second-visible"))
+        await collector.on_conversation_item_added(role="assistant", content="second reply")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-second-visible"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 2
+    assert turn_spans[0].attributes["langfuse.trace.metadata.coalesced_turn_count"] == 0
+    assert turn_spans[1].attributes["langfuse.trace.metadata.coalesced_turn_count"] == 0
+
+
+def test_tool_activity_prevents_continuation_coalescing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+    collector._trace_finalize_timeout_sec = 0.05
+    collector._trace_post_tool_response_timeout_sec = 0.05
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-no-coalesce-tools",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("run tool", is_final=True)
+        await collector.on_metrics_collected(_make_eou_metrics("speech-tool-a"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-tool-a"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-tool-a"))
+        await collector.on_tool_step_started()
+        await collector.on_function_tools_executed(
+            function_calls=[
+                _FakeFunctionCall(
+                    name="search_web",
+                    call_id="tool-a",
+                    arguments='{"q":"speech models"}',
+                    created_at=1.0,
+                )
+            ],
+            function_call_outputs=[
+                _FakeFunctionCallOutput(
+                    output='{"results":[]}',
+                    is_error=False,
+                    created_at=1.1,
+                )
+            ],
+            created_at=1.1,
+        )
+
+        await collector.on_user_input_transcribed("follow-up turn", is_final=True)
+        await collector.on_metrics_collected(_make_eou_metrics("speech-tool-b"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-tool-b"))
+        await collector.on_conversation_item_added(role="assistant", content="second reply")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-tool-b"))
+        await asyncio.sleep(0.08)
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 2
+    assert turn_spans[1].attributes["langfuse.trace.metadata.coalesced_turn_count"] == 0
+
+
+def test_multiple_final_transcripts_share_one_llm_stall_watchdog() -> None:
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=False,
+    )
+
+    async def _run() -> None:
+        await collector.on_user_input_transcribed("Search for the most popular", is_final=True)
+        await collector.on_user_input_transcribed("test to speech model.", is_final=True)
+        assert len(collector._pending_user_utterances) == 1
+        assert len(collector._llm_stall_tasks) == 1
+        assert (
+            collector._pending_user_utterances[0].transcript
+            == "Search for the most popular test to speech model."
+        )
+
+        await collector.on_metrics_collected(_make_llm_metrics("speech-watchdog"))
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+
+    assert not collector._llm_stall_tasks
+
+
+def test_continuation_coalescing_can_be_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+    monkeypatch.setattr(
+        metrics_collector_module.settings.langfuse,
+        "LANGFUSE_CONTINUATION_COALESCE_WINDOW_MS",
+        0.0,
+    )
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+    collector._trace_finalize_timeout_sec = 0.01
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-no-coalesce-disabled",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("What", is_final=True)
+        await collector.on_metrics_collected(
+            _make_eou_metrics("speech-disabled-a", delay=0.7, transcription_delay=0.2)
+        )
+        await collector.on_metrics_collected(_make_llm_metrics("speech-disabled-a"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-disabled-a"))
+        await asyncio.sleep(0.03)
+
+        await collector.on_user_input_transcribed(
+            "the difference between speech to text and speech recognition?",
+            is_final=True,
+        )
+        await collector.on_metrics_collected(
+            _make_eou_metrics("speech-disabled-b", delay=0.7, transcription_delay=0.2)
+        )
+        await collector.on_metrics_collected(_make_llm_metrics("speech-disabled-b"))
+        await collector.on_conversation_item_added(role="assistant", content="Speech to text writes words down.")
+        await collector.on_metrics_collected(_make_tts_metrics("speech-disabled-b"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 2
+    assert turn_spans[0].attributes["langfuse.trace.input"] == "What"
+    assert (
+        turn_spans[1].attributes["langfuse.trace.input"]
+        == "the difference between speech to text and speech recognition?"
+    )
+
+
 def test_trace_emits_without_stt_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.agent.traces.metrics_collector as metrics_collector_module
 

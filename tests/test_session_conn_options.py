@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import types
+from pathlib import Path
 
 from livekit.agents.inference_runner import _InferenceRunner
 
 from src.agent.runtime import session as runtime_session
-from src.core.settings import settings
+from src.core.settings import VoiceSettings, settings
+
+
+ENV_EXAMPLE_PATH = Path(__file__).resolve().parents[1] / ".env.example"
 
 
 class _FakeJobContext:
@@ -70,8 +74,8 @@ def test_build_server_uses_livekit_process_initialization_settings(monkeypatch) 
     assert server._job_memory_warn_mb == 8192.0
 
 
-def test_importing_session_registers_multilingual_turn_detector_runner() -> None:
-    assert "lk_end_of_utterance_multilingual" in _InferenceRunner.registered_runners
+def test_importing_session_registers_english_turn_detector_runner() -> None:
+    assert "lk_end_of_utterance_en" in _InferenceRunner.registered_runners
 
 
 def test_resolve_stt_metrics_model_name_uses_deepgram_model(monkeypatch) -> None:
@@ -119,9 +123,12 @@ def test_session_handler_runs_llm_warmup_before_session_start(monkeypatch) -> No
     monkeypatch.setattr(runtime_session, "install_mcp_generate_reply_guard", lambda *args, **kwargs: None)
     monkeypatch.setattr(runtime_session, "run_startup_greeting", lambda *args, **kwargs: None)
     monkeypatch.setattr(runtime_session.silero.VAD, "load", lambda **kwargs: "vad")
-    monkeypatch.setattr(runtime_session, "MultilingualModel", lambda: "turn-detector")
+    monkeypatch.setattr(runtime_session, "EnglishModel", lambda: "turn-detector")
     monkeypatch.setattr(runtime_session.room_io, "AudioInputOptions", lambda **kwargs: kwargs)
     monkeypatch.setattr(runtime_session.room_io, "RoomOptions", lambda **kwargs: kwargs)
+    monkeypatch.setattr(settings.voice, "MIN_ENDPOINTING_DELAY", 1.0)
+    monkeypatch.setattr(settings.voice, "MAX_ENDPOINTING_DELAY", 4.0)
+    monkeypatch.setattr(settings.voice, "PREEMPTIVE_GENERATION", False)
 
     async def _fake_run_llm_warmup(**kwargs) -> None:
         order.append("llm")
@@ -133,3 +140,45 @@ def test_session_handler_runs_llm_warmup_before_session_start(monkeypatch) -> No
     assert order == ["llm", "start"]
     assert len(created_sessions) == 1
     assert created_sessions[0].start_calls
+    assert created_sessions[0].kwargs["turn_detection"] == "turn-detector"
+    assert created_sessions[0].kwargs["min_endpointing_delay"] == 1.0
+    assert created_sessions[0].kwargs["max_endpointing_delay"] == 4.0
+    assert created_sessions[0].kwargs["preemptive_generation"] is False
+
+
+def test_env_example_turn_profile_matches_voice_defaults() -> None:
+    env_values = _parse_env_file(ENV_EXAMPLE_PATH)
+
+    assert env_values["LIVEKIT_FRAME_SIZE_MS"] == str(
+        VoiceSettings.model_fields["LIVEKIT_FRAME_SIZE_MS"].default
+    )
+    assert env_values["VAD_MIN_SILENCE_DURATION"] == str(
+        VoiceSettings.model_fields["VAD_MIN_SILENCE_DURATION"].default
+    )
+    assert env_values["VAD_THRESHOLD"] == str(
+        VoiceSettings.model_fields["VAD_THRESHOLD"].default
+    )
+    assert env_values["MIN_ENDPOINTING_DELAY"] == str(
+        VoiceSettings.model_fields["MIN_ENDPOINTING_DELAY"].default
+    )
+    assert env_values["MAX_ENDPOINTING_DELAY"] == str(
+        VoiceSettings.model_fields["MAX_ENDPOINTING_DELAY"].default
+    )
+    assert env_values["PREEMPTIVE_GENERATION"] == _env_bool(
+        VoiceSettings.model_fields["PREEMPTIVE_GENERATION"].default
+    )
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.split(" #", 1)[0].strip()
+    return values
+
+
+def _env_bool(value: bool) -> str:
+    return "true" if value else "false"

@@ -12,7 +12,7 @@ from livekit.agents import AgentServer, AgentSession, room_io
 from livekit.agents.types import APIConnectOptions
 from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.plugins import noise_cancellation, silero
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from livekit.plugins.turn_detector.english import EnglishModel
 
 from src.agent.models.llm_runtime import (
     build_llm_runtime,
@@ -69,6 +69,15 @@ def _resolve_stt_metrics_model_name() -> str:
     if provider == "deepgram":
         return settings.stt.DEEPGRAM_STT_MODEL
     return settings.stt.NVIDIA_STT_MODEL
+
+
+def _resolve_stt_language() -> str:
+    provider = settings.stt.STT_PROVIDER.lower()
+    if provider == "moonshine":
+        return settings.stt.MOONSHINE_LANGUAGE
+    if provider == "deepgram":
+        return settings.stt.DEEPGRAM_STT_LANGUAGE
+    return settings.stt.NVIDIA_STT_LANGUAGE_CODE
 
 
 def _build_session_connect_options() -> tuple[APIConnectOptions, SessionConnectOptions]:
@@ -173,8 +182,21 @@ async def session_handler(ctx: agents.JobContext) -> None:
         model=llm_runtime.model,
     )
 
+    stt_engine = create_stt()
+    logger.info(
+        "Turn profile: detector=%s stt_provider=%s stt_model=%s stt_language=%s vad_min_silence=%.2fs min_endpointing=%.2fs max_endpointing=%.2fs preemptive_generation=%s",
+        "EnglishModel",
+        settings.stt.STT_PROVIDER,
+        _resolve_stt_metrics_model_name(),
+        _resolve_stt_language(),
+        settings.voice.VAD_MIN_SILENCE_DURATION,
+        settings.voice.MIN_ENDPOINTING_DELAY,
+        settings.voice.MAX_ENDPOINTING_DELAY,
+        settings.voice.PREEMPTIVE_GENERATION,
+    )
+
     session_kwargs: dict[str, Any] = dict(
-        stt=create_stt(),
+        stt=stt_engine,
         llm=llm_runtime.llm,
         tts=tts_engine,
         vad=silero.VAD.load(
@@ -182,7 +204,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
             min_silence_duration=settings.voice.VAD_MIN_SILENCE_DURATION,
             activation_threshold=settings.voice.VAD_THRESHOLD,
         ),
-        turn_detection=MultilingualModel(),
+        turn_detection=EnglishModel(),
         min_endpointing_delay=settings.voice.MIN_ENDPOINTING_DELAY,
         max_endpointing_delay=settings.voice.MAX_ENDPOINTING_DELAY,
         preemptive_generation=settings.voice.PREEMPTIVE_GENERATION,

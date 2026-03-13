@@ -32,6 +32,10 @@ class TraceTurn:
     participant_id: str
     user_transcript: str
     prompt_text: str
+    created_at: float = field(default_factory=time)
+    user_turn_committed: bool = False
+    user_turn_committed_at: Optional[float] = None
+    user_transcript_updated_at: Optional[float] = None
     response_text: str = ""
     assistant_text: str = ""
     assistant_text_missing: bool = False
@@ -72,6 +76,9 @@ class TraceTurn:
     tts_updated_order: Optional[int] = None
     event_counter: int = 0
     tool_post_response_missing: bool = False
+    coalesced_turn_ids: list[str] = field(default_factory=list)
+    coalesced_user_transcripts: list[str] = field(default_factory=list)
+    coalesced_fragment_count: int = 0
     trace_id: Optional[str] = None
 
 
@@ -153,6 +160,7 @@ _DEFAULT_TRACE_FINALIZE_TIMEOUT_MS = 8000.0
 _DEFAULT_POST_TOOL_RESPONSE_TIMEOUT_MS = 30000.0
 _DEFAULT_MAX_PENDING_TRACE_TASKS = 200
 _DEFAULT_TRACE_FLUSH_TIMEOUT_SEC = 1.0
+_DEFAULT_CONTINUATION_COALESCE_WINDOW_MS = 1500.0
 _TOOL_ERROR_FALLBACK_TEXT = "I couldn't complete that tool request. Please rephrase the query."
 
 
@@ -233,6 +241,17 @@ class TurnTracer:
             )
             / 1000.0
         )
+        self._continuation_coalesce_window_sec = (
+            max(
+                getattr(
+                    settings.langfuse,
+                    "LANGFUSE_CONTINUATION_COALESCE_WINDOW_MS",
+                    _DEFAULT_CONTINUATION_COALESCE_WINDOW_MS,
+                ),
+                0.0,
+            )
+            / 1000.0
+        )
 
     # ------------------------------------------------------------------
     # Session context
@@ -287,16 +306,60 @@ class TurnTracer:
 
     async def create_turn(self, *, user_transcript: str, room_id: str) -> None:
         async with self._trace_lock:
-            self._pending_trace_turns.append(
-                TraceTurn(
-                    turn_id=str(uuid.uuid4()),
-                    session_id=self._session_id,
-                    room_id=room_id,
-                    participant_id=self._participant_id,
-                    user_transcript=user_transcript,
-                    prompt_text=user_transcript,
-                )
+            normalized = user_transcript.strip()
+            if not normalized:
+                return
+
+            current_turn = self._latest_turn_where(lambda c: not c.user_turn_committed)
+            if current_turn is not None:
+                self._update_user_turn_text(current_turn, normalized)
+                return
+
+            new_turn = TraceTurn(
+                turn_id=str(uuid.uuid4()),
+                session_id=self._session_id,
+                room_id=room_id,
+                participant_id=self._participant_id,
+                user_transcript=normalized,
+                prompt_text=normalized,
             )
+            new_turn.user_transcript_updated_at = new_turn.created_at
+
+            coalesced_turn = self._coalesced_turn_candidate()
+            if coalesced_turn is not None:
+                self._absorb_coalesced_turn_metadata(new_turn, coalesced_turn)
+                self._pending_trace_turns.remove(coalesced_turn)
+                self._cancel_finalize_timeout(coalesced_turn.turn_id)
+
+            self._pending_trace_turns.append(new_turn)
+
+    async def attach_user_text(
+        self,
+        user_transcript: str,
+        *,
+        event_created_at: Optional[float] = None,
+    ) -> Optional[TraceTurn]:
+        async with self._trace_lock:
+            turn = self._latest_turn_where(lambda c: not c.assistant_text.strip())
+            if turn is None:
+                turn = self._latest_turn_where(lambda _: True)
+            if turn is None:
+                return None
+
+            normalized = user_transcript.strip()
+            if not normalized:
+                return turn
+
+            self._update_user_turn_text(
+                turn,
+                normalized,
+                event_created_at=event_created_at,
+            )
+            turn.user_turn_committed = True
+            turn.user_turn_committed_at = _resolved_event_timestamp(
+                _to_optional_float(event_created_at)
+            )
+            return turn
 
     # ------------------------------------------------------------------
     # Stage attachment
@@ -358,6 +421,10 @@ class TurnTracer:
                 if turn.stt_duration_ms is None:
                     turn.stt_duration_ms = turn.stt_total_latency_ms
             turn.eou_attributes = _sanitize_component_attributes(metric_attributes)
+            turn.user_turn_committed = True
+            turn.user_turn_committed_at = _resolved_event_timestamp(
+                _to_optional_float(turn.eou_attributes.get("timestamp"))
+            )
             metric_speech_id = _normalize_optional_str(
                 turn.eou_attributes.get("speech_id")
             )
@@ -619,6 +686,88 @@ class TurnTracer:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _update_user_turn_text(
+        self,
+        turn: TraceTurn,
+        user_transcript: str,
+        *,
+        event_created_at: Optional[float] = None,
+    ) -> None:
+        normalized = user_transcript.strip()
+        if not normalized:
+            return
+        merged = _merge_user_transcripts(turn.user_transcript, normalized)
+        turn.user_transcript = merged
+        turn.prompt_text = merged
+        turn.user_transcript_updated_at = _resolved_event_timestamp(
+            _to_optional_float(event_created_at)
+        )
+
+    def _coalesced_turn_candidate(self) -> Optional[TraceTurn]:
+        if self._continuation_coalesce_window_sec <= 0.0:
+            return None
+
+        now = time()
+        for turn in reversed(self._pending_trace_turns):
+            if not self._can_coalesce_turn(turn):
+                continue
+            activity_at = self._turn_recent_activity_at(turn)
+            if activity_at is None:
+                continue
+            if now - activity_at > self._continuation_coalesce_window_sec:
+                return None
+            return turn
+        return None
+
+    def _can_coalesce_turn(self, turn: TraceTurn) -> bool:
+        if not turn.user_turn_committed:
+            return False
+        if not turn.user_transcript.strip():
+            return False
+        if turn.assistant_text.strip() or turn.response_text.strip():
+            return False
+        if turn.tool_step_announced or turn.tool_executions or turn.last_tool_event_order is not None:
+            return False
+        return bool(turn.llm_calls and turn.tts_calls)
+
+    def _turn_recent_activity_at(self, turn: TraceTurn) -> Optional[float]:
+        candidates = [
+            turn.assistant_text_updated_at,
+            turn.tts_updated_at,
+            turn.last_tool_completed_at,
+            turn.last_tool_event_at,
+            turn.user_turn_committed_at,
+            turn.user_transcript_updated_at,
+            turn.created_at,
+        ]
+        resolved = [candidate for candidate in candidates if candidate is not None]
+        if not resolved:
+            return None
+        return max(resolved)
+
+    def _absorb_coalesced_turn_metadata(
+        self,
+        new_turn: TraceTurn,
+        absorbed_turn: TraceTurn,
+    ) -> None:
+        combined_input = _merge_user_transcripts(
+            absorbed_turn.user_transcript,
+            new_turn.user_transcript,
+        )
+        new_turn.user_transcript = combined_input
+        new_turn.prompt_text = combined_input
+        new_turn.coalesced_turn_ids = [
+            *absorbed_turn.coalesced_turn_ids,
+            absorbed_turn.turn_id,
+        ]
+        new_turn.coalesced_user_transcripts = [
+            *absorbed_turn.coalesced_user_transcripts,
+            absorbed_turn.user_transcript,
+        ]
+        new_turn.coalesced_fragment_count = (
+            absorbed_turn.coalesced_fragment_count + 1
+        )
 
     def _next_turn_where(
         self,
@@ -2005,6 +2154,11 @@ def _set_root_attributes(
         "langfuse.trace.metadata.stt_status": turn.stt_status,
         "langfuse.trace.metadata.tool_phase_announced": turn.tool_step_announced,
         "langfuse.trace.metadata.tool_post_response_missing": turn.tool_post_response_missing,
+        "langfuse.trace.metadata.user_turn_committed": turn.user_turn_committed,
+        "langfuse.trace.metadata.coalesced_turn_count": len(turn.coalesced_turn_ids),
+        "langfuse.trace.metadata.coalesced_fragment_count": turn.coalesced_fragment_count,
+        "langfuse.trace.metadata.coalesced_turn_ids": turn.coalesced_turn_ids,
+        "langfuse.trace.metadata.coalesced_inputs": turn.coalesced_user_transcripts,
         "duration_ms": _total_duration_ms(turn),
         "latency_ms.user_input": vals["user_input_duration_ms"],
         "latency_ms.vad": vals["vad_duration_ms"],
@@ -2036,6 +2190,7 @@ def _set_root_attributes(
         "tool.phase_announced": turn.tool_step_announced,
         "tool.post_response_missing": turn.tool_post_response_missing,
         "stt_status": turn.stt_status,
+        "user_turn.committed": turn.user_turn_committed,
     }
     for key, value in attrs.items():
         if value is not None:
@@ -2098,6 +2253,32 @@ def _stringify_observation(value: Any) -> str:
     if isinstance(value, (bytes, bytearray)):
         return value.decode("utf-8", errors="ignore")
     return str(value)
+
+
+def _merge_user_transcripts(existing: str, incoming: str) -> str:
+    left = existing.strip()
+    right = incoming.strip()
+    if not left:
+        return right
+    if not right:
+        return left
+    if left == right:
+        return left
+    if right.startswith(left):
+        return right
+    if left.startswith(right):
+        return left
+
+    left_words = left.split()
+    right_words = right.split()
+    max_overlap = min(len(left_words), len(right_words))
+    for overlap in range(max_overlap, 0, -1):
+        left_suffix = [word.casefold() for word in left_words[-overlap:]]
+        right_prefix = [word.casefold() for word in right_words[:overlap]]
+        if left_suffix == right_prefix:
+            merged_words = [*left_words, *right_words[overlap:]]
+            return " ".join(merged_words).strip()
+    return f"{left} {right}".strip()
 
 
 def _emit_component_span(
