@@ -5,10 +5,14 @@ import re
 from datetime import date
 from typing import Any
 
+import httpx
 import pytest
 from livekit.agents import llm
+from livekit.agents.llm.tool_context import ToolError
+from mcp.types import ErrorData
 
 from src.agent.models.llm_runtime import (
+    ConfiguredMCPServerHTTP,
     MCP_GENERATE_REPLY_BLOCK_MESSAGE,
     build_llm_runtime,
     build_mcp_http_timeout,
@@ -119,6 +123,19 @@ class _FakeLLMClient:
         return self._stream
 
 
+class _FakeMCPClient:
+    def __init__(self, *, result: Any = None, exc: Exception | None = None) -> None:
+        self._result = result
+        self._exc = exc
+        self.calls: list[dict[str, Any]] = []
+
+    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
+        self.calls.append({"name": name, "arguments": arguments})
+        if self._exc is not None:
+            raise self._exc
+        return self._result
+
+
 def _build_llm_settings(**overrides: Any) -> LLMSettings:
     defaults: dict[str, Any] = {
         "LLM_PROVIDER": "ollama",
@@ -131,6 +148,7 @@ def _build_llm_settings(**overrides: Any) -> LLMSettings:
         "LLM_TEMPERATURE": 0.7,
         "LLM_MAX_TOKENS": 1024,
         "LLM_CONN_TIMEOUT_SEC": 12.0,
+        "MCP_CONN_TIMEOUT_SEC": 20.0,
         "NVIDIA_MODEL": "meta/llama-3.1-8b-instruct",
         "NVIDIA_API_KEY": None,
     }
@@ -387,6 +405,7 @@ def test_build_llm_runtime_supports_ollama_with_mcp() -> None:
     runtime = build_llm_runtime(
         _build_llm_settings(
             MCP_ENABLED=True,
+            MCP_CONN_TIMEOUT_SEC=17.0,
             OLLAMA_API_KEY=None,
         )
     )
@@ -398,6 +417,12 @@ def test_build_llm_runtime_supports_ollama_with_mcp() -> None:
     assert [server.url for server in runtime.mcp_servers] == [
         "https://huggingface.co/mcp",
         "https://docs.livekit.io/mcp",
+    ]
+    assert all(isinstance(server, ConfiguredMCPServerHTTP) for server in runtime.mcp_servers)
+    assert [server.request_timeout_seconds for server in runtime.mcp_servers] == [17.0, 17.0]
+    assert [server.client_session_timeout_seconds for server in runtime.mcp_servers] == [
+        17.0,
+        17.0,
     ]
 
 
@@ -513,6 +538,13 @@ def test_assistant_instructions_limit_huggingface_and_livekit_tools() -> None:
     assert "Use LiveKit tools only for LiveKit-specific questions not covered by your own knowledge or the setup summary." in ASSISTANT_INSTRUCTIONS
 
 
+def test_assistant_instructions_avoid_same_turn_retry_after_tool_failure() -> None:
+    assert (
+        "If a tool reports timeout or temporary unavailability, do not call that same tool again in the same turn; answer briefly without it when you can."
+        in ASSISTANT_INSTRUCTIONS
+    )
+
+
 def test_assistant_instructions_describe_pipeline_identity() -> None:
     assert (
         "You are Open Voice Agent, a real-time voice pipeline."
@@ -556,10 +588,98 @@ def test_build_assistant_instructions_include_configuration_summary() -> None:
     assert "Setup summary:" in instructions
     assert "Voice stack: STT provider=" in instructions
     assert "LLM provider=" in instructions
+    assert "mcp_timeout_sec=" in instructions
     assert "TTS provider=" in instructions
     assert "LiveKit: runtime agent_name=" in instructions
     assert "audio sample_rate=" in instructions
+    assert "MCP runtime: enabled=" in instructions
     assert "MCP runtime:" in instructions
+
+
+def test_configured_mcp_server_http_converts_timeout_to_retry_guidance() -> None:
+    async def _run() -> None:
+        server = ConfiguredMCPServerHTTP(
+            url="https://docs.livekit.io/mcp",
+            timeout_seconds=20.0,
+        )
+        server._client = _FakeMCPClient(
+            exc=httpx.ReadTimeout(
+                "timed out",
+                request=httpx.Request("POST", "https://docs.livekit.io/mcp"),
+            )
+        )
+        tool = server._make_function_tool(
+            "code_search",
+            "Search docs",
+            {"type": "object"},
+            None,
+        )
+
+        with pytest.raises(
+            ToolError,
+            match=re.escape(
+                "The external tool 'code_search' timed out. Do not retry 'code_search' again in this turn. Give the user a brief answer without it."
+            ),
+        ):
+            await tool({"query": "agent session"})
+
+    asyncio.run(_run())
+
+
+def test_configured_mcp_server_http_converts_transport_errors_to_retry_guidance() -> None:
+    async def _run() -> None:
+        server = ConfiguredMCPServerHTTP(
+            url="https://docs.livekit.io/mcp",
+            timeout_seconds=20.0,
+        )
+        server._client = _FakeMCPClient(
+            exc=OSError("connection refused"),
+        )
+        tool = server._make_function_tool(
+            "code_search",
+            "Search docs",
+            {"type": "object"},
+            None,
+        )
+
+        with pytest.raises(
+            ToolError,
+            match=re.escape(
+                "The external tool 'code_search' is temporarily unavailable. Do not retry 'code_search' again in this turn. Give the user a brief answer without it."
+            ),
+        ):
+            await tool({"query": "agent session"})
+
+    asyncio.run(_run())
+
+
+def test_configured_mcp_server_http_treats_mcp_timeout_error_as_timeout() -> None:
+    async def _run() -> None:
+        from mcp.shared.exceptions import McpError
+
+        server = ConfiguredMCPServerHTTP(
+            url="https://docs.livekit.io/mcp",
+            timeout_seconds=20.0,
+        )
+        server._client = _FakeMCPClient(
+            exc=McpError(
+                ErrorData(
+                    code=1,
+                    message="Timed out while waiting for response to ClientRequest. Waited 20.0 seconds.",
+                )
+            ),
+        )
+        tool = server._make_function_tool(
+            "code_search",
+            "Search docs",
+            {"type": "object"},
+            None,
+        )
+
+        with pytest.raises(ToolError, match="timed out"):
+            await tool({"query": "agent session"})
+
+    asyncio.run(_run())
 
 
 def test_build_assistant_instructions_hide_pocket_specific_details_for_deepgram() -> None:

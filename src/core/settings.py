@@ -300,6 +300,12 @@ class LLMSettings(CoreSettings):
         le=120.0,
         description="LLM API timeout in seconds for one request attempt",
     )
+    MCP_CONN_TIMEOUT_SEC: float = Field(
+        default=20.0,
+        gt=0.0,
+        le=120.0,
+        description="MCP tool timeout in seconds for one request attempt/response cycle",
+    )
     LLM_CONN_MAX_RETRY: int = Field(
         default=1,
         ge=0,

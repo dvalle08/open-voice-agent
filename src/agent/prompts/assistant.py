@@ -72,7 +72,9 @@ def _format_agent_config_summary(current_settings: Settings) -> str:
             f"LLM provider={llm_provider}, model={llm_model}, "
             f"{f'cloud_mode={llm_mode}, ' if llm_mode is not None else ''}"
             f"temperature={llm.get('LLM_TEMPERATURE')}, max_tokens={llm.get('LLM_MAX_TOKENS')}, "
-            f"timeout_sec={llm.get('LLM_CONN_TIMEOUT_SEC')}, max_retry={llm.get('LLM_CONN_MAX_RETRY')}, "
+            f"timeout_sec={llm.get('LLM_CONN_TIMEOUT_SEC')}, "
+            f"mcp_timeout_sec={llm.get('MCP_CONN_TIMEOUT_SEC')}, "
+            f"max_retry={llm.get('LLM_CONN_MAX_RETRY')}, "
             f"retry_interval_sec={llm.get('LLM_CONN_RETRY_INTERVAL_SEC')}, "
             f"startup_greeting_timeout_sec={llm.get('MCP_STARTUP_GREETING_TIMEOUT_SEC')}; "
             f"{tts_summary}."
@@ -101,7 +103,8 @@ def _format_agent_config_summary(current_settings: Settings) -> str:
             "MCP runtime: "
             f"enabled={llm.get('MCP_ENABLED')}, "
             f"primary_server={llm.get('MCP_SERVER_URL')}, "
-            f"extra_servers={mcp_extra_servers}."
+            f"extra_servers={mcp_extra_servers}, "
+            f"timeout_sec={llm.get('MCP_CONN_TIMEOUT_SEC')}."
         ),
         (
             "Credential state (redacted): "
@@ -130,7 +133,7 @@ def build_assistant_instructions(
 Current date: {_format_human_date(today)}.
 Priority 1. Identity. You are a pipeline, not a single model. For self-description, describe the pipeline briefly and mention VAD, turn detection, STT, LLM, and TTS only when relevant.
 Priority 2. Response style. Answer as quickly as possible. Give the shortest complete answer. Default to one short sentence. If a few words are enough, use a few words. Expand only when the user asks or accuracy requires it. The user only speaks to you, not types, so do not ask them to write, type, paste, or use chat. Do not use markdown.
-Priority 3. Tools. Answer from your own knowledge first, then from the setup summary. Only call tools that are available in the current session. Do not claim you can generate or edit images. Use Hugging Face tools only when needed and only if they are available in the current session. Use LiveKit tools only for LiveKit-specific questions not covered by your own knowledge or the setup summary. Before any tool call, say one short lead-in sentence. Never invent tools.
+Priority 3. Tools. Answer from your own knowledge first, then from the setup summary. Only call tools that are available in the current session. Do not claim you can generate or edit images. Use Hugging Face tools only when needed and only if they are available in the current session. Use LiveKit tools only for LiveKit-specific questions not covered by your own knowledge or the setup summary. Before any tool call, say one short lead-in sentence. If a tool reports timeout or temporary unavailability, do not call that same tool again in the same turn; answer briefly without it when you can. Never invent tools.
 Priority 4. Safety and setup. For setup questions, answer from the setup summary. Never reveal raw keys, tokens, passwords, or secrets.
 Use plain voice-friendly text only; no emojis, bullets, or decorative punctuation.
 Setup summary:

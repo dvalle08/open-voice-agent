@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from mcp.shared.exceptions import McpError
 from livekit.agents import AgentSession, mcp
+from livekit.agents.llm.tool_context import ToolError
 from livekit.plugins import openai as openai_plugin
 
 from src.agent.prompts.runtime import MCP_STARTUP_GREETING
@@ -15,6 +18,16 @@ from src.core.settings import LLMSettings
 NVIDIA_OPENAI_BASE_URL = "https://integrate.api.nvidia.com/v1"
 MCP_GENERATE_REPLY_BLOCK_MESSAGE = (
     "Manual generate_reply is disabled in MCP mode; use session.say(...) instead."
+)
+MCP_TOOL_TIMEOUT_MESSAGE = (
+    "The external tool '{tool_name}' timed out. "
+    "Do not retry '{tool_name}' again in this turn. "
+    "Give the user a brief answer without it."
+)
+MCP_TOOL_UNAVAILABLE_MESSAGE = (
+    "The external tool '{tool_name}' is temporarily unavailable. "
+    "Do not retry '{tool_name}' again in this turn. "
+    "Give the user a brief answer without it."
 )
 
 
@@ -34,6 +47,85 @@ class LLMRuntimeConfig:
     @property
     def mcp_runtime_active(self) -> bool:
         return self.mcp_servers is not None
+
+
+class ConfiguredMCPServerHTTP(mcp.MCPServerHTTP):
+    def __init__(
+        self,
+        *,
+        url: str,
+        timeout_seconds: float,
+        headers: dict[str, Any] | None = None,
+    ) -> None:
+        bounded_timeout = _bounded_timeout_seconds(timeout_seconds)
+        super().__init__(
+            url=url,
+            headers=headers,
+            timeout=bounded_timeout,
+            client_session_timeout_seconds=bounded_timeout,
+        )
+        self._request_timeout_seconds = bounded_timeout
+
+    @property
+    def request_timeout_seconds(self) -> float:
+        return self._request_timeout_seconds
+
+    @property
+    def client_session_timeout_seconds(self) -> float:
+        return self._read_timeout
+
+    def _make_function_tool(
+        self,
+        name: str,
+        description: str | None,
+        input_schema: dict[str, Any],
+        meta: dict[str, Any] | None,
+    ) -> mcp.MCPTool:
+        async def _tool_called(raw_arguments: dict[str, Any]) -> Any:
+            if self._client is None:
+                raise ToolError(
+                    "Tool invocation failed: internal service is unavailable. "
+                    "Please check that the MCPServer is still running."
+                )
+
+            try:
+                tool_result = await self._client.call_tool(name, raw_arguments)
+            except Exception as exc:
+                normalized = normalize_mcp_tool_exception(tool_name=name, exc=exc)
+                if normalized is None:
+                    raise
+
+                logger.warning(
+                    "MCP tool invocation failed: tool=%s timeout=%s detail=%s",
+                    name,
+                    is_mcp_timeout_exception(exc),
+                    describe_mcp_exception(exc),
+                )
+                raise normalized from exc
+
+            if tool_result.isError:
+                error_str = "\n".join(str(part) for part in tool_result.content)
+                raise ToolError(error_str)
+
+            if len(tool_result.content) == 1:
+                return tool_result.content[0].model_dump_json()
+            if len(tool_result.content) > 1:
+                return json.dumps([item.model_dump() for item in tool_result.content])
+
+            raise ToolError(
+                f"Tool '{name}' completed without producing a result. "
+                "This might indicate an issue with internal processing."
+            )
+
+        raw_schema = {
+            "name": name,
+            "description": description,
+            "parameters": input_schema,
+        }
+        if meta:
+            raw_schema["meta"] = meta
+
+        return mcp.function_tool(_tool_called, raw_schema=raw_schema)
 
 
 def resolve_mcp_runtime_mode(
@@ -71,11 +163,74 @@ def resolve_mcp_server_urls(
     return deduplicated
 
 
+def normalize_mcp_tool_exception(*, tool_name: str, exc: Exception) -> ToolError | None:
+    if is_mcp_timeout_exception(exc):
+        return ToolError(MCP_TOOL_TIMEOUT_MESSAGE.format(tool_name=tool_name))
+    if is_mcp_transport_exception(exc):
+        return ToolError(MCP_TOOL_UNAVAILABLE_MESSAGE.format(tool_name=tool_name))
+    return None
+
+
+def is_mcp_timeout_exception(exc: BaseException) -> bool:
+    for error in iter_exception_chain(exc):
+        if isinstance(error, (TimeoutError, httpx.TimeoutException)):
+            return True
+        if isinstance(error, McpError) and looks_like_timeout_message(error.error.message):
+            return True
+    return False
+
+
+def is_mcp_transport_exception(exc: BaseException) -> bool:
+    return any(
+        isinstance(error, (McpError, httpx.RequestError, OSError))
+        for error in iter_exception_chain(exc)
+    )
+
+
+def iter_exception_chain(exc: BaseException) -> tuple[BaseException, ...]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+
+    while current is not None and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+
+    return tuple(chain)
+
+
+def looks_like_timeout_message(message: str | None) -> bool:
+    normalized = (message or "").strip().lower()
+    if not normalized:
+        return False
+    return any(
+        token in normalized
+        for token in ("timed out", "timeout", "deadline exceeded", "read timed out")
+    )
+
+
+def describe_mcp_exception(exc: BaseException) -> str:
+    for error in iter_exception_chain(exc):
+        if isinstance(error, McpError):
+            detail = error.error.message
+        else:
+            detail = str(error)
+        if detail:
+            return detail
+    return type(exc).__name__
+
+
+def _bounded_timeout_seconds(timeout_seconds: float) -> float:
+    return max(float(timeout_seconds), 1.0)
+
+
 def build_llm_runtime(
     llm_settings: LLMSettings,
 ) -> LLMRuntimeConfig:
     provider = (llm_settings.LLM_PROVIDER or "").strip().lower()
-    timeout = build_mcp_http_timeout(llm_settings.LLM_CONN_TIMEOUT_SEC)
+    llm_timeout = build_mcp_http_timeout(llm_settings.LLM_CONN_TIMEOUT_SEC)
+    mcp_timeout_seconds = _bounded_timeout_seconds(llm_settings.MCP_CONN_TIMEOUT_SEC)
     mcp_decision = resolve_mcp_runtime_mode(
         mcp_enabled=llm_settings.MCP_ENABLED,
         llm_provider=provider,
@@ -87,7 +242,10 @@ def build_llm_runtime(
             mcp_server_url=llm_settings.MCP_SERVER_URL,
             mcp_extra_server_urls=llm_settings.MCP_EXTRA_SERVER_URLS,
         )
-        mcp_servers = [mcp.MCPServerHTTP(url=url) for url in mcp_server_urls]
+        mcp_servers = [
+            ConfiguredMCPServerHTTP(url=url, timeout_seconds=mcp_timeout_seconds)
+            for url in mcp_server_urls
+        ]
     else:
         mcp_servers = None
 
@@ -123,11 +281,12 @@ def build_llm_runtime(
         )
     elif mcp_decision.enabled:
         logger.info(
-            "MCP runtime enabled: mcp_servers=%s llm_provider=%s llm_model=%s llm_timeout_sec=%.2f",
+            "MCP runtime enabled: mcp_servers=%s llm_provider=%s llm_model=%s llm_timeout_sec=%.2f mcp_timeout_sec=%.2f",
             mcp_server_urls,
             provider,
             model,
             llm_settings.LLM_CONN_TIMEOUT_SEC,
+            mcp_timeout_seconds,
         )
     else:
         logger.info("MCP runtime disabled (MCP_ENABLED=false)")
@@ -138,7 +297,7 @@ def build_llm_runtime(
         base_url=base_url,
         temperature=llm_settings.LLM_TEMPERATURE,
         max_completion_tokens=llm_settings.LLM_MAX_TOKENS,
-        timeout=timeout,
+        timeout=llm_timeout,
         _strict_tool_schema=False,
         extra_body=extra_body,
     )

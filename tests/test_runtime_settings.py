@@ -25,6 +25,7 @@ def test_llm_runtime_tuning_defaults_are_declared() -> None:
     assert fields["OLLAMA_MODEL"].default == "ministral-3:14b"
     assert fields["OLLAMA_API_KEY"].default == "ollama"
     assert fields["LLM_CONN_TIMEOUT_SEC"].default == 20.0
+    assert fields["MCP_CONN_TIMEOUT_SEC"].default == 20.0
     assert fields["LLM_CONN_MAX_RETRY"].default == 1
     assert fields["LLM_CONN_RETRY_INTERVAL_SEC"].default == 1.0
     assert fields["TURN_LLM_STALL_TIMEOUT_SEC"].default == 12.0
@@ -47,7 +48,7 @@ def test_voice_runtime_tuning_defaults_are_declared() -> None:
     assert fields["NVIDIA_TTS_VOICE"].default == "Magpie-Multilingual.EN-US.Leo"
     assert fields["NVIDIA_TTS_USE_SSL"].default is True
     assert fields["POCKET_TTS_CONN_TIMEOUT_SEC"].default == 45.0
-    assert fields["MIN_ENDPOINTING_DELAY"].default == 0.8
+    assert fields["MIN_ENDPOINTING_DELAY"].default == 0.5
 
 
 def test_langfuse_runtime_tuning_defaults_are_declared() -> None:
@@ -83,6 +84,9 @@ def test_llm_runtime_tuning_requires_api_key_for_ollama_cloud_mode() -> None:
 def test_llm_runtime_tuning_validation_rejects_invalid_values() -> None:
     with pytest.raises(ValidationError):
         LLMSettings(LLM_CONN_TIMEOUT_SEC=0.0)
+
+    with pytest.raises(ValidationError):
+        LLMSettings(MCP_CONN_TIMEOUT_SEC=0.0)
 
     with pytest.raises(ValidationError):
         LLMSettings(LLM_CONN_MAX_RETRY=-1)
