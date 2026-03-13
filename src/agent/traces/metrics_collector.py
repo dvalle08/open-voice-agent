@@ -12,7 +12,7 @@ import uuid
 from collections import deque
 from dataclasses import asdict, dataclass
 from time import monotonic, time
-from typing import Any, Optional, Sequence, Union
+from typing import Any, Awaitable, Callable, Optional, Sequence, Union
 
 from livekit import rtc
 from livekit.agents import metrics
@@ -213,6 +213,16 @@ class PendingUserUtterance:
     watchdog_id: Optional[str] = None
 
 
+@dataclass
+class QueuedCollectorEvent:
+    """FIFO collector event that must be processed in-order."""
+
+    handler: Callable[..., Awaitable[Any]]
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    waiter: asyncio.Future[Any] | None = None
+
+
 # ------------------------------------------------------------------
 # Facade
 # ------------------------------------------------------------------
@@ -261,6 +271,9 @@ class MetricsCollector:
         self._latest_vad_metrics: Optional[VADMetrics] = None
         self._latest_vad_metric_attributes: Optional[dict[str, Any]] = None
         self._first_final_user_turn_logged = False
+        self._event_queue: deque[QueuedCollectorEvent] = deque()
+        self._event_worker_task: asyncio.Task[None] | None = None
+        self._event_loop: asyncio.AbstractEventLoop | None = None
         self._llm_stall_timeout_sec = max(
             float(
                 getattr(
@@ -270,6 +283,19 @@ class MetricsCollector:
                 )
             ),
             0.0,
+        )
+        self._shutdown_drain_timeout_sec = (
+            max(
+                float(
+                    getattr(
+                        settings.langfuse,
+                        "LANGFUSE_SHUTDOWN_DRAIN_TIMEOUT_MS",
+                        3000.0,
+                    )
+                ),
+                0.0,
+            )
+            / 1000.0
         )
 
         self._tracer = TurnTracer(
@@ -300,11 +326,78 @@ class MetricsCollector:
     def _trace_post_tool_response_timeout_sec(self, value: float) -> None:
         self._tracer._trace_post_tool_response_timeout_sec = value
 
+    def submit_metrics_collected(self, collected_metrics: Any) -> None:
+        self._submit_serialized(self._handle_metrics_collected, collected_metrics)
+
+    def submit_user_input_transcribed(self, transcript: str, *, is_final: bool) -> None:
+        self._submit_serialized(
+            self._handle_user_input_transcribed,
+            transcript,
+            is_final=is_final,
+        )
+
+    def submit_conversation_item_added(
+        self,
+        *,
+        role: Optional[str],
+        content: Any,
+        event_created_at: Optional[float] = None,
+        item_created_at: Optional[float] = None,
+    ) -> None:
+        self._submit_serialized(
+            self._handle_conversation_item_added,
+            role=role,
+            content=content,
+            event_created_at=event_created_at,
+            item_created_at=item_created_at,
+        )
+
+    def submit_speech_created(self, speech_handle: Any) -> None:
+        self._submit_serialized(self._handle_speech_created, speech_handle)
+
+    def submit_function_tools_executed(
+        self,
+        *,
+        function_calls: list[Any],
+        function_call_outputs: list[Any],
+        created_at: float,
+    ) -> None:
+        self._submit_serialized(
+            self._handle_function_tools_executed,
+            function_calls=function_calls,
+            function_call_outputs=function_call_outputs,
+            created_at=created_at,
+        )
+
+    def submit_agent_state_changed(
+        self,
+        *,
+        old_state: str,
+        new_state: str,
+    ) -> None:
+        self._submit_serialized(
+            self._handle_agent_state_changed,
+            old_state=old_state,
+            new_state=new_state,
+        )
+
     # ------------------------------------------------------------------
     # Public event handlers
     # ------------------------------------------------------------------
 
     async def on_session_metadata(
+        self,
+        *,
+        session_id: Any,
+        participant_id: Any,
+    ) -> None:
+        await self._call_serialized(
+            self._handle_session_metadata,
+            session_id=session_id,
+            participant_id=participant_id,
+        )
+
+    async def _handle_session_metadata(
         self,
         *,
         session_id: Any,
@@ -318,6 +411,18 @@ class MetricsCollector:
         )
 
     async def on_user_input_transcribed(
+        self,
+        transcript: str,
+        *,
+        is_final: bool,
+    ) -> None:
+        await self._call_serialized(
+            self._handle_user_input_transcribed,
+            transcript,
+            is_final=is_final,
+        )
+
+    async def _handle_user_input_transcribed(
         self,
         transcript: str,
         *,
@@ -358,6 +463,22 @@ class MetricsCollector:
         )
 
     async def on_conversation_item_added(
+        self,
+        *,
+        role: Optional[str],
+        content: Any,
+        event_created_at: Optional[float] = None,
+        item_created_at: Optional[float] = None,
+    ) -> None:
+        await self._call_serialized(
+            self._handle_conversation_item_added,
+            role=role,
+            content=content,
+            event_created_at=event_created_at,
+            item_created_at=item_created_at,
+        )
+
+    async def _handle_conversation_item_added(
         self,
         *,
         role: Optional[str],
@@ -409,6 +530,20 @@ class MetricsCollector:
         function_call_outputs: list[Any],
         created_at: float,
     ) -> None:
+        await self._call_serialized(
+            self._handle_function_tools_executed,
+            function_calls=function_calls,
+            function_call_outputs=function_call_outputs,
+            created_at=created_at,
+        )
+
+    async def _handle_function_tools_executed(
+        self,
+        *,
+        function_calls: list[Any],
+        function_call_outputs: list[Any],
+        created_at: float,
+    ) -> None:
         trace_turn = await self._tracer.attach_function_tools_executed(
             function_calls=function_calls,
             function_call_outputs=function_call_outputs,
@@ -418,12 +553,18 @@ class MetricsCollector:
         await self._tracer.maybe_finalize(trace_turn)
 
     async def on_tool_step_started(self) -> bool:
+        return await self._call_serialized(self._handle_tool_step_started)
+
+    async def _handle_tool_step_started(self) -> bool:
         trace_turn, should_announce = await self._tracer.attach_tool_step_started()
         await self._publish_partial_turn_pipeline_summary(trace_turn)
         await self._tracer.maybe_finalize(trace_turn)
         return should_announce
 
     async def on_speech_created(self, speech_handle: Any) -> None:
+        await self._call_serialized(self._handle_speech_created, speech_handle)
+
+    async def _handle_speech_created(self, speech_handle: Any) -> None:
         speech_id = _normalize(getattr(speech_handle, "id", None))
         if speech_id:
             self._pending_speech_ids_for_first_audio.append(speech_id)
@@ -435,6 +576,7 @@ class MetricsCollector:
             await self._on_assistant_text(
                 assistant_text,
                 event_created_at=assistant_created_at,
+                speech_id=speech_id,
             )
 
         add_done_callback = getattr(speech_handle, "add_done_callback", None)
@@ -444,18 +586,15 @@ class MetricsCollector:
         def _on_done(handle: Any) -> None:
             try:
                 done_speech_id = _normalize(getattr(handle, "id", None))
-                if done_speech_id:
-                    self._discard_pending_speech_id(done_speech_id)
                 text, created_at = _extract_latest_assistant_chat_item(
                     getattr(handle, "chat_items", [])
                 )
-                if text:
-                    asyncio.create_task(
-                        self._on_assistant_text(
-                            text,
-                            event_created_at=created_at,
-                        )
-                    )
+                self._submit_serialized(
+                    self._handle_speech_done,
+                    done_speech_id,
+                    text,
+                    created_at,
+                )
             except Exception:
                 return
 
@@ -464,7 +603,34 @@ class MetricsCollector:
         except Exception:
             return
 
+    async def _handle_speech_done(
+        self,
+        speech_id: Optional[str],
+        assistant_text: str,
+        event_created_at: Optional[float],
+    ) -> None:
+        if speech_id:
+            self._discard_pending_speech_id(speech_id)
+        if assistant_text:
+            await self._on_assistant_text(
+                assistant_text,
+                event_created_at=event_created_at,
+                speech_id=speech_id,
+            )
+
     async def on_agent_state_changed(
+        self,
+        *,
+        old_state: str,
+        new_state: str,
+    ) -> None:
+        await self._call_serialized(
+            self._handle_agent_state_changed,
+            old_state=old_state,
+            new_state=new_state,
+        )
+
+    async def _handle_agent_state_changed(
         self,
         *,
         old_state: str,
@@ -498,8 +664,26 @@ class MetricsCollector:
                 old_state,
                 new_state,
             )
+            await self._tracer.mark_first_audio_started(
+                speech_id=speech_id,
+                started_at=time(),
+            )
 
     async def on_tts_synthesized(
+        self,
+        *,
+        ttfb: float,
+        duration: float,
+        audio_duration: float,
+    ) -> None:
+        await self._call_serialized(
+            self._handle_tts_synthesized,
+            ttfb=ttfb,
+            duration=duration,
+            audio_duration=audio_duration,
+        )
+
+    async def _handle_tts_synthesized(
         self,
         *,
         ttfb: float,
@@ -559,6 +743,21 @@ class MetricsCollector:
             metrics.VADMetrics,
         ],
     ) -> None:
+        await self._call_serialized(
+            self._handle_metrics_collected,
+            collected_metrics,
+        )
+
+    async def _handle_metrics_collected(
+        self,
+        collected_metrics: Union[
+            metrics.STTMetrics,
+            metrics.LLMMetrics,
+            metrics.TTSMetrics,
+            metrics.EOUMetrics,
+            metrics.VADMetrics,
+        ],
+    ) -> None:
         speech_id = None
         turn_metrics = None
         trace_turn: Optional[TraceTurn] = None
@@ -595,8 +794,6 @@ class MetricsCollector:
             speech_id = collected_metrics.speech_id or collected_metrics.request_id
             turn_metrics = self._get_or_create_turn(speech_id, role="agent")
             self._latest_agent_speech_id = speech_id
-            if self._pending_agent_transcripts and not turn_metrics.transcript:
-                turn_metrics.transcript = self._pending_agent_transcripts.popleft()
             turn_metrics.llm = LLMMetrics(
                 type=collected_metrics.type,
                 label=collected_metrics.label,
@@ -727,11 +924,97 @@ class MetricsCollector:
         await self._tracer.maybe_finalize(trace_turn)
 
     async def wait_for_pending_trace_tasks(self) -> None:
+        await self._wait_for_event_queue_idle()
         await self._tracer.wait_for_pending_tasks()
+
+    async def drain_pending_traces(self) -> None:
+        if self._shutdown_drain_timeout_sec <= 0.0:
+            return
+        await asyncio.wait_for(
+            self._drain_pending_traces_once(),
+            timeout=self._shutdown_drain_timeout_sec,
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    async def _drain_pending_traces_once(self) -> None:
+        await self._wait_for_event_queue_idle()
+        await self._tracer.drain_pending_turns()
+        await self._tracer.wait_for_pending_tasks()
+
+    async def _call_serialized(
+        self,
+        handler: Callable[..., Awaitable[Any]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        loop = asyncio.get_running_loop()
+        waiter: asyncio.Future[Any] = loop.create_future()
+        self._enqueue_serialized(handler, args=args, kwargs=kwargs, waiter=waiter)
+        return await waiter
+
+    def _submit_serialized(
+        self,
+        handler: Callable[..., Awaitable[Any]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        self._enqueue_serialized(handler, args=args, kwargs=kwargs, waiter=None)
+
+    def _enqueue_serialized(
+        self,
+        handler: Callable[..., Awaitable[Any]],
+        *,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        waiter: asyncio.Future[Any] | None,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        if self._event_loop is None:
+            self._event_loop = loop
+        elif self._event_loop is not loop:
+            raise RuntimeError("MetricsCollector cannot be shared across event loops")
+
+        self._event_queue.append(
+            QueuedCollectorEvent(
+                handler=handler,
+                args=args,
+                kwargs=kwargs,
+                waiter=waiter,
+            )
+        )
+        if self._event_worker_task is None:
+            self._event_worker_task = loop.create_task(self._run_event_worker())
+
+    async def _run_event_worker(self) -> None:
+        while True:
+            if not self._event_queue:
+                self._event_worker_task = None
+                return
+
+            event = self._event_queue.popleft()
+            try:
+                result = await event.handler(*event.args, **event.kwargs)
+            except Exception as exc:
+                if event.waiter is not None and not event.waiter.done():
+                    event.waiter.set_exception(exc)
+                else:
+                    logger.exception(
+                        "Metrics collector event processing failed: handler=%s",
+                        getattr(event.handler, "__name__", repr(event.handler)),
+                    )
+            else:
+                if event.waiter is not None and not event.waiter.done():
+                    event.waiter.set_result(result)
+
+    async def _wait_for_event_queue_idle(self) -> None:
+        while self._event_worker_task is not None:
+            task = self._event_worker_task
+            await asyncio.gather(task, return_exceptions=True)
+            if self._event_worker_task is task:
+                break
 
     def _get_or_create_state(self, speech_id: str) -> TurnState:
         if speech_id not in self._turns:
@@ -753,14 +1036,15 @@ class MetricsCollector:
         assistant_text: str,
         *,
         event_created_at: Optional[float] = None,
+        speech_id: Optional[str] = None,
     ) -> None:
         normalized = assistant_text.strip()
         if not normalized:
             return
-        _append_if_new(self._pending_agent_transcripts, normalized)
         trace_turn = await self._tracer.attach_assistant_text(
             normalized,
             event_created_at=event_created_at,
+            speech_id=speech_id,
         )
         await self._tracer.maybe_finalize(trace_turn)
 
@@ -840,7 +1124,7 @@ class MetricsCollector:
 
     def _current_open_user_utterance(self) -> Optional[PendingUserUtterance]:
         utterance = self._latest_user_utterance()
-        if utterance is None or utterance.committed:
+        if utterance is None or utterance.committed or utterance.llm_started:
             return None
         return utterance
 

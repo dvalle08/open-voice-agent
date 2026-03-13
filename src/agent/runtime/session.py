@@ -109,16 +109,6 @@ async def session_handler(ctx: agents.JobContext) -> None:
     startup_greeting_task: asyncio.Task[Any] | None = None
     tool_feedback = ToolFeedbackController(enabled=False)
 
-    if trace_provider:
-
-        async def flush_trace(_: str) -> None:
-            try:
-                trace_provider.force_flush()
-            except Exception as exc:
-                logger.warning(f"Failed to flush Langfuse traces: {exc}")
-
-        ctx.add_shutdown_callback(flush_trace)
-
     async def cancel_startup_greeting(_: str) -> None:
         await cancel_task_for_shutdown(
             startup_greeting_task,
@@ -147,6 +137,22 @@ async def session_handler(ctx: agents.JobContext) -> None:
         langfuse_enabled=trace_provider is not None,
     )
 
+    async def drain_pending_traces(_: str) -> None:
+        try:
+            await metrics_collector.drain_pending_traces()
+        except TimeoutError:
+            logger.warning("Timed out while draining pending Langfuse traces during shutdown")
+        except Exception as exc:
+            logger.warning(f"Failed to drain pending Langfuse traces: {exc}")
+        if trace_provider is None:
+            return
+        try:
+            trace_provider.force_flush()
+        except Exception as exc:
+            logger.warning(f"Failed to flush Langfuse traces: {exc}")
+
+    ctx.add_shutdown_callback(drain_pending_traces)
+
     if isinstance(ctx.job.metadata, str) and ctx.job.metadata.strip():
         try:
             metadata = json.loads(ctx.job.metadata)
@@ -158,11 +164,9 @@ async def session_handler(ctx: agents.JobContext) -> None:
             metadata.get("participant_id"),
             ctx.room.name,
         )
-        asyncio.create_task(
-            metrics_collector.on_session_metadata(
-                session_id=metadata.get("session_id"),
-                participant_id=metadata.get("participant_id"),
-            )
+        await metrics_collector.on_session_metadata(
+            session_id=metadata.get("session_id"),
+            participant_id=metadata.get("participant_id"),
         )
 
     tts_engine = create_tts()

@@ -1758,6 +1758,7 @@ def test_immediate_continuation_coalesces_aborted_prior_turn(
     )
 
     async def _run() -> None:
+        base_time = time.time()
         await collector.on_session_metadata(
             session_id="session-coalesce",
             participant_id="web-123",
@@ -1779,9 +1780,16 @@ def test_immediate_continuation_coalesces_aborted_prior_turn(
         await collector.on_conversation_item_added(
             role="user",
             content="What the difference between speech to text and speech recognition?",
+            event_created_at=base_time + 0.2,
+            item_created_at=base_time + 0.2,
         )
         await collector.on_metrics_collected(_make_llm_metrics("speech-b"))
-        await collector.on_conversation_item_added(role="assistant", content="Speech to text writes words down.")
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="Speech to text writes words down.",
+            event_created_at=base_time + 0.4,
+            item_created_at=base_time + 0.4,
+        )
         await collector.on_metrics_collected(_make_tts_metrics("speech-b"))
         await collector.wait_for_pending_trace_tasks()
 
@@ -2110,7 +2118,10 @@ def test_speech_created_done_callback_backfills_assistant_text(
         await collector.wait_for_pending_trace_tasks()
         assert not fake_tracer.spans
 
-        handle = _FakeSpeechHandle(chat_items=[_FakeChatItem(role="assistant", content=["fallback reply"])])
+        handle = _FakeSpeechHandle(
+            chat_items=[_FakeChatItem(role="assistant", content=["fallback reply"])],
+            speech_id="speech-speech-created",
+        )
         await collector.on_speech_created(handle)
         handle.trigger_done()
         await asyncio.sleep(0)
@@ -2159,7 +2170,8 @@ def test_speech_created_immediate_capture_backfills_assistant_text(
                     role="assistant",
                     content=[_FakeTextMethodPart("immediate fallback reply")],
                 )
-            ]
+            ],
+            speech_id="speech-speech-created-immediate",
         )
         await collector.on_speech_created(handle)
         await collector.wait_for_pending_trace_tasks()
@@ -2480,3 +2492,239 @@ def test_real_participant_metadata_overrides_fallback_for_pending_turns(
     assert len(turn_spans) == 1
     assert turn_spans[0].attributes["session_id"] == "session-real-participant"
     assert turn_spans[0].attributes["participant_id"] == "web-real-participant"
+
+
+def test_stale_orphan_assistant_text_from_absorbed_turn_is_not_attached_to_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    base_time = time.time()
+    final_input = "What is the difference between speech to text and speech recognition?"
+    final_output = (
+        "Speech recognition detects spoken words. Speech to text writes them down."
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-stale-orphan-after-coalesce",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("What", is_final=True)
+        await collector.on_metrics_collected(
+            _make_eou_metrics("speech-a", delay=0.7, transcription_delay=0.2)
+        )
+        await collector.on_metrics_collected(_make_llm_metrics("speech-a"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-a"))
+
+        await collector.on_user_input_transcribed(
+            "is the difference between speech to text and speech recognition?",
+            is_final=True,
+        )
+        await collector.on_metrics_collected(
+            _make_eou_metrics("speech-b", delay=0.7, transcription_delay=0.2)
+        )
+        await collector.on_conversation_item_added(
+            role="user",
+            content=final_input,
+            event_created_at=base_time + 0.25,
+            item_created_at=base_time + 0.25,
+        )
+        await collector.on_metrics_collected(_make_llm_metrics("speech-b"))
+
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="stale reply from the absorbed turn",
+            event_created_at=base_time + 1.0,
+            item_created_at=base_time + 0.1,
+        )
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content=final_output,
+            event_created_at=base_time + 1.2,
+            item_created_at=base_time + 1.2,
+        )
+        await collector.on_metrics_collected(_make_tts_metrics("speech-b"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    root = turn_spans[0]
+    assert root.attributes["langfuse.trace.input"] == final_input
+    assert root.attributes["langfuse.trace.output"] == final_output
+    assert "stale reply from the absorbed turn" not in root.attributes["langfuse.trace.output"]
+
+
+def test_audio_started_turn_is_finalized_separately_when_new_user_turn_arrives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-audio-started-no-coalesce",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("first prompt", is_final=True)
+        await collector.on_metrics_collected(
+            _make_eou_metrics("speech-audio-started", delay=0.4, transcription_delay=0.1)
+        )
+        await collector.on_metrics_collected(_make_llm_metrics("speech-audio-started"))
+        await collector.on_speech_created(
+            _FakeSpeechHandle(chat_items=[], speech_id="speech-audio-started")
+        )
+        await collector.on_agent_state_changed(
+            old_state="thinking",
+            new_state="speaking",
+        )
+        await collector.on_metrics_collected(_make_tts_metrics("speech-audio-started"))
+
+        await collector.on_user_input_transcribed("second prompt", is_final=True)
+        await collector.on_metrics_collected(
+            _make_eou_metrics("speech-separate-b", delay=0.5, transcription_delay=0.1)
+        )
+        await collector.on_metrics_collected(_make_llm_metrics("speech-separate-b"))
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="second reply",
+        )
+        await collector.on_metrics_collected(_make_tts_metrics("speech-separate-b"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 2
+    first, second = turn_spans
+    assert first.attributes["langfuse.trace.input"] == "first prompt"
+    assert first.attributes["langfuse.trace.metadata.interrupted"] is True
+    assert first.attributes["langfuse.trace.output"] == "[assistant text unavailable]"
+    assert second.attributes["langfuse.trace.input"] == "second prompt"
+    assert second.attributes["langfuse.trace.output"] == "second reply"
+
+
+def test_interrupted_pretool_leadin_keeps_own_output_and_next_turn_stays_separate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-interrupted-pretool-leadin",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("search papers", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-pretool-interrupted"))
+        await collector.on_tool_step_started()
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="Let me check that.",
+        )
+        await collector.on_speech_created(
+            _FakeSpeechHandle(chat_items=[], speech_id="speech-pretool-interrupted")
+        )
+        await collector.on_agent_state_changed(
+            old_state="thinking",
+            new_state="speaking",
+        )
+        await collector.on_metrics_collected(_make_tts_metrics("speech-pretool-interrupted"))
+
+        await collector.on_user_input_transcribed("never mind", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-pretool-next"))
+        await collector.on_conversation_item_added(
+            role="assistant",
+            content="Okay, stopping here.",
+        )
+        await collector.on_metrics_collected(_make_tts_metrics("speech-pretool-next"))
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 2
+    first, second = turn_spans
+    assert first.attributes["langfuse.trace.input"] == "search papers"
+    assert first.attributes["langfuse.trace.metadata.interrupted"] is True
+    assert first.attributes["langfuse.trace.output"] == "Let me check that."
+    assert second.attributes["langfuse.trace.input"] == "never mind"
+    assert second.attributes["langfuse.trace.output"] == "Okay, stopping here."
+
+
+def test_drain_pending_traces_finalizes_without_manual_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-drain-pending-traces",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("drain pending", is_final=True)
+        await collector.on_metrics_collected(_make_llm_metrics("speech-drain-pending"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-drain-pending"))
+        await collector.drain_pending_traces()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    root = turn_spans[0]
+    assert root.attributes["langfuse.trace.input"] == "drain pending"
+    assert root.attributes["langfuse.trace.output"] == "[assistant text unavailable]"
+    assert root.attributes["langfuse.trace.metadata.interrupted"] is True
+    assert root.attributes["langfuse.trace.metadata.interrupted_reason"] == "shutdown_drain"

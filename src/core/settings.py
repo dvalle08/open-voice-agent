@@ -422,6 +422,15 @@ class LangfuseSettings(CoreSettings):
         le=10000.0,
         description="Best-effort tracer flush timeout in milliseconds",
     )
+    LANGFUSE_SHUTDOWN_DRAIN_TIMEOUT_MS: float = Field(
+        default=3000.0,
+        ge=0.0,
+        le=15000.0,
+        description=(
+            "Maximum time to drain pending Langfuse trace finalization/emission work "
+            "during shutdown before exiting"
+        ),
+    )
     LANGFUSE_CONTINUATION_COALESCE_WINDOW_MS: float = Field(
         default=1500.0,
         ge=0.0,

@@ -86,16 +86,12 @@ class Assistant(Agent):
         """Called when the agent enters the session. Set up metrics listeners."""
 
         def metrics_wrapper(event: MetricsCollectedEvent) -> None:
-            asyncio.create_task(
-                self._metrics_collector.on_metrics_collected(event.metrics)
-            )
+            self._metrics_collector.submit_metrics_collected(event.metrics)
 
         def transcript_wrapper(event: UserInputTranscribedEvent) -> None:
-            asyncio.create_task(
-                self._metrics_collector.on_user_input_transcribed(
-                    event.transcript,
-                    is_final=event.is_final,
-                )
+            self._metrics_collector.submit_user_input_transcribed(
+                event.transcript,
+                is_final=event.is_final,
             )
 
         def conversation_item_wrapper(event: ConversationItemAddedEvent) -> None:
@@ -103,27 +99,21 @@ class Assistant(Agent):
             role = getattr(item, "role", None)
             content = getattr(item, "content", None)
             item_created_at = getattr(item, "created_at", None)
-            asyncio.create_task(
-                self._metrics_collector.on_conversation_item_added(
-                    role=role,
-                    content=content,
-                    event_created_at=event.created_at,
-                    item_created_at=item_created_at,
-                )
+            self._metrics_collector.submit_conversation_item_added(
+                role=role,
+                content=content,
+                event_created_at=event.created_at,
+                item_created_at=item_created_at,
             )
 
         def speech_created_wrapper(event: SpeechCreatedEvent) -> None:
-            asyncio.create_task(
-                self._metrics_collector.on_speech_created(event.speech_handle)
-            )
+            self._metrics_collector.submit_speech_created(event.speech_handle)
 
         def function_tools_executed_wrapper(event: FunctionToolsExecutedEvent) -> None:
-            asyncio.create_task(
-                self._metrics_collector.on_function_tools_executed(
-                    function_calls=event.function_calls,
-                    function_call_outputs=event.function_call_outputs,
-                    created_at=event.created_at,
-                )
+            self._metrics_collector.submit_function_tools_executed(
+                function_calls=event.function_calls,
+                function_call_outputs=event.function_call_outputs,
+                created_at=event.created_at,
             )
             if self._tool_feedback is not None:
                 asyncio.create_task(
@@ -131,11 +121,9 @@ class Assistant(Agent):
                 )
 
         def agent_state_changed_wrapper(event: AgentStateChangedEvent) -> None:
-            asyncio.create_task(
-                self._metrics_collector.on_agent_state_changed(
-                    old_state=event.old_state,
-                    new_state=event.new_state,
-                )
+            self._metrics_collector.submit_agent_state_changed(
+                old_state=event.old_state,
+                new_state=event.new_state,
             )
 
         def error_wrapper(event: ErrorEvent) -> None:

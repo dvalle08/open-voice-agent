@@ -56,6 +56,7 @@ def test_langfuse_runtime_tuning_defaults_are_declared() -> None:
 
     assert fields["LANGFUSE_TRACE_FINALIZE_TIMEOUT_MS"].default == 8000.0
     assert fields["LANGFUSE_POST_TOOL_RESPONSE_TIMEOUT_MS"].default == 30000.0
+    assert fields["LANGFUSE_SHUTDOWN_DRAIN_TIMEOUT_MS"].default == 3000.0
     assert fields["LANGFUSE_CONTINUATION_COALESCE_WINDOW_MS"].default == 1500.0
 
 
