@@ -101,6 +101,7 @@ class Assistant(Agent):
             item_created_at = getattr(item, "created_at", None)
             self._metrics_collector.submit_conversation_item_added(
                 role=role,
+                item=item,
                 content=content,
                 event_created_at=event.created_at,
                 item_created_at=item_created_at,

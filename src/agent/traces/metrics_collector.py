@@ -216,6 +216,24 @@ class PendingUserUtterance:
 
 
 @dataclass
+class AssistantItemSpeechBinding:
+    """Recent exact correlation between a ChatItem object and a speech id."""
+
+    speech_id: str
+    observed_at: float
+
+
+@dataclass
+class PendingAssistantItemEvent:
+    """Assistant conversation item waiting for exact speech-id correlation."""
+
+    text: str
+    event_created_at: Optional[float]
+    source: str
+    observed_at: float
+
+
+@dataclass
 class QueuedCollectorEvent:
     """FIFO collector event that must be processed in-order."""
 
@@ -267,6 +285,8 @@ class MetricsCollector:
         self._pending_user_utterances: deque[PendingUserUtterance] = deque()
         self._pending_agent_transcripts: deque[str] = deque()
         self._pending_speech_ids_for_first_audio: deque[str] = deque()
+        self._assistant_item_speech_ids: dict[int, AssistantItemSpeechBinding] = {}
+        self._pending_assistant_items: dict[int, PendingAssistantItemEvent] = {}
         self._latest_agent_speech_id: Optional[str] = None
         self._turns: dict[str, TurnState] = {}
         self._llm_stall_tasks: dict[str, asyncio.Task[None]] = {}
@@ -345,6 +365,7 @@ class MetricsCollector:
         self,
         *,
         role: Optional[str],
+        item: Any = None,
         content: Any,
         event_created_at: Optional[float] = None,
         item_created_at: Optional[float] = None,
@@ -352,6 +373,7 @@ class MetricsCollector:
         self._submit_serialized(
             self._handle_conversation_item_added,
             role=role,
+            item=item,
             content=content,
             event_created_at=event_created_at,
             item_created_at=item_created_at,
@@ -471,6 +493,7 @@ class MetricsCollector:
         self,
         *,
         role: Optional[str],
+        item: Any = None,
         content: Any,
         event_created_at: Optional[float] = None,
         item_created_at: Optional[float] = None,
@@ -478,6 +501,7 @@ class MetricsCollector:
         await self._call_serialized(
             self._handle_conversation_item_added,
             role=role,
+            item=item,
             content=content,
             event_created_at=event_created_at,
             item_created_at=item_created_at,
@@ -487,6 +511,7 @@ class MetricsCollector:
         self,
         *,
         role: Optional[str],
+        item: Any = None,
         content: Any,
         event_created_at: Optional[float] = None,
         item_created_at: Optional[float] = None,
@@ -526,6 +551,23 @@ class MetricsCollector:
             return
         assistant_event_created_at = (
             item_created_at if item_created_at is not None else event_created_at
+        )
+        self._sweep_assistant_item_caches()
+        if item is not None:
+            if await self._attach_assistant_item_if_correlated(
+                item=item,
+                assistant_text=normalized,
+                event_created_at=assistant_event_created_at,
+            ):
+                return
+            self._buffer_pending_assistant_item(
+                item=item,
+                assistant_text=normalized,
+                event_created_at=assistant_event_created_at,
+            )
+            return
+        logger.debug(
+            "assistant_item_fell_back_to_orphan: source=conversation_item reason=no_item_identity"
         )
         await self._on_assistant_text(
             normalized,
@@ -578,11 +620,18 @@ class MetricsCollector:
         speech_id = _normalize(getattr(speech_handle, "id", None))
         if speech_id:
             self._pending_speech_ids_for_first_audio.append(speech_id)
+            self._sweep_assistant_item_caches()
 
         on_item_added = self._register_speech_item_added_callback(
             speech_handle=speech_handle,
             speech_id=speech_id,
         )
+
+        for chat_item in getattr(speech_handle, "chat_items", []):
+            await self._register_assistant_item_for_speech(
+                item=chat_item,
+                speech_id=speech_id,
+            )
 
         assistant_text, assistant_created_at = _extract_latest_assistant_chat_item(
             getattr(speech_handle, "chat_items", [])
@@ -609,14 +658,11 @@ class MetricsCollector:
                 with contextlib.suppress(Exception):
                     remove_item_added_callback(on_item_added)
             done_speech_id = _normalize(getattr(handle, "id", None))
-            text, created_at = _extract_latest_assistant_chat_item(
-                getattr(handle, "chat_items", [])
-            )
+            chat_items = list(getattr(handle, "chat_items", []))
             self._submit_serialized_callback(
                 self._handle_speech_done,
                 done_speech_id,
-                text,
-                created_at,
+                chat_items,
             )
 
         try:
@@ -627,9 +673,11 @@ class MetricsCollector:
     async def _handle_speech_item_added(
         self,
         speech_id: Optional[str],
-        assistant_text: str,
-        event_created_at: Optional[float],
+        item: Any,
     ) -> None:
+        await self._register_assistant_item_for_speech(item=item, speech_id=speech_id)
+
+        assistant_text, event_created_at = _extract_assistant_chat_item(item)
         if not assistant_text:
             return
         await self._on_assistant_text(
@@ -642,11 +690,22 @@ class MetricsCollector:
     async def _handle_speech_done(
         self,
         speech_id: Optional[str],
-        assistant_text: str,
-        event_created_at: Optional[float],
+        chat_items: list[Any],
     ) -> None:
         if speech_id:
             self._discard_pending_speech_id(speech_id)
+        assistant_text, event_created_at = _extract_latest_assistant_chat_item(
+            chat_items
+        )
+        trace_turn = await self._tracer.mark_speech_done(
+            speech_id=speech_id,
+            observed_at=event_created_at,
+        )
+        for chat_item in chat_items:
+            await self._register_assistant_item_for_speech(
+                item=chat_item,
+                speech_id=speech_id,
+            )
         if assistant_text:
             await self._on_assistant_text(
                 assistant_text,
@@ -654,6 +713,8 @@ class MetricsCollector:
                 speech_id=speech_id,
                 source="speech_done",
             )
+            return
+        await self._tracer.maybe_finalize(trace_turn)
 
     async def on_agent_state_changed(
         self,
@@ -1059,14 +1120,10 @@ class MetricsCollector:
 
         def _on_item_added(item: Any) -> None:
             try:
-                assistant_text, created_at = _extract_assistant_chat_item(item)
-                if not assistant_text:
-                    return
                 self._submit_serialized_callback(
                     self._handle_speech_item_added,
                     speech_id,
-                    assistant_text,
-                    created_at,
+                    item,
                 )
             except Exception:
                 return
@@ -1088,6 +1145,117 @@ class MetricsCollector:
                 "SpeechHandle item-added callback registered for provider-agnostic assistant text capture"
             )
         return _on_item_added
+
+    async def _attach_assistant_item_if_correlated(
+        self,
+        *,
+        item: Any,
+        assistant_text: str,
+        event_created_at: Optional[float],
+    ) -> bool:
+        item_id = _assistant_item_identity(item)
+        if item_id is None:
+            return False
+        binding = self._assistant_item_speech_ids.get(item_id)
+        if binding is None:
+            return False
+        binding.observed_at = time()
+        self._pending_assistant_items.pop(item_id, None)
+        logger.debug(
+            "assistant_item_correlated_exact: item_id=%s speech_id=%s",
+            item_id,
+            binding.speech_id,
+        )
+        await self._on_assistant_text(
+            assistant_text,
+            event_created_at=event_created_at,
+            speech_id=binding.speech_id,
+            source="conversation_item_correlated",
+        )
+        return True
+
+    def _buffer_pending_assistant_item(
+        self,
+        *,
+        item: Any,
+        assistant_text: str,
+        event_created_at: Optional[float],
+    ) -> None:
+        item_id = _assistant_item_identity(item)
+        if item_id is None:
+            logger.debug(
+                "assistant_item_fell_back_to_orphan: source=conversation_item reason=item_identity_unavailable"
+            )
+            return
+        self._pending_assistant_items[item_id] = PendingAssistantItemEvent(
+            text=assistant_text,
+            event_created_at=_to_optional_float(event_created_at),
+            source="conversation_item",
+            observed_at=time(),
+        )
+        logger.debug(
+            "assistant_item_buffered_pending_speech_id: item_id=%s",
+            item_id,
+        )
+
+    async def _register_assistant_item_for_speech(
+        self,
+        *,
+        item: Any,
+        speech_id: Optional[str],
+    ) -> None:
+        normalized_speech_id = _normalize_optional_str(speech_id)
+        item_id = _assistant_item_identity(item)
+        if normalized_speech_id is None or item_id is None:
+            return
+        self._assistant_item_speech_ids[item_id] = AssistantItemSpeechBinding(
+            speech_id=normalized_speech_id,
+            observed_at=time(),
+        )
+        pending_event = self._pending_assistant_items.pop(item_id, None)
+        if pending_event is None:
+            return
+        logger.debug(
+            "assistant_item_correlated_exact: item_id=%s speech_id=%s",
+            item_id,
+            normalized_speech_id,
+        )
+        assistant_text, event_created_at = _extract_assistant_chat_item(item)
+        if (
+            assistant_text
+            and assistant_text.strip() == pending_event.text.strip()
+        ):
+            return
+        await self._on_assistant_text(
+            pending_event.text,
+            event_created_at=pending_event.event_created_at,
+            speech_id=normalized_speech_id,
+            source="conversation_item_correlated",
+        )
+
+    def _sweep_assistant_item_caches(self) -> None:
+        now = time()
+        retention_sec = max(
+            self._trace_finalize_timeout_sec,
+            self._trace_post_tool_response_timeout_sec,
+            30.0,
+        )
+        min_observed_at = now - retention_sec
+        stale_item_ids = [
+            item_id
+            for item_id, binding in self._assistant_item_speech_ids.items()
+            if binding.observed_at < min_observed_at
+        ]
+        for item_id in stale_item_ids:
+            self._assistant_item_speech_ids.pop(item_id, None)
+
+        stale_pending_ids = [
+            item_id
+            for item_id, event in self._pending_assistant_items.items()
+            if event.observed_at < min_observed_at
+        ]
+        for item_id in stale_pending_ids:
+            self._pending_assistant_items.pop(item_id, None)
 
     def _submit_serialized_callback(
         self,
@@ -1499,6 +1667,19 @@ def _extract_assistant_chat_item(item: Any) -> tuple[str, Optional[float]]:
     if not normalized:
         return "", None
     return normalized, _to_optional_float(getattr(item, "created_at", None))
+
+
+def _assistant_item_identity(item: Any) -> Optional[int]:
+    if item is None:
+        return None
+    return id(item)
+
+
+def _normalize_optional_str(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 def _to_optional_float(value: Any) -> Optional[float]:

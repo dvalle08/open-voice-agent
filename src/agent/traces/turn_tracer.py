@@ -39,6 +39,7 @@ class TraceTurn:
     response_text: str = ""
     assistant_text: str = ""
     assistant_text_missing: bool = False
+    assistant_text_observed: bool = False
     stt_status: str = "missing"
     vad_duration_ms: Optional[float] = None
     stt_duration_ms: Optional[float] = None
@@ -78,6 +79,9 @@ class TraceTurn:
     tool_post_response_missing: bool = False
     assistant_audio_started: bool = False
     assistant_audio_started_at: Optional[float] = None
+    speech_done_observed: bool = False
+    speech_done_observed_at: Optional[float] = None
+    awaiting_speech_done_for_finalize: bool = False
     interrupted: bool = False
     interrupted_reason: Optional[str] = None
     finalization_reason: Optional[str] = None
@@ -673,7 +677,24 @@ class TurnTracer:
                 if (
                     source == "speech_done"
                     and turn.assistant_text.strip()
+                    and (
+                        turn.assistant_text_source == "speech_item_added"
+                        or (
+                            turn.assistant_text.strip() == normalized_text
+                            and turn.assistant_text_source
+                            in {
+                                "conversation_item_correlated",
+                                "tts_metrics",
+                            }
+                        )
+                    )
+                ):
+                    return turn
+                if (
+                    source == "conversation_item_correlated"
+                    and turn.assistant_text.strip()
                     and turn.assistant_text_source == "speech_item_added"
+                    and turn.assistant_text.strip() == normalized_text
                 ):
                     return turn
                 self._apply_assistant_text_to_turn(
@@ -797,6 +818,27 @@ class TurnTracer:
             )
             return turn
 
+    async def mark_speech_done(
+        self,
+        *,
+        speech_id: Optional[str],
+        observed_at: Optional[float] = None,
+    ) -> Optional[TraceTurn]:
+        async with self._trace_lock:
+            normalized_speech_id = _normalize_optional_str(speech_id)
+            if not normalized_speech_id:
+                return None
+            turn = self._resolve_turn_for_exact_speech_id(normalized_speech_id)
+            if turn is None:
+                return None
+            turn.speech_done_observed = True
+            turn.speech_done_observed_at = _resolved_event_timestamp(
+                _to_optional_float(observed_at)
+            )
+            turn.awaiting_speech_done_for_finalize = False
+            self._apply_buffered_assistant_text_for_speech_id(turn)
+            return turn
+
     async def drain_pending_turns(self) -> None:
         completed_turns: list[TraceTurn] = []
         async with self._trace_lock:
@@ -840,14 +882,20 @@ class TurnTracer:
         async with self._trace_lock:
             if trace_turn not in self._pending_trace_turns:
                 return
-            if not self._is_complete(trace_turn):
+            if self._is_complete(trace_turn):
+                completed_turn = self._finalize_locked(trace_turn)
+            elif self._should_finalize_after_speech_done_without_text(trace_turn):
+                completed_turn = self._finalize_locked(
+                    trace_turn,
+                    missing_assistant_fallback=True,
+                    finalization_reason="speech_done_without_assistant_text",
+                )
+            else:
                 if self._should_schedule_finalize_timeout(trace_turn):
                     schedule_timeout_for_turn = (
                         trace_turn.turn_id,
                         self._resolve_finalize_timeout_sec(trace_turn),
                     )
-            else:
-                completed_turn = self._finalize_locked(trace_turn)
 
         if schedule_timeout_for_turn:
             self._schedule_finalize_timeout(*schedule_timeout_for_turn)
@@ -1095,14 +1143,24 @@ class TurnTracer:
         if len(candidates) == 1:
             turn = candidates[0]
         else:
-            emit_ready_candidates = [
+            pre_tts_llm_candidates = [
                 turn
                 for turn in candidates
-                if self._is_emit_ready(turn) and self._emit_ready_turn_is_recent(turn)
+                if turn.llm_calls
+                and not turn.tts_calls
+                and not turn.assistant_text.strip()
             ]
-            if len(emit_ready_candidates) != 1:
-                return None
-            turn = emit_ready_candidates[0]
+            if len(pre_tts_llm_candidates) == 1:
+                turn = pre_tts_llm_candidates[0]
+            else:
+                emit_ready_candidates = [
+                    turn
+                    for turn in candidates
+                    if self._is_emit_ready(turn) and self._emit_ready_turn_is_recent(turn)
+                ]
+                if len(emit_ready_candidates) != 1:
+                    return None
+                turn = emit_ready_candidates[0]
         cutoff = turn.orphan_assistant_cutoff_at
         if cutoff is not None:
             if event_created_at is None:
@@ -1130,6 +1188,8 @@ class TurnTracer:
         turn.assistant_text = assistant_text
         turn.response_text = assistant_text
         turn.assistant_text_missing = False
+        turn.assistant_text_observed = True
+        turn.awaiting_speech_done_for_finalize = False
         turn.assistant_text_source = source or turn.assistant_text_source or "unknown"
         turn.assistant_text_updated_at = _resolved_event_timestamp(event_created_at)
         turn.assistant_text_updated_order = order
@@ -1254,10 +1314,36 @@ class TurnTracer:
             return False
         return not self._requires_post_tool_response(turn)
 
+    def _awaits_speech_done_before_finalize(self, turn: TraceTurn) -> bool:
+        if turn.interrupted:
+            return False
+        if self._requires_post_tool_response(turn):
+            return False
+        if not self._is_emit_ready(turn):
+            return False
+        if turn.assistant_text_observed or turn.assistant_text.strip():
+            return False
+        if turn.speech_done_observed:
+            return False
+        return _normalize_optional_str(turn.speech_id) is not None
+
+    def _should_finalize_after_speech_done_without_text(self, turn: TraceTurn) -> bool:
+        if self._requires_post_tool_response(turn):
+            return False
+        if not self._is_emit_ready(turn):
+            return False
+        if not turn.speech_done_observed:
+            return False
+        return not bool(turn.assistant_text.strip())
+
     def _should_schedule_finalize_timeout(self, turn: TraceTurn) -> bool:
+        turn.awaiting_speech_done_for_finalize = self._awaits_speech_done_before_finalize(
+            turn
+        )
         return bool(
             self._is_emit_ready(turn)
             and not self._is_complete(turn)
+            and not self._should_finalize_after_speech_done_without_text(turn)
             and not (turn.tool_phase_open and turn.last_tool_event_at is None)
             and self._resolve_finalize_timeout_sec(turn) > 0.0
         )
@@ -1265,11 +1351,18 @@ class TurnTracer:
     def _resolve_finalize_timeout_sec(self, turn: TraceTurn) -> float:
         if self._requires_post_tool_response(turn):
             return self._trace_post_tool_response_timeout_sec
+        if self._awaits_speech_done_before_finalize(turn):
+            return max(
+                self._trace_legacy_finalize_timeout_sec,
+                self._trace_finalize_timeout_sec,
+            )
         return self._trace_finalize_timeout_sec
 
     def _finalize_wait_reason(self, turn: TraceTurn) -> str:
         if self._requires_post_tool_response(turn):
             return "post_tool_response"
+        if self._awaits_speech_done_before_finalize(turn):
+            return "speech_done"
         return "assistant_text_grace"
 
     def _requires_post_tool_response(self, turn: TraceTurn) -> bool:
@@ -1393,6 +1486,8 @@ class TurnTracer:
                 finalization_reason = "shutdown_drain"
             elif turn.interrupted and turn.assistant_audio_started:
                 finalization_reason = "interrupted_after_audio"
+            elif self._should_finalize_after_speech_done_without_text(turn):
+                finalization_reason = "speech_done_without_assistant_text"
             elif tool_post_response_missing:
                 finalization_reason = "post_tool_timeout"
             elif missing_assistant_fallback:
@@ -1400,6 +1495,7 @@ class TurnTracer:
             else:
                 finalization_reason = "complete"
         turn.finalization_reason = finalization_reason
+        turn.awaiting_speech_done_for_finalize = False
 
         self._pending_trace_turns.remove(turn)
         self._cancel_finalize_timeout(turn.turn_id)
@@ -1533,7 +1629,9 @@ class TurnTracer:
                 )
                 continue
             if self._has_active_finalize_timeout(turn.turn_id):
-                continue
+                if turn.awaiting_speech_done_for_finalize == self._awaits_speech_done_before_finalize(turn):
+                    continue
+                self._cancel_finalize_timeout(turn.turn_id)
             timeout_schedules.append((turn.turn_id, timeout_sec))
         return completed_turns, timeout_schedules
 
@@ -1617,11 +1715,20 @@ class TurnTracer:
 
             if self._is_complete(pending_turn):
                 completed_turn = self._finalize_locked(pending_turn)
+            elif self._should_finalize_after_speech_done_without_text(pending_turn):
+                completed_turn = self._finalize_locked(
+                    pending_turn,
+                    missing_assistant_fallback=True,
+                    finalization_reason="speech_done_without_assistant_text",
+                )
             elif (
                 pending_turn.user_transcript
                 and pending_turn.llm_calls
                 and pending_turn.tts_calls
             ):
+                waiting_for_speech_done = self._awaits_speech_done_before_finalize(
+                    pending_turn
+                )
                 requires_post_tool_response = self._requires_post_tool_response(
                     pending_turn
                 )
@@ -1637,6 +1744,11 @@ class TurnTracer:
                     ),
                     tool_post_response_missing=requires_post_tool_response,
                     drop_assistant_text=missing_post_tool_assistant,
+                    finalization_reason=(
+                        "speech_done_timeout"
+                        if waiting_for_speech_done
+                        else None
+                    ),
                 )
 
         if completed_turn:
@@ -2705,12 +2817,16 @@ def _set_root_attributes(
         "langfuse.trace.metadata.participant_id": turn.participant_id,
         "langfuse.trace.metadata.turn_id": turn.turn_id,
         "langfuse.trace.metadata.assistant_text_missing": turn.assistant_text_missing,
+        "langfuse.trace.metadata.assistant_text_observed": turn.assistant_text_observed,
         "langfuse.trace.metadata.assistant_text_source": turn.assistant_text_source,
         "langfuse.trace.metadata.stt_status": turn.stt_status,
         "langfuse.trace.metadata.tool_phase_announced": turn.tool_step_announced,
         "langfuse.trace.metadata.tool_post_response_missing": turn.tool_post_response_missing,
         "langfuse.trace.metadata.user_turn_committed": turn.user_turn_committed,
         "langfuse.trace.metadata.assistant_audio_started": turn.assistant_audio_started,
+        "langfuse.trace.metadata.speech_done_observed": turn.speech_done_observed,
+        "langfuse.trace.metadata.speech_done_observed_at": turn.speech_done_observed_at,
+        "langfuse.trace.metadata.awaiting_speech_done_for_finalize": turn.awaiting_speech_done_for_finalize,
         "langfuse.trace.metadata.interrupted": turn.interrupted,
         "langfuse.trace.metadata.interrupted_reason": turn.interrupted_reason,
         "langfuse.trace.metadata.finalization_reason": turn.finalization_reason,

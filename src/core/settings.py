@@ -198,7 +198,7 @@ class VoiceSettings(CoreSettings):
 class STTSettings(CoreSettings):
     # Provider selection
     STT_PROVIDER: str = Field(
-        default="moonshine",
+        default="deepgram",
         description="STT provider: 'moonshine', 'nvidia', or 'deepgram'"
     )
 
