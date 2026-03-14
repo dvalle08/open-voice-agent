@@ -190,7 +190,6 @@ def _build_partial_latencies(
         "total_latency": total,
         "eou_delay": eou_delay,
         "stt_finalization_delay": stt_finalization_delay,
-        "llm_to_tts_handoff_latency": max(total - baseline, 0.0),
         "vad_detection_delay": eou_delay,
         "llm_ttft": llm_ttft,
         "tts_ttfb": tts_ttfb,

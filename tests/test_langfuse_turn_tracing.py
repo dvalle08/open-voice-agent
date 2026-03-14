@@ -3744,7 +3744,7 @@ def test_trace_finalize_timeout_uses_pending_assistant_transcript(
     assert root.attributes["langfuse.trace.output"] == "queued assistant fallback"
 
 
-def test_long_response_latency_accounts_for_llm_to_tts_handoff(
+def test_long_response_latency_preserves_observed_total_without_handoff_metric(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import src.agent.traces.metrics_collector as metrics_collector_module
@@ -3800,17 +3800,27 @@ def test_long_response_latency_accounts_for_llm_to_tts_handoff(
     if "perceived_latency_first_audio" in span_names:
         assert span_names.index("metrics_summary") < span_names.index("perceived_latency_first_audio")
 
-    assert root.attributes["latency_ms.perceived_first_audio"] > 200.0
-    assert root.attributes["latency_ms.conversational"] > 200.0
-    assert root.attributes["latency_ms.llm_to_tts_handoff"] > 150.0
-    assert root.attributes["latency_ms.conversational"] == pytest.approx(
+    visible_stage_sum = (
         root.attributes["latency_ms.eou_delay"]
         + root.attributes["latency_ms.llm_ttft"]
-        + root.attributes["latency_ms.llm_to_tts_handoff"]
-        + root.attributes["latency_ms.tts_ttfb"],
-        abs=5.0,
+        + root.attributes["latency_ms.tts_ttfb"]
     )
+    assert root.attributes["latency_ms.perceived_first_audio"] > 200.0
+    assert root.attributes["latency_ms.conversational"] > 200.0
+    assert "latency_ms.llm_to_tts_handoff" not in root.attributes
+    assert root.attributes["latency_ms.conversational"] > visible_stage_sum + 150.0
     assert root.attributes["latency_ms.stt_finalization"] == pytest.approx(200.0)
+
+    perceived_first_span = next(
+        (
+            span
+            for span in fake_tracer.spans
+            if span.name == "perceived_latency_first_audio"
+        ),
+        None,
+    )
+    if perceived_first_span is not None:
+        assert "llm_to_tts_handoff_ms" not in perceived_first_span.attributes
 
     payloads = _decode_payloads(room)
     conversation_turns = [
@@ -3821,10 +3831,7 @@ def test_long_response_latency_accounts_for_llm_to_tts_handoff(
         root.attributes["latency_ms.conversational"] / 1000.0,
         abs=0.05,
     )
-    assert agent_turn["latencies"]["llm_to_tts_handoff_latency"] == pytest.approx(
-        root.attributes["latency_ms.llm_to_tts_handoff"] / 1000.0,
-        abs=0.05,
-    )
+    assert "llm_to_tts_handoff_latency" not in agent_turn["latencies"]
 
 
 def test_fallback_console_session_id_is_used_when_metadata_absent(

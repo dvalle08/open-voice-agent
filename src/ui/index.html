@@ -387,9 +387,6 @@
         --connector-shadow: rgba(108, 143, 255, 0.18);
         --connector-arrow: rgba(167, 139, 250, 0.72);
       }
-      .pipeline-stage-row.handoff-visible {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-      }
       .pipeline-stage-row.tool-phase-row {
         grid-template-columns: minmax(0, 1fr);
       }
@@ -1023,31 +1020,9 @@
             </div>
           </div>
 
-          <div class="metric-card stage-card theme-primary" id="live-handoff-card" hidden>
-            <div class="metric-card-top">
-              <span class="metric-step">3</span>
-              <div class="metric-tech-wrap">
-                <span class="metric-tech">LLM to TTS Handoff</span>
-                <div class="tooltip">
-                  <button type="button" class="tooltip-trigger" aria-label="What is LLM to TTS Handoff?">i</button>
-                  <span class="tooltip-content" role="tooltip">Residual orchestration gap between LLM output and TTS startup. It is shown only when this gap is measurable and greater than zero.</span>
-                </div>
-              </div>
-            </div>
-            <div class="metric-card-human">Pipeline Handoff</div>
-            <div class="metric-card-desc">Bridging text generation to speech synthesis</div>
-            <div class="metric-card-value-row">
-              <span class="metric-card-value" id="live-handoff">--</span>
-              <span class="metric-card-avg" id="live-handoff-avg"></span>
-            </div>
-            <div class="metric-card-track">
-              <div class="metric-card-fill" id="live-handoff-bar" style="width: 0%"></div>
-            </div>
-          </div>
-
           <div class="metric-card stage-card theme-primary">
             <div class="metric-card-top">
-              <span class="metric-step" id="live-voice-generation-step">3</span>
+              <span class="metric-step">3</span>
               <div class="metric-tech-wrap">
                 <span class="metric-tech">TTS TTFB</span>
                 <div class="tooltip">
@@ -1076,7 +1051,7 @@
                 <span id="live-total-tech-text">End-to-End Latency</span>
                 <div class="tooltip tooltip-right">
                   <button type="button" class="tooltip-trigger" aria-label="What is End-to-End Latency?">i</button>
-                  <span class="tooltip-content" role="tooltip" id="live-total-tooltip-text">Total round-trip from end of user speech to first assistant audio: EOU delay + Thinking (LLM TTFT) + optional handoff + Voice Generation (TTS TTFB).</span>
+                  <span class="tooltip-content" role="tooltip" id="live-total-tooltip-text">Sum of the three stages above: EOU delay + Thinking (LLM TTFT) + Voice Generation (TTS TTFB).</span>
                 </div>
               </div>
             </div>

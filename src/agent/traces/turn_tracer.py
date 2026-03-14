@@ -57,7 +57,6 @@ class TraceTurn:
     conversational_latency_ms: Optional[float] = None
     perceived_latency_first_audio_ms: Optional[float] = None
     perceived_latency_second_audio_ms: Optional[float] = None
-    llm_to_tts_handoff_ms: Optional[float] = None
     stt_attributes: dict[str, Any] = field(default_factory=dict)
     eou_attributes: dict[str, Any] = field(default_factory=dict)
     vad_attributes: dict[str, Any] = field(default_factory=dict)
@@ -713,12 +712,6 @@ class TurnTracer:
                     baseline_ms if baseline_ms is not None else 0.0,
                 )
                 turn.conversational_latency_ms = turn.perceived_latency_first_audio_ms
-            turn.llm_to_tts_handoff_ms = _compute_llm_to_tts_handoff_ms(
-                total_latency_ms=turn.perceived_latency_first_audio_ms,
-                vad_duration_ms=turn.vad_duration_ms,
-                llm_ttft_ms=turn.llm_ttft_ms,
-                tts_ttfb_ms=turn.tts_ttfb_ms,
-            )
             self._maybe_update_perceived_second_audio_latency(turn, tts_call)
             self._maybe_close_tool_phase(turn)
             return turn
@@ -1244,7 +1237,6 @@ class TurnTracer:
         turn.conversational_latency_ms = None
         turn.perceived_latency_first_audio_ms = None
         turn.perceived_latency_second_audio_ms = None
-        turn.llm_to_tts_handoff_ms = None
         turn.vad_duration_ms = None
         turn.stt_duration_ms = None
         turn.stt_finalization_ms = None
@@ -2804,7 +2796,6 @@ class TurnTracer:
                                 "eou_delay_ms": vals["vad_duration_ms"],
                                 "llm_ttft_ms": vals["llm_ttft_ms"],
                                 "tool_calls_total_ms": vals["tool_calls_total_ms"],
-                                "llm_to_tts_handoff_ms": vals["llm_to_tts_handoff_ms"],
                                 "tts_ttfb_ms": vals["tts_ttfb_ms"],
                             },
                             observation_output=str(first_latency_ms),
@@ -3266,36 +3257,15 @@ def _compute_conversational_latency_ms(
     return sum(c for c in components if c is not None)
 
 
-def _compute_llm_to_tts_handoff_ms(
-    *,
-    total_latency_ms: Optional[float],
-    vad_duration_ms: Optional[float],
-    llm_ttft_ms: Optional[float],
-    tts_ttfb_ms: Optional[float],
-) -> Optional[float]:
-    if total_latency_ms is None:
-        return None
-    baseline = _compute_conversational_latency_ms(
-        vad_duration_ms=vad_duration_ms,
-        llm_ttft_ms=llm_ttft_ms,
-        tts_ttfb_ms=tts_ttfb_ms,
-    )
-    if baseline is None:
-        return None
-    return max(total_latency_ms - baseline, 0.0)
-
-
 def _total_duration_ms(turn: TraceTurn) -> float:
     all_tool_calls = _flatten_tool_calls(turn.tool_executions)
     tool_calls_total = _tool_calls_total_duration_ms(all_tool_calls)
     llm = _sum_llm_duration_ms(turn.llm_calls)
     tts = _sum_tts_duration_ms(turn.tts_calls)
-    handoff = max(turn.llm_to_tts_handoff_ms or 0.0, 0.0)
     calculated = (
         (turn.vad_duration_ms or 0.0)
         + llm
         + tool_calls_total
-        + handoff
         + tts
     )
     if turn.perceived_latency_first_audio_ms is not None:
@@ -3502,11 +3472,6 @@ def _prepare_span_values(turn: TraceTurn) -> dict[str, Any]:
     )
     all_tool_calls = _flatten_tool_calls(turn.tool_executions)
     tool_calls_total_ms = _tool_calls_total_duration_ms(all_tool_calls)
-    llm_to_tts_handoff_ms = (
-        max(turn.llm_to_tts_handoff_ms or 0.0, 0.0)
-        if turn.llm_to_tts_handoff_ms is not None
-        else None
-    )
     tool_call_count = len(all_tool_calls)
     tool_error_count = sum(1 for call in all_tool_calls if call.is_error)
     tool_execution_count = len(turn.tool_executions)
@@ -3537,7 +3502,6 @@ def _prepare_span_values(turn: TraceTurn) -> dict[str, Any]:
         "tool_call_count": tool_call_count,
         "tool_error_count": tool_error_count,
         "tool_execution_count": tool_execution_count,
-        "llm_to_tts_handoff_ms": llm_to_tts_handoff_ms,
     }
 
 
@@ -3606,7 +3570,6 @@ def _set_root_attributes(
         "latency_ms.tts_total": vals["tts_total_latency_ms"],
         "latency_ms.tts_ttfb": vals["tts_ttfb_ms"],
         "latency_ms.tool_calls_total": vals["tool_calls_total_ms"],
-        "latency_ms.llm_to_tts_handoff": vals["llm_to_tts_handoff_ms"],
         "latency_ms.perceived_first_audio": vals["perceived_latency_first_audio_ms"],
         "latency_ms.perceived_second_audio": vals["perceived_latency_second_audio_ms"],
         "latency_ms.conversational": vals["perceived_latency_first_audio_ms"],
