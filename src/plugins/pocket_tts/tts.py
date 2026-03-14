@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 import numpy as np
 from pocket_tts import TTSModel
@@ -35,14 +35,6 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
-class TTSMetricsCallback(Protocol):
-    # duration is end-to-end wall-clock synth time, not model-only compute time.
-    def __call__(self, *, ttfb: float, duration: float, audio_duration: float) -> None: ...
-
-
-OptionalTTSMetricsCallback = TTSMetricsCallback | None
-
-
 @dataclass
 class _GenerationError:
     error: Exception
@@ -61,7 +53,6 @@ class PocketTTS(tts.TTS):
         lsd_decode_steps: int = 1,
         sample_rate: int = NATIVE_SAMPLE_RATE,
         max_concurrent_generations: int = 1,
-        metrics_callback: OptionalTTSMetricsCallback = None,
     ) -> None:
         """Create a new instance of Pocket TTS.
 
@@ -72,7 +63,6 @@ class PocketTTS(tts.TTS):
             sample_rate: Output sample rate. Only native 24kHz is supported.
             max_concurrent_generations: Maximum number of concurrent synthesis tasks
                 for this PocketTTS instance.
-            metrics_callback: Optional callback for per-segment generation metrics.
         """
         if max_concurrent_generations < 1:
             raise ValueError(
@@ -95,8 +85,6 @@ class PocketTTS(tts.TTS):
         self._temperature = temperature
         self._lsd_decode_steps = lsd_decode_steps
         self._max_concurrent_generations = max_concurrent_generations
-        self._metrics_callback = metrics_callback
-
         self._model: Any = TTSModel.load_model(temp=temperature, lsd_decode_steps=lsd_decode_steps)
         self._voice_state: Any = self._load_voice_state(voice)
         self._generation_semaphore = asyncio.Semaphore(max_concurrent_generations)
@@ -336,13 +324,6 @@ class PocketChunkedStream(tts.ChunkedStream):
 
         output_emitter.flush()
 
-        if pocket_tts._metrics_callback and first_chunk_ttfb >= 0:
-            pocket_tts._metrics_callback(
-                ttfb=first_chunk_ttfb,
-                duration=total_synth_wall_time,
-                audio_duration=audio_duration,
-            )
-
 
 class PocketSynthesizeStream(tts.SynthesizeStream):
     def __init__(self, *, tts: PocketTTS, conn_options: APIConnectOptions) -> None:
@@ -397,13 +378,6 @@ class PocketSynthesizeStream(tts.SynthesizeStream):
                 audio_duration += segment_audio_duration
         finally:
             output_emitter.end_segment()
-
-        if pocket_tts._metrics_callback and first_chunk_ttfb >= 0:
-            pocket_tts._metrics_callback(
-                ttfb=first_chunk_ttfb,
-                duration=total_synth_wall_time,
-                audio_duration=audio_duration,
-            )
 
     async def _synthesize_segment(
         self, text: str, output_emitter: tts.AudioEmitter

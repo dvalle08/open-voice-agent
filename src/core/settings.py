@@ -198,7 +198,7 @@ class VoiceSettings(CoreSettings):
 class STTSettings(CoreSettings):
     # Provider selection
     STT_PROVIDER: str = Field(
-        default="deepgram",
+        default="moonshine",
         description="STT provider: 'moonshine', 'nvidia', or 'deepgram'"
     )
 
@@ -395,11 +395,23 @@ class LangfuseSettings(CoreSettings):
         default=True,
         description="Mark emitted Langfuse traces as public for shareable URLs",
     )
+    LANGFUSE_ASSISTANT_TEXT_GRACE_TIMEOUT_MS: float = Field(
+        default=500.0,
+        ge=0.0,
+        le=10000.0,
+        description=(
+            "Short grace window to wait for assistant text on regular turns before "
+            "force-finalizing the trace"
+        ),
+    )
     LANGFUSE_TRACE_FINALIZE_TIMEOUT_MS: float = Field(
         default=8000.0,
         ge=0.0,
         le=10000.0,
-        description="Timeout to wait for assistant text before force-finalizing trace",
+        description=(
+            "Legacy finalize timeout retained for compatibility; regular turns use "
+            "LANGFUSE_ASSISTANT_TEXT_GRACE_TIMEOUT_MS"
+        ),
     )
     LANGFUSE_POST_TOOL_RESPONSE_TIMEOUT_MS: float = Field(
         default=30000.0,

@@ -127,11 +127,12 @@ def create_tts() -> Any:
             settings.voice.POCKET_TTS_TEMPERATURE,
             settings.voice.POCKET_TTS_LSD_DECODE_STEPS,
         )
-        return PocketTTS(
+        pocket_kwargs: dict[str, Any] = dict(
             voice=settings.voice.POCKET_TTS_VOICE,
             temperature=settings.voice.POCKET_TTS_TEMPERATURE,
             lsd_decode_steps=settings.voice.POCKET_TTS_LSD_DECODE_STEPS,
         )
+        return PocketTTS(**pocket_kwargs)
 
     if provider == "deepgram":
         logger.info("Initializing Deepgram TTS with plugin defaults")

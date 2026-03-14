@@ -7,6 +7,7 @@ real-time monitoring. Also creates one Langfuse trace per finalized user turn.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import uuid
 from collections import deque
@@ -211,6 +212,7 @@ class PendingUserUtterance:
     stt_observed: bool = False
     llm_started: bool = False
     watchdog_id: Optional[str] = None
+    speech_id: Optional[str] = None
 
 
 @dataclass
@@ -271,6 +273,9 @@ class MetricsCollector:
         self._latest_vad_metrics: Optional[VADMetrics] = None
         self._latest_vad_metric_attributes: Optional[dict[str, Any]] = None
         self._first_final_user_turn_logged = False
+        self._speech_item_callback_registered_logged = False
+        self._speech_item_callback_unavailable_logged = False
+        self._speech_item_callback_failed_logged = False
         self._event_queue: deque[QueuedCollectorEvent] = deque()
         self._event_worker_task: asyncio.Task[None] | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
@@ -492,7 +497,7 @@ class MetricsCollector:
         if not normalized:
             return
         if role == "user":
-            utterance = self._latest_user_utterance()
+            utterance = self._user_utterance_accepting_manual_update()
             if utterance is None:
                 utterance = PendingUserUtterance(
                     transcript=normalized,
@@ -500,7 +505,10 @@ class MetricsCollector:
                 )
                 self._pending_user_utterances.append(utterance)
             else:
-                utterance.transcript = normalized
+                utterance.transcript = _merge_user_transcripts(
+                    utterance.transcript,
+                    normalized,
+                )
                 utterance.committed = True
                 if utterance.watchdog_id is not None:
                     self._update_llm_stall_watchdog(
@@ -511,8 +519,9 @@ class MetricsCollector:
                 item_created_at if item_created_at is not None else event_created_at
             )
             await self._tracer.attach_user_text(
-                normalized,
+                utterance.transcript,
                 event_created_at=user_event_created_at,
+                speech_id=utterance.speech_id,
             )
             return
         assistant_event_created_at = (
@@ -521,6 +530,7 @@ class MetricsCollector:
         await self._on_assistant_text(
             normalized,
             event_created_at=assistant_event_created_at,
+            source="conversation_item",
         )
 
     async def on_function_tools_executed(
@@ -569,6 +579,11 @@ class MetricsCollector:
         if speech_id:
             self._pending_speech_ids_for_first_audio.append(speech_id)
 
+        on_item_added = self._register_speech_item_added_callback(
+            speech_handle=speech_handle,
+            speech_id=speech_id,
+        )
+
         assistant_text, assistant_created_at = _extract_latest_assistant_chat_item(
             getattr(speech_handle, "chat_items", [])
         )
@@ -577,6 +592,7 @@ class MetricsCollector:
                 assistant_text,
                 event_created_at=assistant_created_at,
                 speech_id=speech_id,
+                source="speech_created",
             )
 
         add_done_callback = getattr(speech_handle, "add_done_callback", None)
@@ -584,24 +600,44 @@ class MetricsCollector:
             return
 
         def _on_done(handle: Any) -> None:
-            try:
-                done_speech_id = _normalize(getattr(handle, "id", None))
-                text, created_at = _extract_latest_assistant_chat_item(
-                    getattr(handle, "chat_items", [])
-                )
-                self._submit_serialized(
-                    self._handle_speech_done,
-                    done_speech_id,
-                    text,
-                    created_at,
-                )
-            except Exception:
-                return
+            remove_item_added_callback = getattr(
+                handle,
+                "_remove_item_added_callback",
+                None,
+            )
+            if callable(remove_item_added_callback) and on_item_added is not None:
+                with contextlib.suppress(Exception):
+                    remove_item_added_callback(on_item_added)
+            done_speech_id = _normalize(getattr(handle, "id", None))
+            text, created_at = _extract_latest_assistant_chat_item(
+                getattr(handle, "chat_items", [])
+            )
+            self._submit_serialized_callback(
+                self._handle_speech_done,
+                done_speech_id,
+                text,
+                created_at,
+            )
 
         try:
             add_done_callback(_on_done)
         except Exception:
             return
+
+    async def _handle_speech_item_added(
+        self,
+        speech_id: Optional[str],
+        assistant_text: str,
+        event_created_at: Optional[float],
+    ) -> None:
+        if not assistant_text:
+            return
+        await self._on_assistant_text(
+            assistant_text,
+            event_created_at=event_created_at,
+            speech_id=speech_id,
+            source="speech_item_added",
+        )
 
     async def _handle_speech_done(
         self,
@@ -616,6 +652,7 @@ class MetricsCollector:
                 assistant_text,
                 event_created_at=event_created_at,
                 speech_id=speech_id,
+                source="speech_done",
             )
 
     async def on_agent_state_changed(
@@ -668,70 +705,6 @@ class MetricsCollector:
                 speech_id=speech_id,
                 started_at=time(),
             )
-
-    async def on_tts_synthesized(
-        self,
-        *,
-        ttfb: float,
-        duration: float,
-        audio_duration: float,
-    ) -> None:
-        await self._call_serialized(
-            self._handle_tts_synthesized,
-            ttfb=ttfb,
-            duration=duration,
-            audio_duration=audio_duration,
-        )
-
-    async def _handle_tts_synthesized(
-        self,
-        *,
-        ttfb: float,
-        duration: float,
-        audio_duration: float,
-    ) -> None:
-        if ttfb < 0:
-            return
-        speech_id = self._latest_agent_speech_id or f"tts-{uuid.uuid4()}"
-        turn_metrics = self._get_or_create_turn(speech_id, role="agent")
-        turn_metrics.tts = TTSMetrics(
-            type="tts_metrics",
-            label="tts_fallback",
-            request_id=f"fallback-{speech_id}",
-            timestamp=time(),
-            duration=duration,
-            ttfb=ttfb,
-            audio_duration=audio_duration,
-            cancelled=False,
-            characters_count=0,
-            streamed=True,
-            speech_id=speech_id,
-        )
-        await self._publish_live_update(speech_id=speech_id, stage="tts", turn_metrics=turn_metrics)
-        logger.debug("TTS fallback metrics collected: speech_id=%s, ttfb=%.3fs", speech_id, ttfb)
-        await self._maybe_publish_turn(speech_id, turn_metrics)
-
-        trace_turn = await self._tracer.attach_tts(
-            duration=duration,
-            fallback_duration=audio_duration,
-            ttfb=ttfb,
-            speech_id=speech_id,
-            observed_total_latency=self._observed_total_latency(speech_id),
-            metric_attributes={
-                "type": "tts_metrics",
-                "label": "tts_fallback",
-                "request_id": f"fallback-{speech_id}",
-                "timestamp": time(),
-                "duration": duration,
-                "ttfb": ttfb,
-                "audio_duration": audio_duration,
-                "cancelled": False,
-                "characters_count": 0,
-                "streamed": True,
-                "speech_id": speech_id,
-            },
-        )
-        await self._tracer.maybe_finalize(trace_turn)
 
     async def on_metrics_collected(
         self,
@@ -790,10 +763,12 @@ class MetricsCollector:
             )
 
         elif isinstance(collected_metrics, metrics.LLMMetrics):
-            self._mark_llm_stage_reached()
             speech_id = collected_metrics.speech_id or collected_metrics.request_id
+            linked_utterance = self._mark_llm_stage_reached(speech_id)
             turn_metrics = self._get_or_create_turn(speech_id, role="agent")
             self._latest_agent_speech_id = speech_id
+            if linked_utterance is not None:
+                turn_metrics.transcript = linked_utterance.transcript
             turn_metrics.llm = LLMMetrics(
                 type=collected_metrics.type,
                 label=collected_metrics.label,
@@ -822,6 +797,7 @@ class MetricsCollector:
         elif isinstance(collected_metrics, metrics.TTSMetrics):
             speech_id = collected_metrics.speech_id or collected_metrics.request_id
             turn_metrics = self._get_or_create_turn(speech_id, role="agent")
+            tts_metric_metadata = _metric_metadata_to_dict(collected_metrics.metadata)
             turn_metrics.tts = TTSMetrics(
                 type=collected_metrics.type,
                 label=collected_metrics.label,
@@ -835,7 +811,7 @@ class MetricsCollector:
                 streamed=collected_metrics.streamed,
                 segment_id=collected_metrics.segment_id,
                 speech_id=collected_metrics.speech_id,
-                metadata=_metric_metadata_to_dict(collected_metrics.metadata),
+                metadata=tts_metric_metadata,
             )
             await self._publish_live_update(speech_id=speech_id, stage="tts", turn_metrics=turn_metrics)
             logger.debug("TTS metrics collected: speech_id=%s, ttfb=%.3fs", speech_id, collected_metrics.ttfb)
@@ -847,11 +823,21 @@ class MetricsCollector:
                 observed_total_latency=self._observed_total_latency(speech_id),
                 metric_attributes=_tts_metric_attributes(collected_metrics),
             )
+            metric_assistant_text = _assistant_text_from_metadata(tts_metric_metadata)
+            if metric_assistant_text:
+                await self._on_assistant_text(
+                    metric_assistant_text,
+                    event_created_at=collected_metrics.timestamp,
+                    speech_id=speech_id,
+                    source="tts_metrics",
+                )
 
         elif isinstance(collected_metrics, metrics.EOUMetrics):
             speech_id = collected_metrics.speech_id
             if speech_id:
-                self._mark_oldest_open_user_utterance_committed()
+                linked_utterance = self._mark_oldest_open_user_utterance_committed(
+                    speech_id
+                )
                 state = self._get_or_create_state(speech_id)
                 if state.speech_end_monotonic is None:
                     state.speech_end_monotonic = monotonic()
@@ -867,6 +853,8 @@ class MetricsCollector:
                     metadata=_metric_metadata_to_dict(collected_metrics.metadata),
                 )
                 turn_metrics = state.metrics
+                if turn_metrics and linked_utterance is not None:
+                    turn_metrics.transcript = linked_utterance.transcript
                 if turn_metrics:
                     turn_metrics.eou = state.eou_metrics
                     if self._latest_vad_metrics and turn_metrics.vad is None:
@@ -1037,6 +1025,7 @@ class MetricsCollector:
         *,
         event_created_at: Optional[float] = None,
         speech_id: Optional[str] = None,
+        source: str = "unknown",
     ) -> None:
         normalized = assistant_text.strip()
         if not normalized:
@@ -1045,8 +1034,85 @@ class MetricsCollector:
             normalized,
             event_created_at=event_created_at,
             speech_id=speech_id,
+            source=source,
         )
         await self._tracer.maybe_finalize(trace_turn)
+
+    def _register_speech_item_added_callback(
+        self,
+        *,
+        speech_handle: Any,
+        speech_id: Optional[str],
+    ) -> Callable[[Any], None] | None:
+        add_item_added_callback = getattr(
+            speech_handle,
+            "_add_item_added_callback",
+            None,
+        )
+        if not callable(add_item_added_callback):
+            if not self._speech_item_callback_unavailable_logged:
+                self._speech_item_callback_unavailable_logged = True
+                logger.warning(
+                    "SpeechHandle item-added callback unavailable; Langfuse tracing will rely on fallback sources"
+                )
+            return None
+
+        def _on_item_added(item: Any) -> None:
+            try:
+                assistant_text, created_at = _extract_assistant_chat_item(item)
+                if not assistant_text:
+                    return
+                self._submit_serialized_callback(
+                    self._handle_speech_item_added,
+                    speech_id,
+                    assistant_text,
+                    created_at,
+                )
+            except Exception:
+                return
+
+        try:
+            add_item_added_callback(_on_item_added)
+        except Exception as exc:
+            if not self._speech_item_callback_failed_logged:
+                self._speech_item_callback_failed_logged = True
+                logger.warning(
+                    "Failed to register SpeechHandle item-added callback; Langfuse tracing will rely on fallback sources: %s",
+                    exc,
+                )
+            return None
+
+        if not self._speech_item_callback_registered_logged:
+            self._speech_item_callback_registered_logged = True
+            logger.debug(
+                "SpeechHandle item-added callback registered for provider-agnostic assistant text capture"
+            )
+        return _on_item_added
+
+    def _submit_serialized_callback(
+        self,
+        handler: Callable[..., Awaitable[Any]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        loop = self._event_loop
+        if loop is None or loop.is_closed():
+            return
+
+        def _enqueue() -> None:
+            self._enqueue_serialized(handler, args=args, kwargs=kwargs, waiter=None)
+
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop.call_soon_threadsafe(_enqueue)
+            return
+
+        if running_loop is loop:
+            _enqueue()
+            return
+
+        loop.call_soon_threadsafe(_enqueue)
 
     async def _publish_live_update(
         self,
@@ -1124,7 +1190,17 @@ class MetricsCollector:
 
     def _current_open_user_utterance(self) -> Optional[PendingUserUtterance]:
         utterance = self._latest_user_utterance()
-        if utterance is None or utterance.committed or utterance.llm_started:
+        if utterance is None or utterance.llm_started:
+            return None
+        if utterance.committed and utterance.speech_id is None:
+            return None
+        return utterance
+
+    def _user_utterance_accepting_manual_update(self) -> Optional[PendingUserUtterance]:
+        utterance = self._latest_user_utterance()
+        if utterance is None or utterance.llm_started:
+            return None
+        if utterance.committed and utterance.speech_id is None:
             return None
         return utterance
 
@@ -1140,13 +1216,40 @@ class MetricsCollector:
             return utterance
         return None
 
-    def _mark_oldest_open_user_utterance_committed(self) -> None:
+    def _find_user_utterance_by_speech_id(
+        self,
+        speech_id: str,
+        *,
+        include_llm_started: bool = False,
+    ) -> Optional[PendingUserUtterance]:
+        for utterance in reversed(self._pending_user_utterances):
+            if utterance.speech_id != speech_id:
+                continue
+            if utterance.llm_started and not include_llm_started:
+                continue
+            return utterance
+        return None
+
+    def _mark_oldest_open_user_utterance_committed(
+        self,
+        speech_id: str,
+    ) -> Optional[PendingUserUtterance]:
+        linked = self._find_user_utterance_by_speech_id(speech_id)
+        if linked is not None:
+            linked.committed = True
+            self._prune_resolved_user_utterances()
+            return linked
+
         for utterance in self._pending_user_utterances:
-            if utterance.committed:
+            if utterance.llm_started:
+                continue
+            if utterance.speech_id is not None:
                 continue
             utterance.committed = True
+            utterance.speech_id = speech_id
             self._prune_resolved_user_utterances()
-            return
+            return utterance
+        return None
 
     def _prune_resolved_user_utterances(self) -> None:
         while self._pending_user_utterances:
@@ -1181,19 +1284,36 @@ class MetricsCollector:
             return
         utterance.transcript = transcript
 
-    def _mark_llm_stage_reached(self) -> None:
-        for utterance in self._pending_user_utterances:
-            if utterance.llm_started:
-                continue
-            utterance.llm_started = True
-            watchdog_id = utterance.watchdog_id
-            utterance.watchdog_id = None
-            if watchdog_id is not None:
-                task = self._llm_stall_tasks.pop(watchdog_id, None)
-                if task:
-                    task.cancel()
-            self._prune_resolved_user_utterances()
-            return
+    def _mark_llm_stage_reached(
+        self,
+        speech_id: Optional[str],
+    ) -> Optional[PendingUserUtterance]:
+        normalized_speech_id = _normalize(speech_id)
+        utterance: Optional[PendingUserUtterance] = None
+        if normalized_speech_id is not None:
+            utterance = self._find_user_utterance_by_speech_id(normalized_speech_id)
+
+        if utterance is None:
+            for candidate in self._pending_user_utterances:
+                if candidate.llm_started:
+                    continue
+                utterance = candidate
+                break
+
+        if utterance is None:
+            return None
+
+        if normalized_speech_id is not None and utterance.speech_id is None:
+            utterance.speech_id = normalized_speech_id
+        utterance.llm_started = True
+        watchdog_id = utterance.watchdog_id
+        utterance.watchdog_id = None
+        if watchdog_id is not None:
+            task = self._llm_stall_tasks.pop(watchdog_id, None)
+            if task:
+                task.cancel()
+        self._prune_resolved_user_utterances()
+        return utterance
 
     def _find_user_utterance_by_watchdog(
         self,
@@ -1277,6 +1397,10 @@ def _merge_user_transcripts(existing: str, incoming: str) -> str:
     if not right:
         return left
     if left == right:
+        return left
+    if left.casefold() in right.casefold():
+        return right
+    if right.casefold() in left.casefold():
         return left
     if right.startswith(left):
         return right
@@ -1367,6 +1491,16 @@ def _extract_latest_assistant_chat_item(chat_items: Any) -> tuple[str, Optional[
     return latest_text, latest_created_at
 
 
+def _extract_assistant_chat_item(item: Any) -> tuple[str, Optional[float]]:
+    role = getattr(item, "role", None)
+    if isinstance(role, str) and role != "assistant":
+        return "", None
+    normalized = _extract_content_text(getattr(item, "content", None)).strip()
+    if not normalized:
+        return "", None
+    return normalized, _to_optional_float(getattr(item, "created_at", None))
+
+
 def _to_optional_float(value: Any) -> Optional[float]:
     if isinstance(value, bool):
         return None
@@ -1391,6 +1525,16 @@ def _metric_metadata_to_dict(metadata: Any) -> Optional[dict[str, Any]]:
     if isinstance(metadata, dict):
         return metadata
     return {"value": str(metadata)}
+
+
+def _assistant_text_from_metadata(metadata: Optional[dict[str, Any]]) -> str:
+    if not metadata:
+        return ""
+    for key in ("assistant_text", "spoken_text"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _metadata_attributes(metadata: Any) -> dict[str, Any]:
