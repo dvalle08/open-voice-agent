@@ -21,7 +21,12 @@ from livekit.agents.telemetry import tracer  # noqa: F811 – kept at module lev
 from opentelemetry import trace  # noqa: F401
 
 from src.agent.traces.channel_metrics import ChannelPublisher
-from src.agent.traces.turn_tracer import TraceTurn, TurnTracer
+from src.agent.traces.turn_tracer import (
+    PendingAssistantItemRecord,
+    PendingUnscopedStreamRecord,
+    TraceTurn,
+    TurnTracer,
+)
 from src.core.logger import logger
 from src.core.settings import settings
 
@@ -201,6 +206,10 @@ class TurnState:
     stt_finalization_delay: float = 0.0
     speech_end_monotonic: Optional[float] = None
     first_audio_monotonic: Optional[float] = None
+    streamed_assistant_text: str = ""
+    streamed_assistant_text_observed_at: Optional[float] = None
+    text_output_flush_observed: bool = False
+    text_output_flush_observed_at: Optional[float] = None
 
 
 @dataclass
@@ -220,16 +229,6 @@ class AssistantItemSpeechBinding:
     """Recent exact correlation between a ChatItem object and a speech id."""
 
     speech_id: str
-    observed_at: float
-
-
-@dataclass
-class PendingAssistantItemEvent:
-    """Assistant conversation item waiting for exact speech-id correlation."""
-
-    text: str
-    event_created_at: Optional[float]
-    source: str
     observed_at: float
 
 
@@ -284,9 +283,11 @@ class MetricsCollector:
         self._publisher = ChannelPublisher(room)
         self._pending_user_utterances: deque[PendingUserUtterance] = deque()
         self._pending_agent_transcripts: deque[str] = deque()
+        self._unscoped_streamed_assistant_event_times: deque[float] = deque()
+        self._pending_unscoped_stream_records: deque[PendingUnscopedStreamRecord] = deque()
         self._pending_speech_ids_for_first_audio: deque[str] = deque()
         self._assistant_item_speech_ids: dict[int, AssistantItemSpeechBinding] = {}
-        self._pending_assistant_items: dict[int, PendingAssistantItemEvent] = {}
+        self._pending_assistant_items: dict[int, PendingAssistantItemRecord] = {}
         self._latest_agent_speech_id: Optional[str] = None
         self._turns: dict[str, TurnState] = {}
         self._llm_stall_tasks: dict[str, asyncio.Task[None]] = {}
@@ -332,6 +333,9 @@ class MetricsCollector:
             fallback_participant_id=fallback_participant_id,
             langfuse_enabled=langfuse_enabled,
             pending_agent_transcripts=self._pending_agent_transcripts,
+            pending_assistant_items=self._pending_assistant_items,
+            unscoped_streamed_assistant_event_times=self._unscoped_streamed_assistant_event_times,
+            pending_unscoped_stream_records=self._pending_unscoped_stream_records,
         )
 
     # Expose for tests that set collector._trace_finalize_timeout_sec directly
@@ -406,6 +410,39 @@ class MetricsCollector:
             self._handle_agent_state_changed,
             old_state=old_state,
             new_state=new_state,
+        )
+
+    def submit_streamed_assistant_text_delta(
+        self,
+        speech_id: Optional[str],
+        text: str,
+        observed_at: float,
+    ) -> None:
+        self._submit_serialized(
+            self._handle_streamed_assistant_text_delta,
+            speech_id=speech_id,
+            text=text,
+            observed_at=observed_at,
+        )
+
+    def submit_streamed_assistant_text_flush(
+        self,
+        speech_id: Optional[str],
+        observed_at: float,
+    ) -> None:
+        self._submit_serialized(
+            self._handle_streamed_assistant_text_flush,
+            speech_id=speech_id,
+            observed_at=observed_at,
+        )
+
+    def submit_streamed_assistant_text_context_missing(
+        self,
+        observed_at: float,
+    ) -> None:
+        self._submit_serialized(
+            self._handle_streamed_assistant_text_context_missing,
+            observed_at=observed_at,
         )
 
     # ------------------------------------------------------------------
@@ -560,11 +597,16 @@ class MetricsCollector:
                 event_created_at=assistant_event_created_at,
             ):
                 return
-            self._buffer_pending_assistant_item(
+            item_id = self._buffer_pending_assistant_item(
                 item=item,
                 assistant_text=normalized,
                 event_created_at=assistant_event_created_at,
             )
+            if item_id is not None:
+                trace_turn = await self._tracer.try_attach_unresolved_assistant_item(
+                    item_id
+                )
+                await self._tracer.maybe_finalize(trace_turn)
             return
         logger.debug(
             "assistant_item_fell_back_to_orphan: source=conversation_item reason=no_item_identity"
@@ -766,6 +808,82 @@ class MetricsCollector:
                 speech_id=speech_id,
                 started_at=time(),
             )
+
+    async def _handle_streamed_assistant_text_delta(
+        self,
+        *,
+        speech_id: Optional[str],
+        text: str,
+        observed_at: float,
+    ) -> None:
+        normalized_speech_id = _normalize(speech_id)
+        if not text:
+            return
+        if not normalized_speech_id:
+            self._buffer_unscoped_streamed_assistant_text_delta(
+                text=text,
+                observed_at=observed_at,
+            )
+            trace_turn = await self._tracer.try_attach_unscoped_streamed_assistant_text()
+            await self._tracer.maybe_finalize(trace_turn)
+            return
+        state = self._get_or_create_state(normalized_speech_id)
+        state.streamed_assistant_text = _append_assistant_text_delta(
+            state.streamed_assistant_text,
+            text,
+        )
+        state.streamed_assistant_text_observed_at = observed_at
+        if not state.streamed_assistant_text.strip():
+            return
+        trace_turn = await self._tracer.attach_assistant_text(
+            state.streamed_assistant_text,
+            event_created_at=observed_at,
+            speech_id=normalized_speech_id,
+            source="text_output_stream",
+        )
+        await self._tracer.maybe_finalize(trace_turn)
+
+    async def _handle_streamed_assistant_text_flush(
+        self,
+        *,
+        speech_id: Optional[str],
+        observed_at: float,
+    ) -> None:
+        normalized_speech_id = _normalize(speech_id)
+        if not normalized_speech_id:
+            self._mark_unscoped_streamed_assistant_text_flush(observed_at=observed_at)
+            trace_turn = await self._tracer.try_attach_unscoped_streamed_assistant_text()
+            await self._tracer.maybe_finalize(trace_turn)
+            return
+        state = self._get_or_create_state(normalized_speech_id)
+        state.text_output_flush_observed = True
+        state.text_output_flush_observed_at = observed_at
+        trace_turn = await self._tracer.mark_streamed_assistant_text_flushed(
+            speech_id=normalized_speech_id,
+            observed_at=observed_at,
+        )
+        if state.streamed_assistant_text.strip():
+            trace_turn = await self._tracer.attach_assistant_text(
+                state.streamed_assistant_text,
+                event_created_at=observed_at,
+                speech_id=normalized_speech_id,
+                source="text_output_stream",
+            )
+        await self._tracer.maybe_finalize(trace_turn)
+
+    async def _handle_streamed_assistant_text_context_missing(
+        self,
+        *,
+        observed_at: float,
+    ) -> None:
+        self._unscoped_streamed_assistant_event_times.append(observed_at)
+        cutoff = observed_at - self._tracer._trace_legacy_finalize_timeout_sec
+        while (
+            self._unscoped_streamed_assistant_event_times
+            and self._unscoped_streamed_assistant_event_times[0] < cutoff
+        ):
+            self._unscoped_streamed_assistant_event_times.popleft()
+        self._sweep_unscoped_stream_records(min_observed_at=cutoff)
 
     async def on_metrics_collected(
         self,
@@ -1180,14 +1298,15 @@ class MetricsCollector:
         item: Any,
         assistant_text: str,
         event_created_at: Optional[float],
-    ) -> None:
+    ) -> Optional[int]:
         item_id = _assistant_item_identity(item)
         if item_id is None:
             logger.debug(
                 "assistant_item_fell_back_to_orphan: source=conversation_item reason=item_identity_unavailable"
             )
-            return
-        self._pending_assistant_items[item_id] = PendingAssistantItemEvent(
+            return None
+        self._pending_assistant_items[item_id] = PendingAssistantItemRecord(
+            item_id=item_id,
             text=assistant_text,
             event_created_at=_to_optional_float(event_created_at),
             source="conversation_item",
@@ -1197,6 +1316,7 @@ class MetricsCollector:
             "assistant_item_buffered_pending_speech_id: item_id=%s",
             item_id,
         )
+        return item_id
 
     async def _register_assistant_item_for_speech(
         self,
@@ -1256,6 +1376,65 @@ class MetricsCollector:
         ]
         for item_id in stale_pending_ids:
             self._pending_assistant_items.pop(item_id, None)
+
+    def _buffer_unscoped_streamed_assistant_text_delta(
+        self,
+        *,
+        text: str,
+        observed_at: float,
+    ) -> None:
+        if not text:
+            return
+        self._sweep_unscoped_stream_records(
+            min_observed_at=observed_at - self._tracer._trace_legacy_finalize_timeout_sec
+        )
+        if (
+            self._pending_unscoped_stream_records
+            and not self._pending_unscoped_stream_records[-1].flush_observed
+        ):
+            record = self._pending_unscoped_stream_records[-1]
+            record.text = _append_assistant_text_delta(record.text, text)
+            record.last_delta_at = observed_at
+            record.observed_at = observed_at
+            return
+
+        self._pending_unscoped_stream_records.append(
+            PendingUnscopedStreamRecord(
+                text=text,
+                observed_at=observed_at,
+                last_delta_at=observed_at,
+            )
+        )
+
+    def _mark_unscoped_streamed_assistant_text_flush(
+        self,
+        *,
+        observed_at: float,
+    ) -> None:
+        self._sweep_unscoped_stream_records(
+            min_observed_at=observed_at - self._tracer._trace_legacy_finalize_timeout_sec
+        )
+        if not self._pending_unscoped_stream_records:
+            return
+        record = self._pending_unscoped_stream_records[-1]
+        if record.flush_observed:
+            return
+        record.flush_observed = True
+        record.flush_observed_at = observed_at
+        record.observed_at = observed_at
+        if record.last_delta_at is None:
+            record.last_delta_at = observed_at
+
+    def _sweep_unscoped_stream_records(
+        self,
+        *,
+        min_observed_at: float,
+    ) -> None:
+        while (
+            self._pending_unscoped_stream_records
+            and self._pending_unscoped_stream_records[0].observed_at < min_observed_at
+        ):
+            self._pending_unscoped_stream_records.popleft()
 
     def _submit_serialized_callback(
         self,
@@ -1555,6 +1734,14 @@ def _append_if_new(queue: deque[str], value: str) -> None:
     if queue and queue[-1] == value:
         return
     queue.append(value)
+
+
+def _append_assistant_text_delta(existing: str, incoming: str) -> str:
+    if not incoming:
+        return existing
+    if not existing:
+        return incoming
+    return f"{existing}{incoming}"
 
 
 def _merge_user_transcripts(existing: str, incoming: str) -> str:

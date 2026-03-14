@@ -40,6 +40,7 @@ class TraceTurn:
     assistant_text: str = ""
     assistant_text_missing: bool = False
     assistant_text_observed: bool = False
+    streamed_assistant_text_observed: bool = False
     stt_status: str = "missing"
     vad_duration_ms: Optional[float] = None
     stt_duration_ms: Optional[float] = None
@@ -81,6 +82,8 @@ class TraceTurn:
     assistant_audio_started_at: Optional[float] = None
     speech_done_observed: bool = False
     speech_done_observed_at: Optional[float] = None
+    streamed_assistant_text_flushed: bool = False
+    streamed_assistant_text_flushed_at: Optional[float] = None
     awaiting_speech_done_for_finalize: bool = False
     interrupted: bool = False
     interrupted_reason: Optional[str] = None
@@ -152,6 +155,28 @@ class AssistantTextRecord:
 
 
 @dataclass
+class PendingAssistantItemRecord:
+    """Assistant conversation item awaiting exact or safe turn correlation."""
+
+    item_id: int
+    text: str
+    event_created_at: Optional[float] = None
+    source: Optional[str] = None
+    observed_at: float = field(default_factory=time)
+
+
+@dataclass
+class PendingUnscopedStreamRecord:
+    """Streamed assistant text captured without an exact speech id."""
+
+    text: str
+    observed_at: float = field(default_factory=time)
+    last_delta_at: Optional[float] = None
+    flush_observed: bool = False
+    flush_observed_at: Optional[float] = None
+
+
+@dataclass
 class TimelineEvent:
     """Ordered event for building trace phases."""
 
@@ -204,6 +229,9 @@ class TurnTracer:
         fallback_participant_id: Optional[str],
         langfuse_enabled: bool,
         pending_agent_transcripts: deque[str],
+        pending_assistant_items: dict[int, PendingAssistantItemRecord],
+        unscoped_streamed_assistant_event_times: Optional[deque[float]] = None,
+        pending_unscoped_stream_records: Optional[deque[PendingUnscopedStreamRecord]] = None,
     ) -> None:
         self._publisher = publisher
         self._room_id = room_id
@@ -213,6 +241,17 @@ class TurnTracer:
         self._fallback_participant_id = fallback_participant_id
         self._langfuse_enabled = langfuse_enabled
         self._pending_agent_transcripts = pending_agent_transcripts
+        self._pending_assistant_items = pending_assistant_items
+        self._unscoped_streamed_assistant_event_times = (
+            unscoped_streamed_assistant_event_times
+            if unscoped_streamed_assistant_event_times is not None
+            else deque()
+        )
+        self._pending_unscoped_stream_records = (
+            pending_unscoped_stream_records
+            if pending_unscoped_stream_records is not None
+            else deque()
+        )
 
         self._pending_trace_turns: deque[TraceTurn] = deque()
         self._pending_agent_transcripts_by_speech_id: dict[
@@ -697,6 +736,37 @@ class TurnTracer:
                     and turn.assistant_text.strip() == normalized_text
                 ):
                     return turn
+                if (
+                    source == "text_output_stream"
+                    and turn.assistant_text.strip()
+                    and turn.assistant_text_source
+                    not in {None, "text_output_stream", "tts_metrics", "unavailable"}
+                ):
+                    return turn
+                if (
+                    turn.assistant_text_source == "text_output_stream"
+                    and source in {"speech_item_added", "conversation_item_correlated", "speech_done"}
+                    and turn.assistant_text.strip()
+                ):
+                    current_text = turn.assistant_text.strip()
+                    if normalized_text == current_text:
+                        order = self._next_event_order(turn)
+                        turn.assistant_text_source = source
+                        turn.assistant_text_updated_at = _resolved_event_timestamp(
+                            resolved_event_created_at
+                        )
+                        turn.assistant_text_updated_order = order
+                        return turn
+                    if current_text.casefold() in normalized_text.casefold():
+                        self._apply_assistant_text_to_turn(
+                            turn,
+                            normalized_text,
+                            event_created_at=resolved_event_created_at,
+                            source=source,
+                        )
+                        return turn
+                    if normalized_text.casefold() in current_text.casefold():
+                        return turn
                 self._apply_assistant_text_to_turn(
                     turn,
                     normalized_text,
@@ -729,6 +799,17 @@ class TurnTracer:
                 source=source,
             )
             return turn
+
+    async def try_attach_unresolved_assistant_item(
+        self,
+        item_id: int,
+    ) -> Optional[TraceTurn]:
+        async with self._trace_lock:
+            return self._try_apply_safe_rescue_for_item_id(item_id)
+
+    async def try_attach_unscoped_streamed_assistant_text(self) -> Optional[TraceTurn]:
+        async with self._trace_lock:
+            return self._try_apply_safe_rescue_for_unscoped_stream()
 
     async def attach_tool_step_started(self) -> tuple[Optional[TraceTurn], bool]:
         async with self._trace_lock:
@@ -839,6 +920,26 @@ class TurnTracer:
             self._apply_buffered_assistant_text_for_speech_id(turn)
             return turn
 
+    async def mark_streamed_assistant_text_flushed(
+        self,
+        *,
+        speech_id: Optional[str],
+        observed_at: Optional[float] = None,
+    ) -> Optional[TraceTurn]:
+        async with self._trace_lock:
+            normalized_speech_id = _normalize_optional_str(speech_id)
+            if not normalized_speech_id:
+                return None
+            turn = self._resolve_turn_for_exact_speech_id(normalized_speech_id)
+            if turn is None:
+                return None
+            turn.streamed_assistant_text_flushed = True
+            turn.streamed_assistant_text_flushed_at = _resolved_event_timestamp(
+                _to_optional_float(observed_at)
+            )
+            self._apply_buffered_assistant_text_for_speech_id(turn)
+            return turn
+
     async def drain_pending_turns(self) -> None:
         completed_turns: list[TraceTurn] = []
         async with self._trace_lock:
@@ -882,6 +983,10 @@ class TurnTracer:
         async with self._trace_lock:
             if trace_turn not in self._pending_trace_turns:
                 return
+            if not trace_turn.assistant_text.strip():
+                self._apply_buffered_assistant_text_for_speech_id(trace_turn)
+            if not trace_turn.assistant_text.strip():
+                self._try_attach_safe_rescue_assistant_text_for_turn(trace_turn)
             if self._is_complete(trace_turn):
                 completed_turn = self._finalize_locked(trace_turn)
             elif self._should_finalize_after_speech_done_without_text(trace_turn):
@@ -1193,6 +1298,8 @@ class TurnTracer:
         turn.assistant_text_source = source or turn.assistant_text_source or "unknown"
         turn.assistant_text_updated_at = _resolved_event_timestamp(event_created_at)
         turn.assistant_text_updated_order = order
+        if source == "text_output_stream" or turn.streamed_assistant_text_observed:
+            turn.streamed_assistant_text_observed = True
         _reconcile_assistant_text_with_tts_calls(
             turn=turn,
             assistant_text=assistant_text,
@@ -1247,6 +1354,354 @@ class TurnTracer:
             )
         if not queue:
             self._pending_agent_transcripts_by_speech_id.pop(speech_id, None)
+
+    def _try_apply_safe_rescue_for_item_id(
+        self,
+        item_id: int,
+    ) -> Optional[TraceTurn]:
+        record = self._pending_assistant_items.get(item_id)
+        if record is None:
+            return None
+        turn, _ = self._safe_rescue_candidate_for_record(record)
+        if turn is None:
+            return None
+        self._consume_safe_rescue_records_for_turn(turn)
+        return turn
+
+    def _try_apply_safe_rescue_for_unscoped_stream(self) -> Optional[TraceTurn]:
+        for record in list(self._pending_unscoped_stream_records):
+            turn, _ = self._safe_rescue_candidate_for_unscoped_stream_record(
+                record,
+                allow_unflushed=False,
+            )
+            if turn is None:
+                continue
+            if self._consume_unscoped_stream_records_for_turn(
+                turn,
+                allow_unflushed=False,
+            ):
+                return turn
+        return None
+
+    def _try_attach_safe_rescue_assistant_text_for_turn(
+        self,
+        turn: TraceTurn,
+        *,
+        min_observed_order: Optional[int] = None,
+    ) -> bool:
+        if min_observed_order is not None:
+            return False
+        if self._consume_safe_rescue_records_for_turn(turn):
+            return True
+        return self._consume_unscoped_stream_records_for_turn(
+            turn,
+            allow_unflushed=False,
+        )
+
+    def _consume_safe_rescue_records_for_turn(self, turn: TraceTurn) -> bool:
+        matching_records: list[tuple[int, PendingAssistantItemRecord]] = []
+        for item_id, record in list(self._pending_assistant_items.items()):
+            candidate_turn, _ = self._safe_rescue_candidate_for_record(record)
+            if candidate_turn is turn:
+                matching_records.append((item_id, record))
+
+        if not matching_records:
+            return False
+
+        chosen_item_id, chosen_record = max(
+            matching_records,
+            key=lambda entry: self._pending_assistant_item_sort_key(entry[1]),
+        )
+        for item_id, _ in matching_records:
+            self._pending_assistant_items.pop(item_id, None)
+        self._apply_assistant_text_to_turn(
+            turn,
+            chosen_record.text,
+            event_created_at=chosen_record.event_created_at,
+            source="conversation_item_safe_rescue",
+        )
+        logger.debug(
+            "assistant_item_safe_rescue_applied: item_id=%s turn_id=%s speech_id=%s matched_records=%s",
+            chosen_item_id,
+            turn.turn_id,
+            turn.speech_id,
+            len(matching_records),
+        )
+        return True
+
+    def _consume_unscoped_stream_records_for_turn(
+        self,
+        turn: TraceTurn,
+        *,
+        allow_unflushed: bool,
+    ) -> bool:
+        matching_records: list[tuple[int, PendingUnscopedStreamRecord]] = []
+        for index, record in enumerate(list(self._pending_unscoped_stream_records)):
+            candidate_turn, _ = self._safe_rescue_candidate_for_unscoped_stream_record(
+                record,
+                allow_unflushed=allow_unflushed,
+            )
+            if candidate_turn is turn:
+                matching_records.append((index, record))
+
+        if not matching_records:
+            return False
+
+        chosen_index, chosen_record = min(
+            matching_records,
+            key=lambda entry: self._pending_unscoped_stream_sort_key(entry[1]),
+        )
+        for index, _ in reversed(matching_records):
+            del self._pending_unscoped_stream_records[index]
+        self._apply_assistant_text_to_turn(
+            turn,
+            chosen_record.text,
+            event_created_at=(
+                chosen_record.flush_observed_at
+                if chosen_record.flush_observed_at is not None
+                else chosen_record.last_delta_at
+            ),
+            source="text_output_stream",
+        )
+        if chosen_record.flush_observed:
+            turn.streamed_assistant_text_flushed = True
+            turn.streamed_assistant_text_flushed_at = _resolved_event_timestamp(
+                chosen_record.flush_observed_at
+            )
+        logger.debug(
+            "unscoped_stream_safe_rescue_applied: turn_id=%s speech_id=%s flushed=%s matched_records=%s chosen_index=%s",
+            turn.turn_id,
+            turn.speech_id,
+            chosen_record.flush_observed,
+            len(matching_records),
+            chosen_index,
+        )
+        return True
+
+    def _safe_rescue_candidate_for_record(
+        self,
+        record: PendingAssistantItemRecord,
+    ) -> tuple[Optional[TraceTurn], str]:
+        eligible_with_timing = self._safe_rescue_turn_candidates(record)
+        if len(eligible_with_timing) == 1:
+            return eligible_with_timing[0], "matched"
+        if len(eligible_with_timing) > 1:
+            return None, "multiple_candidate_turns"
+
+        eligible_without_timing = self._safe_rescue_turn_candidates(
+            record,
+            ignore_event_time=True,
+        )
+        if eligible_without_timing:
+            return None, "event_before_emit_ready"
+        return None, "no_candidate_turn"
+
+    def _safe_rescue_candidate_for_unscoped_stream_record(
+        self,
+        record: PendingUnscopedStreamRecord,
+        *,
+        allow_unflushed: bool,
+    ) -> tuple[Optional[TraceTurn], str]:
+        eligible_with_timing = self._safe_rescue_turn_candidates_for_unscoped_stream_record(
+            record,
+            ignore_event_time=False,
+            allow_unflushed=allow_unflushed,
+        )
+        if len(eligible_with_timing) == 1:
+            return eligible_with_timing[0], "matched"
+        if len(eligible_with_timing) > 1:
+            return None, "multiple_candidate_turns"
+
+        eligible_without_timing = self._safe_rescue_turn_candidates_for_unscoped_stream_record(
+            record,
+            ignore_event_time=True,
+            allow_unflushed=allow_unflushed,
+        )
+        if eligible_without_timing:
+            return None, "event_before_emit_ready"
+        if not record.flush_observed and not allow_unflushed:
+            return None, "flush_not_observed"
+        return None, "no_candidate_turn"
+
+    def _safe_rescue_turn_candidates(
+        self,
+        record: PendingAssistantItemRecord,
+        *,
+        ignore_event_time: bool = False,
+    ) -> list[TraceTurn]:
+        event_created_at = (
+            _resolved_event_timestamp(record.event_created_at)
+            if record.event_created_at is not None
+            else None
+        )
+        candidates: list[TraceTurn] = []
+        for turn in self._pending_trace_turns:
+            if not self._is_emit_ready(turn):
+                continue
+            if turn.assistant_text.strip() or turn.response_text.strip():
+                continue
+            if self._requires_post_tool_response(turn):
+                continue
+            if turn.interrupted and turn.assistant_audio_started:
+                continue
+            if (
+                not ignore_event_time
+                and event_created_at is not None
+                and turn.emit_ready_at is not None
+                and turn.emit_ready_at > event_created_at
+            ):
+                continue
+            candidates.append(turn)
+        return candidates
+
+    def _safe_rescue_turn_candidates_for_unscoped_stream_record(
+        self,
+        record: PendingUnscopedStreamRecord,
+        *,
+        ignore_event_time: bool = False,
+        allow_unflushed: bool,
+    ) -> list[TraceTurn]:
+        if not record.text.strip():
+            return []
+        if not record.flush_observed and not allow_unflushed:
+            return []
+        event_created_at = _resolved_event_timestamp(
+            record.flush_observed_at
+            if record.flush_observed_at is not None
+            else record.last_delta_at
+        )
+        candidates: list[TraceTurn] = []
+        for turn in self._pending_trace_turns:
+            if not self._is_emit_ready(turn):
+                continue
+            if turn.assistant_text.strip() or turn.response_text.strip():
+                continue
+            if self._requires_post_tool_response(turn):
+                continue
+            if turn.interrupted and turn.assistant_audio_started:
+                continue
+            if (
+                not ignore_event_time
+                and event_created_at is not None
+                and turn.emit_ready_at is not None
+                and turn.emit_ready_at > event_created_at
+            ):
+                continue
+            candidates.append(turn)
+        return candidates
+
+    def _pending_assistant_item_sort_key(
+        self,
+        record: PendingAssistantItemRecord,
+    ) -> tuple[float, float, int]:
+        event_created_at = (
+            _resolved_event_timestamp(record.event_created_at)
+            if record.event_created_at is not None
+            else 0.0
+        )
+        return (event_created_at, record.observed_at, len(record.text.strip()))
+
+    def _pending_unscoped_stream_sort_key(
+        self,
+        record: PendingUnscopedStreamRecord,
+    ) -> tuple[float, float, int]:
+        event_created_at = _resolved_event_timestamp(
+            record.flush_observed_at
+            if record.flush_observed_at is not None
+            else record.last_delta_at
+        )
+        return (event_created_at, record.observed_at, len(record.text.strip()))
+
+    def _safe_rescue_diagnostics_for_turn(
+        self,
+        turn: TraceTurn,
+    ) -> tuple[int, str, int, str]:
+        pending_count = len(self._pending_assistant_items)
+        if self._requires_post_tool_response(turn):
+            stream_count, stream_reason = self._unscoped_stream_rescue_diagnostics_for_turn(turn)
+            return pending_count, "post_tool_turn", stream_count, stream_reason
+
+        if pending_count == 0:
+            assistant_reason = "no_unresolved_assistant_items"
+        else:
+            saw_multiple_candidates = False
+            saw_event_before_emit_ready = False
+            for record in self._pending_assistant_items.values():
+                candidate_turn, reason = self._safe_rescue_candidate_for_record(record)
+                if candidate_turn is turn:
+                    assistant_reason = "rescue_available_but_not_consumed"
+                    break
+                if reason == "multiple_candidate_turns":
+                    saw_multiple_candidates = True
+                elif reason == "event_before_emit_ready":
+                    broader_candidates = self._safe_rescue_turn_candidates(
+                        record,
+                        ignore_event_time=True,
+                    )
+                    if turn in broader_candidates:
+                        saw_event_before_emit_ready = True
+            else:
+                if saw_multiple_candidates:
+                    assistant_reason = "multiple_candidate_turns"
+                elif saw_event_before_emit_ready:
+                    assistant_reason = "event_before_emit_ready"
+                else:
+                    assistant_reason = "no_candidate_turn"
+
+        stream_count, stream_reason = self._unscoped_stream_rescue_diagnostics_for_turn(turn)
+        return pending_count, assistant_reason, stream_count, stream_reason
+
+    def _unscoped_stream_rescue_diagnostics_for_turn(
+        self,
+        turn: TraceTurn,
+    ) -> tuple[int, str]:
+        pending_count = len(self._pending_unscoped_stream_records)
+        if pending_count == 0:
+            recent_count = sum(
+                1
+                for event_at in self._unscoped_streamed_assistant_event_times
+                if event_at >= (turn.emit_ready_at or turn.created_at)
+            )
+            if recent_count:
+                return 0, "stream_context_missing_without_buffer"
+            return 0, "no_unscoped_stream_records"
+
+        saw_multiple_candidates = False
+        saw_event_before_emit_ready = False
+        saw_missing_flush = False
+        for record in self._pending_unscoped_stream_records:
+            candidate_turn, reason = self._safe_rescue_candidate_for_unscoped_stream_record(
+                record,
+                allow_unflushed=False,
+            )
+            if candidate_turn is turn:
+                return pending_count, "rescue_available_but_not_consumed"
+            if reason == "multiple_candidate_turns":
+                saw_multiple_candidates = True
+            elif reason == "event_before_emit_ready":
+                broader_candidates = self._safe_rescue_turn_candidates_for_unscoped_stream_record(
+                    record,
+                    ignore_event_time=True,
+                    allow_unflushed=False,
+                )
+                if turn in broader_candidates:
+                    saw_event_before_emit_ready = True
+            elif reason == "flush_not_observed":
+                broader_candidates = self._safe_rescue_turn_candidates_for_unscoped_stream_record(
+                    record,
+                    ignore_event_time=False,
+                    allow_unflushed=True,
+                )
+                if turn in broader_candidates:
+                    saw_missing_flush = True
+
+        if saw_multiple_candidates:
+            return pending_count, "multiple_candidate_turns"
+        if saw_event_before_emit_ready:
+            return pending_count, "event_before_emit_ready"
+        if saw_missing_flush:
+            return pending_count, "flush_not_observed"
+        return pending_count, "no_candidate_turn"
 
     def _try_attach_latest_usable_orphan_assistant_text(
         self,
@@ -1310,9 +1765,24 @@ class TurnTracer:
         base_complete = bool(self._is_emit_ready(turn) and turn.assistant_text)
         if not base_complete:
             return False
+        if self._awaits_streamed_text_flush_before_finalize(turn):
+            return False
         if turn.tool_phase_open:
             return False
         return not self._requires_post_tool_response(turn)
+
+    def _awaits_streamed_text_flush_before_finalize(self, turn: TraceTurn) -> bool:
+        if turn.interrupted:
+            return False
+        if self._requires_post_tool_response(turn):
+            return False
+        if not self._is_emit_ready(turn):
+            return False
+        if not turn.assistant_text.strip():
+            return False
+        if turn.assistant_text_source != "text_output_stream":
+            return False
+        return not turn.streamed_assistant_text_flushed
 
     def _awaits_speech_done_before_finalize(self, turn: TraceTurn) -> bool:
         if turn.interrupted:
@@ -1351,6 +1821,11 @@ class TurnTracer:
     def _resolve_finalize_timeout_sec(self, turn: TraceTurn) -> float:
         if self._requires_post_tool_response(turn):
             return self._trace_post_tool_response_timeout_sec
+        if self._awaits_streamed_text_flush_before_finalize(turn):
+            return max(
+                self._trace_legacy_finalize_timeout_sec,
+                self._trace_finalize_timeout_sec,
+            )
         if self._awaits_speech_done_before_finalize(turn):
             return max(
                 self._trace_legacy_finalize_timeout_sec,
@@ -1361,6 +1836,8 @@ class TurnTracer:
     def _finalize_wait_reason(self, turn: TraceTurn) -> str:
         if self._requires_post_tool_response(turn):
             return "post_tool_response"
+        if self._awaits_streamed_text_flush_before_finalize(turn):
+            return "text_output_flush"
         if self._awaits_speech_done_before_finalize(turn):
             return "speech_done"
         return "assistant_text_grace"
@@ -1464,6 +1941,14 @@ class TurnTracer:
                         source="tool_fallback",
                     )
                 else:
+                    (
+                        unresolved_count,
+                        rescue_rejection_reason,
+                        unscoped_stream_count,
+                        stream_rescue_rejection_reason,
+                    ) = (
+                        self._safe_rescue_diagnostics_for_turn(turn)
+                    )
                     turn.assistant_text_missing = True
                     unavailable = "[assistant text unavailable]"
                     turn.assistant_text = unavailable
@@ -1471,11 +1956,17 @@ class TurnTracer:
                     if not turn.response_text:
                         turn.response_text = unavailable
                     logger.warning(
-                        "Langfuse turn finalized without assistant text: turn_id=%s speech_id=%s reason=%s",
+                        "Langfuse turn finalized without assistant text: turn_id=%s speech_id=%s reason=%s unresolved_assistant_item_count=%s rescue_rejection_reason=%s unscoped_stream_record_count=%s stream_rescue_rejection_reason=%s streamed_assistant_text_observed=%s streamed_assistant_text_flushed=%s",
                         turn.turn_id,
                         turn.speech_id,
                         finalization_reason
                         or ("post_tool_timeout" if tool_post_response_missing else "assistant_text_grace_timeout"),
+                        unresolved_count,
+                        rescue_rejection_reason,
+                        unscoped_stream_count,
+                        stream_rescue_rejection_reason,
+                        turn.streamed_assistant_text_observed,
+                        turn.streamed_assistant_text_flushed,
                     )
 
         turn.tool_phase_open = False
@@ -1537,6 +2028,18 @@ class TurnTracer:
                     if not buffered_exact:
                         self._pending_agent_transcripts_by_speech_id.pop(speech_id, None)
                     return record.text.strip(), record.source or "buffered_exact"
+        if self._try_attach_safe_rescue_assistant_text_for_turn(
+            turn,
+            min_observed_order=min_observed_order,
+        ):
+            if turn.assistant_text.strip():
+                return turn.assistant_text.strip(), turn.assistant_text_source
+        if self._consume_unscoped_stream_records_for_turn(
+            turn,
+            allow_unflushed=True,
+        ):
+            if turn.assistant_text.strip():
+                return turn.assistant_text.strip(), turn.assistant_text_source
         for tts_call in reversed(turn.tts_calls):
             if (
                 min_observed_order is not None
@@ -1726,6 +2229,11 @@ class TurnTracer:
                 and pending_turn.llm_calls
                 and pending_turn.tts_calls
             ):
+                waiting_for_streamed_text_flush = (
+                    self._awaits_streamed_text_flush_before_finalize(
+                        pending_turn
+                    )
+                )
                 waiting_for_speech_done = self._awaits_speech_done_before_finalize(
                     pending_turn
                 )
@@ -1745,9 +2253,13 @@ class TurnTracer:
                     tool_post_response_missing=requires_post_tool_response,
                     drop_assistant_text=missing_post_tool_assistant,
                     finalization_reason=(
+                        "text_output_flush_timeout"
+                        if waiting_for_streamed_text_flush
+                        else (
                         "speech_done_timeout"
                         if waiting_for_speech_done
                         else None
+                        )
                     ),
                 )
 
@@ -2819,6 +3331,9 @@ def _set_root_attributes(
         "langfuse.trace.metadata.assistant_text_missing": turn.assistant_text_missing,
         "langfuse.trace.metadata.assistant_text_observed": turn.assistant_text_observed,
         "langfuse.trace.metadata.assistant_text_source": turn.assistant_text_source,
+        "langfuse.trace.metadata.streamed_assistant_text_observed": turn.streamed_assistant_text_observed,
+        "langfuse.trace.metadata.streamed_assistant_text_flushed": turn.streamed_assistant_text_flushed,
+        "langfuse.trace.metadata.streamed_assistant_text_flushed_at": turn.streamed_assistant_text_flushed_at,
         "langfuse.trace.metadata.stt_status": turn.stt_status,
         "langfuse.trace.metadata.tool_phase_announced": turn.tool_step_announced,
         "langfuse.trace.metadata.tool_post_response_missing": turn.tool_post_response_missing,

@@ -31,6 +31,7 @@ from src.agent.runtime.tasks import (
 from src.agent.tools.feedback import ToolFeedbackController
 from src.agent.traces.langfuse import setup_langfuse_tracer
 from src.agent.traces.metrics_collector import MetricsCollector
+from src.agent.traces.text_output_tracing import install_tracing_text_output
 from src.core.logger import logger
 from src.core.settings import settings
 
@@ -242,6 +243,20 @@ async def session_handler(ctx: agents.JobContext) -> None:
             ),
         ),
     )
+    if all(
+        hasattr(metrics_collector, attr_name)
+        for attr_name in (
+            "submit_streamed_assistant_text_delta",
+            "submit_streamed_assistant_text_flush",
+            "submit_streamed_assistant_text_context_missing",
+        )
+    ):
+        install_tracing_text_output(
+            session=session,
+            on_delta=metrics_collector.submit_streamed_assistant_text_delta,
+            on_flush=metrics_collector.submit_streamed_assistant_text_flush,
+            on_context_missing=metrics_collector.submit_streamed_assistant_text_context_missing,
+        )
     await tool_feedback.start(room=ctx.room, session=session)
     if mcp_runtime_active:
         startup_greeting_task = schedule_startup_greeting_task(
