@@ -220,6 +220,9 @@ class PendingUserUtterance:
     committed: bool = False
     stt_observed: bool = False
     llm_started: bool = False
+    assistant_response_started: bool = False
+    assistant_response_started_at: Optional[float] = None
+    llm_stalled_before_response: bool = False
     watchdog_id: Optional[str] = None
     speech_id: Optional[str] = None
 
@@ -285,10 +288,9 @@ class MetricsCollector:
         self._pending_agent_transcripts: deque[str] = deque()
         self._unscoped_streamed_assistant_event_times: deque[float] = deque()
         self._pending_unscoped_stream_records: deque[PendingUnscopedStreamRecord] = deque()
-        self._pending_speech_ids_for_first_audio: deque[str] = deque()
         self._assistant_item_speech_ids: dict[int, AssistantItemSpeechBinding] = {}
         self._pending_assistant_items: dict[int, PendingAssistantItemRecord] = {}
-        self._latest_agent_speech_id: Optional[str] = None
+        self._superseded_speech_ids: set[str] = set()
         self._turns: dict[str, TurnState] = {}
         self._llm_stall_tasks: dict[str, asyncio.Task[None]] = {}
         self._latest_vad_metrics: Optional[VADMetrics] = None
@@ -336,6 +338,7 @@ class MetricsCollector:
             pending_assistant_items=self._pending_assistant_items,
             unscoped_streamed_assistant_event_times=self._unscoped_streamed_assistant_event_times,
             pending_unscoped_stream_records=self._pending_unscoped_stream_records,
+            superseded_speech_ids=self._superseded_speech_ids,
         )
 
     # Expose for tests that set collector._trace_finalize_timeout_sec directly
@@ -503,11 +506,23 @@ class MetricsCollector:
             utterance.watchdog_id = self._start_llm_stall_watchdog(transcript=normalized)
             self._pending_user_utterances.append(utterance)
         else:
+            if self._should_reopen_utterance_for_continuation(utterance):
+                previous_speech_id = self._reopen_user_utterance_for_continuation(
+                    utterance
+                )
+                if previous_speech_id is not None:
+                    await self._tracer.recover_false_turn_before_response(
+                        speech_id=previous_speech_id
+                    )
             utterance.transcript = _merge_user_transcripts(
                 utterance.transcript,
                 normalized,
             )
-            if utterance.watchdog_id is not None:
+            if utterance.watchdog_id is None:
+                utterance.watchdog_id = self._start_llm_stall_watchdog(
+                    transcript=utterance.transcript,
+                )
+            else:
                 self._update_llm_stall_watchdog(
                     utterance.watchdog_id,
                     utterance.transcript,
@@ -660,8 +675,13 @@ class MetricsCollector:
 
     async def _handle_speech_created(self, speech_handle: Any) -> None:
         speech_id = _normalize(getattr(speech_handle, "id", None))
+        if self._is_superseded_speech_id(speech_id):
+            logger.debug(
+                "Ignoring speech_created for superseded speech_id=%s",
+                speech_id,
+            )
+            return
         if speech_id:
-            self._pending_speech_ids_for_first_audio.append(speech_id)
             self._sweep_assistant_item_caches()
 
         on_item_added = self._register_speech_item_added_callback(
@@ -717,6 +737,12 @@ class MetricsCollector:
         speech_id: Optional[str],
         item: Any,
     ) -> None:
+        if self._is_superseded_speech_id(speech_id):
+            logger.debug(
+                "Ignoring speech_item_added for superseded speech_id=%s",
+                speech_id,
+            )
+            return
         await self._register_assistant_item_for_speech(item=item, speech_id=speech_id)
 
         assistant_text, event_created_at = _extract_assistant_chat_item(item)
@@ -734,8 +760,12 @@ class MetricsCollector:
         speech_id: Optional[str],
         chat_items: list[Any],
     ) -> None:
-        if speech_id:
-            self._discard_pending_speech_id(speech_id)
+        if self._is_superseded_speech_id(speech_id):
+            logger.debug(
+                "Ignoring speech_done for superseded speech_id=%s",
+                speech_id,
+            )
+            return
         assistant_text, event_created_at = _extract_latest_assistant_chat_item(
             chat_items
         )
@@ -778,36 +808,11 @@ class MetricsCollector:
     ) -> None:
         if new_state != "speaking":
             return
-
-        speech_id: Optional[str] = None
-        while self._pending_speech_ids_for_first_audio:
-            candidate = self._pending_speech_ids_for_first_audio.popleft()
-            state = self._turns.get(candidate)
-            if state is None or state.first_audio_monotonic is None:
-                speech_id = candidate
-                break
-
-        if speech_id is None:
-            latest = self._latest_agent_speech_id
-            if latest:
-                state = self._turns.get(latest)
-                if state is None or state.first_audio_monotonic is None:
-                    speech_id = latest
-
-        if speech_id:
-            ts = self._get_or_create_state(speech_id)
-            if ts.first_audio_monotonic is None:
-                ts.first_audio_monotonic = monotonic()
-            logger.debug(
-                "First assistant audio recorded from state transition: speech_id=%s, old_state=%s, new_state=%s",
-                speech_id,
-                old_state,
-                new_state,
-            )
-            await self._tracer.mark_first_audio_started(
-                speech_id=speech_id,
-                started_at=time(),
-            )
+        logger.debug(
+            "Ignoring agent_state_changed for tracing boundary until exact TTS arrives: old_state=%s new_state=%s",
+            old_state,
+            new_state,
+        )
 
     async def _handle_streamed_assistant_text_delta(
         self,
@@ -818,6 +823,12 @@ class MetricsCollector:
     ) -> None:
         normalized_speech_id = _normalize(speech_id)
         if not text:
+            return
+        if normalized_speech_id and self._is_superseded_speech_id(normalized_speech_id):
+            logger.debug(
+                "Ignoring streamed assistant text delta for superseded speech_id=%s",
+                normalized_speech_id,
+            )
             return
         if not normalized_speech_id:
             self._buffer_unscoped_streamed_assistant_text_delta(
@@ -850,6 +861,12 @@ class MetricsCollector:
         observed_at: float,
     ) -> None:
         normalized_speech_id = _normalize(speech_id)
+        if normalized_speech_id and self._is_superseded_speech_id(normalized_speech_id):
+            logger.debug(
+                "Ignoring streamed assistant text flush for superseded speech_id=%s",
+                normalized_speech_id,
+            )
+            return
         if not normalized_speech_id:
             self._mark_unscoped_streamed_assistant_text_flush(observed_at=observed_at)
             trace_turn = await self._tracer.try_attach_unscoped_streamed_assistant_text()
@@ -916,6 +933,12 @@ class MetricsCollector:
 
         if isinstance(collected_metrics, metrics.STTMetrics):
             speech_id = collected_metrics.request_id
+            if self._is_superseded_speech_id(speech_id):
+                logger.debug(
+                    "Ignoring STT metrics for superseded speech_id=%s",
+                    speech_id,
+                )
+                return
             turn_metrics = self._get_or_create_turn(speech_id, role="user")
             utterance = self._next_user_utterance_for_stt()
             if utterance is not None:
@@ -943,9 +966,14 @@ class MetricsCollector:
 
         elif isinstance(collected_metrics, metrics.LLMMetrics):
             speech_id = collected_metrics.speech_id or collected_metrics.request_id
+            if self._is_superseded_speech_id(speech_id):
+                logger.debug(
+                    "Ignoring LLM metrics for superseded speech_id=%s",
+                    speech_id,
+                )
+                return
             linked_utterance = self._mark_llm_stage_reached(speech_id)
             turn_metrics = self._get_or_create_turn(speech_id, role="agent")
-            self._latest_agent_speech_id = speech_id
             if linked_utterance is not None:
                 turn_metrics.transcript = linked_utterance.transcript
             turn_metrics.llm = LLMMetrics(
@@ -975,6 +1003,19 @@ class MetricsCollector:
 
         elif isinstance(collected_metrics, metrics.TTSMetrics):
             speech_id = collected_metrics.speech_id or collected_metrics.request_id
+            if self._is_superseded_speech_id(speech_id):
+                logger.debug(
+                    "Ignoring TTS metrics for superseded speech_id=%s",
+                    speech_id,
+                )
+                return
+            state = self._get_or_create_state(speech_id)
+            if state.first_audio_monotonic is None:
+                state.first_audio_monotonic = monotonic()
+            self._mark_assistant_response_started(
+                speech_id,
+                observed_at=collected_metrics.timestamp,
+            )
             turn_metrics = self._get_or_create_turn(speech_id, role="agent")
             tts_metric_metadata = _metric_metadata_to_dict(collected_metrics.metadata)
             turn_metrics.tts = TTSMetrics(
@@ -1002,6 +1043,10 @@ class MetricsCollector:
                 observed_total_latency=self._observed_total_latency(speech_id),
                 metric_attributes=_tts_metric_attributes(collected_metrics),
             )
+            await self._tracer.mark_first_audio_started(
+                speech_id=speech_id,
+                started_at=collected_metrics.timestamp,
+            )
             metric_assistant_text = _assistant_text_from_metadata(tts_metric_metadata)
             if metric_assistant_text:
                 await self._on_assistant_text(
@@ -1014,6 +1059,12 @@ class MetricsCollector:
         elif isinstance(collected_metrics, metrics.EOUMetrics):
             speech_id = collected_metrics.speech_id
             if speech_id:
+                if self._is_superseded_speech_id(speech_id):
+                    logger.debug(
+                        "Ignoring EOU metrics for superseded speech_id=%s",
+                        speech_id,
+                    )
+                    return
                 linked_utterance = self._mark_oldest_open_user_utterance_committed(
                     speech_id
                 )
@@ -1209,6 +1260,13 @@ class MetricsCollector:
         normalized = assistant_text.strip()
         if not normalized:
             return
+        if speech_id is not None and self._is_superseded_speech_id(speech_id):
+            logger.debug(
+                "Ignoring assistant text for superseded speech_id=%s source=%s",
+                speech_id,
+                source,
+            )
+            return
         trace_turn = await self._tracer.attach_assistant_text(
             normalized,
             event_created_at=event_created_at,
@@ -1277,6 +1335,9 @@ class MetricsCollector:
         binding = self._assistant_item_speech_ids.get(item_id)
         if binding is None:
             return False
+        if self._is_superseded_speech_id(binding.speech_id):
+            self._assistant_item_speech_ids.pop(item_id, None)
+            return False
         binding.observed_at = time()
         self._pending_assistant_items.pop(item_id, None)
         logger.debug(
@@ -1327,6 +1388,8 @@ class MetricsCollector:
         normalized_speech_id = _normalize_optional_str(speech_id)
         item_id = _assistant_item_identity(item)
         if normalized_speech_id is None or item_id is None:
+            return
+        if self._is_superseded_speech_id(normalized_speech_id):
             return
         self._assistant_item_speech_ids[item_id] = AssistantItemSpeechBinding(
             speech_id=normalized_speech_id,
@@ -1514,7 +1577,6 @@ class MetricsCollector:
         )
         await self._publisher.publish_conversation_turn(turn_metrics)
         self._turns.pop(speech_id, None)
-        self._discard_pending_speech_id(speech_id)
 
     def _observed_total_latency(self, speech_id: str) -> Optional[float]:
         state = self._turns.get(speech_id)
@@ -1528,16 +1590,95 @@ class MetricsCollector:
             return None
         return end - start
 
-    def _discard_pending_speech_id(self, speech_id: str) -> None:
-        if not self._pending_speech_ids_for_first_audio:
+    def _is_superseded_speech_id(self, speech_id: Optional[str]) -> bool:
+        normalized = _normalize(speech_id)
+        if not normalized:
+            return False
+        return normalized in self._superseded_speech_ids
+
+    def _quarantine_superseded_speech_id(self, speech_id: Optional[str]) -> None:
+        normalized = _normalize(speech_id)
+        if not normalized:
             return
-        self._pending_speech_ids_for_first_audio = deque(
-            s for s in self._pending_speech_ids_for_first_audio if s != speech_id
+        if normalized in self._superseded_speech_ids:
+            return
+        self._superseded_speech_ids.add(normalized)
+        self._turns.pop(normalized, None)
+        stale_item_ids = [
+            item_id
+            for item_id, binding in self._assistant_item_speech_ids.items()
+            if binding.speech_id == normalized
+        ]
+        for item_id in stale_item_ids:
+            self._assistant_item_speech_ids.pop(item_id, None)
+        self._tracer.quarantine_superseded_speech_id(normalized)
+
+    def _should_reopen_utterance_for_continuation(
+        self,
+        utterance: PendingUserUtterance,
+    ) -> bool:
+        return bool(
+            utterance.speech_id is not None
+            and not utterance.assistant_response_started
+            and (utterance.llm_started or utterance.llm_stalled_before_response)
         )
+
+    def _cancel_llm_stall_watchdog(self, watchdog_id: Optional[str]) -> None:
+        if watchdog_id is None:
+            return
+        task = self._llm_stall_tasks.pop(watchdog_id, None)
+        if task:
+            task.cancel()
+
+    def _reopen_user_utterance_for_continuation(
+        self,
+        utterance: PendingUserUtterance,
+    ) -> Optional[str]:
+        previous_speech_id = utterance.speech_id
+        if previous_speech_id is not None:
+            self._quarantine_superseded_speech_id(previous_speech_id)
+        self._cancel_llm_stall_watchdog(utterance.watchdog_id)
+        utterance.watchdog_id = None
+        utterance.committed = False
+        utterance.stt_observed = False
+        utterance.llm_started = False
+        utterance.llm_stalled_before_response = False
+        utterance.speech_id = None
+        utterance.assistant_response_started = False
+        utterance.assistant_response_started_at = None
+        logger.debug(
+            "user_utterance_reopened_before_response_started: previous_speech_id=%s transcript_preview=%r",
+            previous_speech_id,
+            utterance.transcript[:80],
+        )
+        return previous_speech_id
+
+    def _mark_assistant_response_started(
+        self,
+        speech_id: Optional[str],
+        *,
+        observed_at: Optional[float],
+    ) -> Optional[PendingUserUtterance]:
+        normalized_speech_id = _normalize(speech_id)
+        if not normalized_speech_id or self._is_superseded_speech_id(normalized_speech_id):
+            return None
+        utterance = self._find_user_utterance_by_speech_id(
+            normalized_speech_id,
+            include_llm_started=True,
+        )
+        if utterance is None:
+            return None
+        utterance.llm_started = True
+        utterance.assistant_response_started = True
+        utterance.assistant_response_started_at = _to_optional_float(observed_at)
+        self._cancel_llm_stall_watchdog(utterance.watchdog_id)
+        utterance.watchdog_id = None
+        self._prune_resolved_user_utterances()
+        return utterance
 
     def _current_open_user_utterance(self) -> Optional[PendingUserUtterance]:
         utterance = self._latest_user_utterance()
-        if utterance is None or utterance.llm_started:
+        if utterance is None or utterance.assistant_response_started:
             return None
         if utterance.committed and utterance.speech_id is None:
             return None
@@ -1545,7 +1686,7 @@ class MetricsCollector:
 
     def _user_utterance_accepting_manual_update(self) -> Optional[PendingUserUtterance]:
         utterance = self._latest_user_utterance()
-        if utterance is None or utterance.llm_started:
+        if utterance is None or utterance.assistant_response_started:
             return None
         if utterance.committed and utterance.speech_id is None:
             return None
@@ -1568,9 +1709,12 @@ class MetricsCollector:
         speech_id: str,
         *,
         include_llm_started: bool = False,
+        include_response_started: bool = True,
     ) -> Optional[PendingUserUtterance]:
         for utterance in reversed(self._pending_user_utterances):
             if utterance.speech_id != speech_id:
+                continue
+            if utterance.assistant_response_started and not include_response_started:
                 continue
             if utterance.llm_started and not include_llm_started:
                 continue
@@ -1581,17 +1725,20 @@ class MetricsCollector:
         self,
         speech_id: str,
     ) -> Optional[PendingUserUtterance]:
-        linked = self._find_user_utterance_by_speech_id(speech_id)
+        linked = self._find_user_utterance_by_speech_id(
+            speech_id,
+            include_llm_started=True,
+        )
         if linked is not None:
             linked.committed = True
             self._prune_resolved_user_utterances()
             return linked
 
         for utterance in self._pending_user_utterances:
-            if utterance.llm_started:
+            if utterance.assistant_response_started:
                 continue
-            if utterance.speech_id is not None:
-                continue
+            if utterance.speech_id is not None and utterance.speech_id != speech_id:
+                self._quarantine_superseded_speech_id(utterance.speech_id)
             utterance.committed = True
             utterance.speech_id = speech_id
             self._prune_resolved_user_utterances()
@@ -1601,7 +1748,11 @@ class MetricsCollector:
     def _prune_resolved_user_utterances(self) -> None:
         while self._pending_user_utterances:
             utterance = self._pending_user_utterances[0]
-            if not utterance.committed or not utterance.llm_started:
+            if (
+                not utterance.committed
+                or not utterance.llm_started
+                or not utterance.assistant_response_started
+            ):
                 break
             self._pending_user_utterances.popleft()
 
@@ -1627,7 +1778,7 @@ class MetricsCollector:
 
     def _update_llm_stall_watchdog(self, watchdog_id: str, transcript: str) -> None:
         utterance = self._find_user_utterance_by_watchdog(watchdog_id)
-        if utterance is None or utterance.llm_started:
+        if utterance is None or utterance.assistant_response_started:
             return
         utterance.transcript = transcript
 
@@ -1638,11 +1789,18 @@ class MetricsCollector:
         normalized_speech_id = _normalize(speech_id)
         utterance: Optional[PendingUserUtterance] = None
         if normalized_speech_id is not None:
-            utterance = self._find_user_utterance_by_speech_id(normalized_speech_id)
+            if self._is_superseded_speech_id(normalized_speech_id):
+                return None
+            utterance = self._find_user_utterance_by_speech_id(
+                normalized_speech_id,
+                include_llm_started=True,
+            )
 
         if utterance is None:
             for candidate in self._pending_user_utterances:
-                if candidate.llm_started:
+                if candidate.assistant_response_started:
+                    continue
+                if candidate.llm_started and candidate.speech_id is not None:
                     continue
                 utterance = candidate
                 break
@@ -1656,10 +1814,7 @@ class MetricsCollector:
         watchdog_id = utterance.watchdog_id
         utterance.watchdog_id = None
         if watchdog_id is not None:
-            task = self._llm_stall_tasks.pop(watchdog_id, None)
-            if task:
-                task.cancel()
-        self._prune_resolved_user_utterances()
+            self._cancel_llm_stall_watchdog(watchdog_id)
         return utterance
 
     def _find_user_utterance_by_watchdog(
@@ -1687,7 +1842,7 @@ class MetricsCollector:
             return
 
         utterance.watchdog_id = None
-        utterance.llm_started = True
+        utterance.llm_stalled_before_response = True
         preview = utterance.transcript[:80] if utterance.transcript else transcript[:80]
         logger.warning(
             "Turn stalled before LLM stage: timeout=%.2fs room=%s transcript_chars=%s transcript_preview=%r",
@@ -1696,7 +1851,6 @@ class MetricsCollector:
             len(utterance.transcript or transcript),
             preview,
         )
-        self._prune_resolved_user_utterances()
 
     async def _resolve_room_id(self) -> str:
         if self._room_id and self._room_id != self._room_name:

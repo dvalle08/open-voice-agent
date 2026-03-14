@@ -1933,7 +1933,7 @@ def test_same_speech_fragmented_input_with_late_speech_done_keeps_full_trace(
     assert root.attributes["langfuse.trace.metadata.assistant_text_missing"] is False
 
 
-def test_immediate_continuation_coalesces_aborted_prior_turn(
+def test_immediate_continuation_after_tts_does_not_mark_coalesced_turn_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import src.agent.traces.metrics_collector as metrics_collector_module
@@ -2001,9 +2001,9 @@ def test_immediate_continuation_coalesces_aborted_prior_turn(
         root.attributes["langfuse.trace.input"]
         == "What the difference between speech to text and speech recognition?"
     )
-    assert root.attributes["langfuse.trace.metadata.coalesced_turn_count"] == 1
-    assert root.attributes["langfuse.trace.metadata.coalesced_fragment_count"] == 1
-    assert root.attributes["langfuse.trace.metadata.coalesced_inputs"] == ["What"]
+    assert root.attributes["langfuse.trace.metadata.coalesced_turn_count"] == 0
+    assert root.attributes["langfuse.trace.metadata.coalesced_fragment_count"] == 0
+    assert root.attributes["langfuse.trace.metadata.coalesced_inputs"] == []
 
 
 def test_visible_assistant_reply_prevents_continuation_coalescing(
@@ -2143,6 +2143,368 @@ def test_multiple_final_transcripts_share_one_llm_stall_watchdog() -> None:
     asyncio.run(_run())
 
     assert not collector._llm_stall_tasks
+
+
+def test_false_turn_stall_reopens_user_utterance_before_response_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+    collector._llm_stall_timeout_sec = 0.01
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-false-turn-stall",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed(
+            "What's the difference between speech to text",
+            is_final=True,
+        )
+        await collector.on_metrics_collected(_make_eou_metrics("speech-false-turn-a"))
+        await asyncio.sleep(0.02)
+
+        assert len(collector._pending_user_utterances) == 1
+        stalled_utterance = collector._pending_user_utterances[0]
+        assert stalled_utterance.llm_stalled_before_response is True
+        assert stalled_utterance.assistant_response_started is False
+
+        await collector.on_user_input_transcribed(
+            "and speech recognition?",
+            is_final=True,
+        )
+
+        reopened_utterance = collector._pending_user_utterances[0]
+        assert (
+            reopened_utterance.transcript
+            == "What's the difference between speech to text and speech recognition?"
+        )
+        assert reopened_utterance.speech_id is None
+        assert reopened_utterance.llm_started is False
+        assert reopened_utterance.llm_stalled_before_response is False
+
+        await collector.on_metrics_collected(_make_eou_metrics("speech-false-turn-b"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-false-turn-b"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-false-turn-b"))
+        collector.submit_streamed_assistant_text_delta(
+            "speech-false-turn-b",
+            "Speech-to-text converts spoken words into text, while speech recognition interprets the speech for meaning or action.",
+            time.time(),
+        )
+        collector.submit_streamed_assistant_text_flush(
+            "speech-false-turn-b",
+            time.time(),
+        )
+        await asyncio.sleep(0)
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    root = turn_spans[0]
+    assert (
+        root.attributes["langfuse.trace.input"]
+        == "What's the difference between speech to text and speech recognition?"
+    )
+    assert (
+        root.attributes["langfuse.trace.output"]
+        == "Speech-to-text converts spoken words into text, while speech recognition interprets the speech for meaning or action."
+    )
+    assert root.attributes["langfuse.trace.metadata.false_turn_recovered"] is True
+    assert (
+        root.attributes["langfuse.trace.metadata.merge_before_response_started"]
+        is True
+    )
+
+
+def test_stale_pre_response_events_are_ignored_after_false_turn_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-false-turn-stale-events",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("Find papers about", is_final=True)
+        await collector.on_metrics_collected(_make_eou_metrics("speech-stale-a"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-stale-a"))
+        collector.submit_streamed_assistant_text_delta(
+            "speech-stale-a",
+            "Stale partial answer that should be dropped.",
+            time.time(),
+        )
+        collector.submit_streamed_assistant_text_flush(
+            "speech-stale-a",
+            time.time(),
+        )
+        await asyncio.sleep(0)
+
+        await collector.on_user_input_transcribed("voice agents.", is_final=True)
+
+        await collector.on_metrics_collected(_make_eou_metrics("speech-stale-b"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-stale-b"))
+
+        await collector.on_metrics_collected(_make_tts_metrics("speech-stale-a"))
+        collector.submit_streamed_assistant_text_delta(
+            "speech-stale-a",
+            "Stale old response that must be ignored.",
+            time.time(),
+        )
+        collector.submit_streamed_assistant_text_flush(
+            "speech-stale-a",
+            time.time(),
+        )
+
+        await collector.on_metrics_collected(_make_tts_metrics("speech-stale-b"))
+        collector.submit_streamed_assistant_text_delta(
+            "speech-stale-b",
+            "Here are recent papers about voice agents.",
+            time.time(),
+        )
+        collector.submit_streamed_assistant_text_flush(
+            "speech-stale-b",
+            time.time(),
+        )
+        await asyncio.sleep(0)
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    root = turn_spans[0]
+    assert root.attributes["langfuse.trace.input"] == "Find papers about voice agents."
+    assert (
+        root.attributes["langfuse.trace.output"]
+        == "Here are recent papers about voice agents."
+    )
+    assert (
+        root.attributes["langfuse.trace.metadata.assistant_text_source"]
+        == "text_output_stream"
+    )
+    assert root.attributes["langfuse.trace.metadata.false_turn_recovered"] is True
+
+
+def test_premature_speaking_state_does_not_split_mergeable_user_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    final_input = "And what is a speech recognition?"
+    final_output = "Speech recognition converts spoken language into written text."
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-premature-speaking-no-split",
+            participant_id="web-123",
+        )
+        await collector.on_user_input_transcribed("And what is a speech", is_final=True)
+        await collector.on_metrics_collected(_make_eou_metrics("speech-speaking-a"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-speaking-a"))
+        collector.submit_streamed_assistant_text_delta(
+            "speech-speaking-a",
+            "Stale partial answer that should be dropped.",
+            time.time(),
+        )
+        collector.submit_streamed_assistant_text_flush(
+            "speech-speaking-a",
+            time.time(),
+        )
+        await asyncio.sleep(0)
+
+        await collector.on_agent_state_changed(
+            old_state="thinking",
+            new_state="speaking",
+        )
+        assert len(collector._pending_user_utterances) == 1
+        assert collector._pending_user_utterances[0].assistant_response_started is False
+
+        await collector.on_user_input_transcribed("recognition?", is_final=True)
+        reopened_utterance = collector._pending_user_utterances[0]
+        assert reopened_utterance.transcript == final_input
+        assert reopened_utterance.assistant_response_started is False
+
+        await collector.on_metrics_collected(_make_eou_metrics("speech-speaking-b"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-speaking-b"))
+
+        await collector.on_metrics_collected(_make_tts_metrics("speech-speaking-a"))
+        collector.submit_streamed_assistant_text_delta(
+            "speech-speaking-a",
+            "Old response that must stay quarantined.",
+            time.time(),
+        )
+        collector.submit_streamed_assistant_text_flush(
+            "speech-speaking-a",
+            time.time(),
+        )
+
+        await collector.on_metrics_collected(_make_tts_metrics("speech-speaking-b"))
+        collector.submit_streamed_assistant_text_delta(
+            "speech-speaking-b",
+            final_output,
+            time.time(),
+        )
+        collector.submit_streamed_assistant_text_flush(
+            "speech-speaking-b",
+            time.time(),
+        )
+        await asyncio.sleep(0)
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 1
+    root = turn_spans[0]
+    assert root.attributes["langfuse.trace.input"] == final_input
+    assert root.attributes["langfuse.trace.output"] == final_output
+    assert root.attributes["langfuse.trace.metadata.false_turn_recovered"] is True
+    assert (
+        root.attributes["langfuse.trace.metadata.merge_before_response_started"]
+        is True
+    )
+
+
+def test_stale_global_speaking_state_does_not_block_next_turn_merge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.agent.traces.metrics_collector as metrics_collector_module
+
+    fake_tracer = _FakeTracer()
+    monkeypatch.setattr(metrics_collector_module, "tracer", fake_tracer)
+
+    room = _FakeRoom()
+    collector = MetricsCollector(
+        room=room,  # type: ignore[arg-type]
+        model_name="moonshine",
+        room_name=room.name,
+        room_id="RM123",
+        participant_id="web-123",
+        langfuse_enabled=True,
+    )
+
+    second_input = "And what is a speech recognition?"
+    second_output = "Speech recognition turns spoken words into structured text."
+
+    async def _run() -> None:
+        await collector.on_session_metadata(
+            session_id="session-stale-global-speaking",
+            participant_id="web-123",
+        )
+
+        await collector.on_user_input_transcribed("Hello there", is_final=True)
+        await collector.on_metrics_collected(_make_eou_metrics("speech-prev"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-prev"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-prev"))
+        collector.submit_streamed_assistant_text_delta(
+            "speech-prev",
+            "Hi, how can I help?",
+            time.time(),
+        )
+        collector.submit_streamed_assistant_text_flush(
+            "speech-prev",
+            time.time(),
+        )
+        await asyncio.sleep(0)
+        await collector.wait_for_pending_trace_tasks()
+
+        await collector.on_agent_state_changed(
+            old_state="listening",
+            new_state="speaking",
+        )
+
+        await collector.on_user_input_transcribed("And what is a speech", is_final=True)
+        await collector.on_metrics_collected(_make_eou_metrics("speech-next-a"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-next-a"))
+        collector.submit_streamed_assistant_text_delta(
+            "speech-next-a",
+            "Stale partial response.",
+            time.time(),
+        )
+        collector.submit_streamed_assistant_text_flush(
+            "speech-next-a",
+            time.time(),
+        )
+        await asyncio.sleep(0)
+
+        await collector.on_user_input_transcribed("recognition?", is_final=True)
+        merged_utterance = collector._pending_user_utterances[-1]
+        assert merged_utterance.transcript == second_input
+        assert merged_utterance.assistant_response_started is False
+
+        await collector.on_metrics_collected(_make_eou_metrics("speech-next-b"))
+        await collector.on_metrics_collected(_make_llm_metrics("speech-next-b"))
+        await collector.on_metrics_collected(_make_tts_metrics("speech-next-b"))
+        collector.submit_streamed_assistant_text_delta(
+            "speech-next-b",
+            second_output,
+            time.time(),
+        )
+        collector.submit_streamed_assistant_text_flush(
+            "speech-next-b",
+            time.time(),
+        )
+        await asyncio.sleep(0)
+        await collector.wait_for_pending_trace_tasks()
+
+    asyncio.run(_run())
+
+    turn_spans = [span for span in fake_tracer.spans if span.name == "turn"]
+    assert len(turn_spans) == 2
+    first = next(
+        span
+        for span in turn_spans
+        if span.attributes["langfuse.trace.input"] == "Hello there"
+    )
+    second = next(
+        span
+        for span in turn_spans
+        if span.attributes["langfuse.trace.input"] == second_input
+    )
+    assert first.attributes["langfuse.trace.output"] == "Hi, how can I help?"
+    assert second.attributes["langfuse.trace.output"] == second_output
+    assert second.attributes["langfuse.trace.metadata.false_turn_recovered"] is True
 
 
 def test_continuation_coalescing_can_be_disabled(

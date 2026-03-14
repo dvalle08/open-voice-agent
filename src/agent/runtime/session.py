@@ -212,6 +212,7 @@ async def session_handler(ctx: agents.JobContext) -> None:
         turn_detection=EnglishModel(),
         min_endpointing_delay=settings.voice.MIN_ENDPOINTING_DELAY,
         max_endpointing_delay=settings.voice.MAX_ENDPOINTING_DELAY,
+        max_tool_steps=8, 
         preemptive_generation=settings.voice.PREEMPTIVE_GENERATION,
         conn_options=session_conn_options,
     )
