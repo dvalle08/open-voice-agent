@@ -39,7 +39,6 @@ class ChannelPublisher:
         diagnostic: bool = False,
         eou_delay: float = 0.0,
         stt_finalization_delay: float = 0.0,
-        observed_total_latency: Optional[float] = None,
     ) -> None:
         """Publish ephemeral live update for immediate frontend rendering."""
         try:
@@ -79,7 +78,6 @@ class ChannelPublisher:
                 turn_metrics=turn_metrics,
                 eou_delay=eou_delay,
                 stt_finalization_delay=stt_finalization_delay,
-                observed_total_latency=observed_total_latency,
             )
 
             if vad_metrics:
@@ -167,7 +165,6 @@ def _build_partial_latencies(
     turn_metrics: Optional[TurnMetrics],
     eou_delay: float,
     stt_finalization_delay: float,
-    observed_total_latency: Optional[float],
 ) -> Optional[dict[str, float]]:
     """Build a latency preview for live updates."""
     llm_ttft = turn_metrics.llm.ttft if turn_metrics and turn_metrics.llm else 0.0
@@ -180,12 +177,11 @@ def _build_partial_latencies(
             llm_ttft,
             tts_ttfb,
         )
-    ) or observed_total_latency is not None
+    )
     if not has_signal:
         return None
 
-    baseline = eou_delay + llm_ttft + tts_ttfb
-    total = max(baseline, observed_total_latency if observed_total_latency is not None else 0.0)
+    total = eou_delay + llm_ttft + tts_ttfb
     return {
         "total_latency": total,
         "eou_delay": eou_delay,

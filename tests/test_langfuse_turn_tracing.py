@@ -394,7 +394,7 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
     assert root.attributes["latency_ms.tts_ttfb"] > 0
     assert root.attributes["latency_ms.perceived_first_audio"] == pytest.approx(1350.0)
     assert root.attributes["latency_ms.conversational"] == pytest.approx(1350.0)
-    assert root.attributes["latency_ms.speech_end_to_assistant_speech_start"] == pytest.approx(1350.0)
+    assert "latency_ms.speech_end_to_assistant_speech_start" not in root.attributes
 
     assert user_input_span.attributes["user_transcript"] == "hello there"
     assert vad_span.attributes["eou_delay_ms"] == pytest.approx(1100.0)
@@ -447,10 +447,7 @@ def test_turn_trace_has_required_metadata_and_spans(monkeypatch: pytest.MonkeyPa
     assert summary_span.attributes["duration_ms"] >= perceived_first_span.attributes["duration_ms"]
 
     assert perceived_first_span.attributes["duration_ms"] == pytest.approx(1350.0)
-    assert (
-        perceived_first_span.attributes["speech_end_to_assistant_speech_start_ms"]
-        == pytest.approx(1350.0)
-    )
+    assert "speech_end_to_assistant_speech_start_ms" not in perceived_first_span.attributes
     assert perceived_first_span.attributes["eou_delay_ms"] == pytest.approx(1100.0)
     assert perceived_first_span.attributes["llm_ttft_ms"] > 0
     assert perceived_first_span.attributes["tts_ttfb_ms"] > 0
@@ -3193,7 +3190,6 @@ def test_exact_assistant_text_upgrades_safe_rescue_source() -> None:
             fallback_duration=0.5,
             ttfb=0.15,
             speech_id="speech-safe-rescue-upgrade",
-            observed_total_latency=None,
         )
         assert turn is not None
         tracer._pending_assistant_items[123] = PendingAssistantItemRecord(
@@ -3331,7 +3327,6 @@ def test_unscoped_streamed_text_upgrades_to_exact_source() -> None:
             fallback_duration=0.5,
             ttfb=0.15,
             speech_id="speech-stream-upgrade",
-            observed_total_latency=None,
         )
         assert turn is not None
         pending_unscoped_records.append(
@@ -3744,7 +3739,7 @@ def test_trace_finalize_timeout_uses_pending_assistant_transcript(
     assert root.attributes["langfuse.trace.output"] == "queued assistant fallback"
 
 
-def test_long_response_latency_preserves_observed_total_without_handoff_metric(
+def test_long_response_latency_uses_strict_component_sum_after_tts_delay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import src.agent.traces.metrics_collector as metrics_collector_module
@@ -3805,11 +3800,13 @@ def test_long_response_latency_preserves_observed_total_without_handoff_metric(
         + root.attributes["latency_ms.llm_ttft"]
         + root.attributes["latency_ms.tts_ttfb"]
     )
-    assert root.attributes["latency_ms.perceived_first_audio"] > 200.0
-    assert root.attributes["latency_ms.conversational"] > 200.0
+    assert visible_stage_sum == pytest.approx(20.0)
+    assert root.attributes["latency_ms.perceived_first_audio"] == pytest.approx(20.0)
+    assert root.attributes["latency_ms.conversational"] == pytest.approx(20.0)
     assert "latency_ms.llm_to_tts_handoff" not in root.attributes
-    assert root.attributes["latency_ms.conversational"] > visible_stage_sum + 150.0
+    assert root.attributes["latency_ms.conversational"] == pytest.approx(visible_stage_sum)
     assert root.attributes["latency_ms.stt_finalization"] == pytest.approx(200.0)
+    assert root.attributes["langfuse.trace.metadata.assistant_audio_started"] is True
 
     perceived_first_span = next(
         (
@@ -3821,6 +3818,9 @@ def test_long_response_latency_preserves_observed_total_without_handoff_metric(
     )
     if perceived_first_span is not None:
         assert "llm_to_tts_handoff_ms" not in perceived_first_span.attributes
+        assert perceived_first_span.attributes["duration_ms"] == pytest.approx(
+            visible_stage_sum
+        )
 
     payloads = _decode_payloads(room)
     conversation_turns = [
@@ -3828,7 +3828,7 @@ def test_long_response_latency_preserves_observed_total_without_handoff_metric(
     ]
     agent_turn = next(payload for payload in conversation_turns if payload.get("role") == "agent")
     assert agent_turn["latencies"]["total_latency"] == pytest.approx(
-        root.attributes["latency_ms.conversational"] / 1000.0,
+        visible_stage_sum / 1000.0,
         abs=0.05,
     )
     assert "llm_to_tts_handoff_latency" not in agent_turn["latencies"]

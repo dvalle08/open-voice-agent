@@ -638,7 +638,6 @@ class TurnTracer:
         fallback_duration: float,
         ttfb: float,
         speech_id: Optional[str] = None,
-        observed_total_latency: Optional[float],
         metric_attributes: Optional[dict[str, Any]] = None,
     ) -> Optional[TraceTurn]:
         async with self._trace_lock:
@@ -704,14 +703,6 @@ class TurnTracer:
 
             self._maybe_mark_emit_ready(turn)
             _recompute_perceived_first_audio_latency(turn)
-            if observed_total_latency is not None and len(turn.tts_calls) == 1:
-                observed_ms = observed_total_latency * 1000.0
-                baseline_ms = turn.perceived_latency_first_audio_ms
-                turn.perceived_latency_first_audio_ms = max(
-                    observed_ms,
-                    baseline_ms if baseline_ms is not None else 0.0,
-                )
-                turn.conversational_latency_ms = turn.perceived_latency_first_audio_ms
             self._maybe_update_perceived_second_audio_latency(turn, tts_call)
             self._maybe_close_tool_phase(turn)
             return turn
@@ -2792,7 +2783,6 @@ class TurnTracer:
                             start_ns=summary_cursor_ns,
                             duration_ms=first_latency_ms,
                             attributes={
-                                "speech_end_to_assistant_speech_start_ms": first_latency_ms,
                                 "eou_delay_ms": vals["vad_duration_ms"],
                                 "llm_ttft_ms": vals["llm_ttft_ms"],
                                 "tool_calls_total_ms": vals["tool_calls_total_ms"],
@@ -3573,9 +3563,6 @@ def _set_root_attributes(
         "latency_ms.perceived_first_audio": vals["perceived_latency_first_audio_ms"],
         "latency_ms.perceived_second_audio": vals["perceived_latency_second_audio_ms"],
         "latency_ms.conversational": vals["perceived_latency_first_audio_ms"],
-        "latency_ms.speech_end_to_assistant_speech_start": vals[
-            "perceived_latency_first_audio_ms"
-        ],
         "tool.call_count": vals["tool_call_count"],
         "tool.error_count": vals["tool_error_count"],
         "tool.execution_count": vals["tool_execution_count"],

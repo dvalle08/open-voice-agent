@@ -125,7 +125,7 @@ def test_publish_live_update_keeps_error_logging_for_other_failures(
     assert not debug_logs
 
 
-def test_publish_live_update_omits_removed_handoff_latency() -> None:
+def test_publish_live_update_uses_strict_component_sum() -> None:
     room = _CapturingRoom()
     publisher = ChannelPublisher(room)  # type: ignore[arg-type]
     turn_metrics = TurnMetrics(
@@ -168,7 +168,6 @@ def test_publish_live_update_omits_removed_handoff_latency() -> None:
             turn_metrics=turn_metrics,
             eou_delay=0.5,
             stt_finalization_delay=0.1,
-            observed_total_latency=1.5,
         )
     )
 
@@ -176,7 +175,7 @@ def test_publish_live_update_omits_removed_handoff_latency() -> None:
     payload = room.local_participant.published_messages[0]["payload"]
     assert payload["type"] == "metrics_live_update"
     assert payload["latencies"] == {
-        "total_latency": pytest.approx(1.5),
+        "total_latency": pytest.approx(1.0),
         "eou_delay": pytest.approx(0.5),
         "stt_finalization_delay": pytest.approx(0.1),
         "vad_detection_delay": pytest.approx(0.5),

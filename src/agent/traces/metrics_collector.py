@@ -12,7 +12,7 @@ import json
 import uuid
 from collections import deque
 from dataclasses import asdict, dataclass
-from time import monotonic, time
+from time import time
 from typing import Any, Awaitable, Callable, Optional, Sequence, Union
 
 from livekit import rtc
@@ -142,13 +142,10 @@ class TurnMetrics:
         self,
         eou_delay: float = 0.0,
         stt_finalization_delay: float = 0.0,
-        observed_total_latency: Optional[float] = None,
     ) -> None:
         llm_ttft = self.llm.ttft if self.llm else 0.0
         tts_ttfb = self.tts.ttfb if self.tts else 0.0
-        baseline = eou_delay + llm_ttft + tts_ttfb
-        observed = observed_total_latency if observed_total_latency is not None else 0.0
-        total = max(baseline, observed)
+        total = eou_delay + llm_ttft + tts_ttfb
         self.latencies = Latencies(
             total_latency=total,
             eou_delay=eou_delay,
@@ -202,8 +199,6 @@ class TurnState:
     eou_metrics: Optional[EOUMetrics] = None
     eou_delay: float = 0.0
     stt_finalization_delay: float = 0.0
-    speech_end_monotonic: Optional[float] = None
-    first_audio_monotonic: Optional[float] = None
     streamed_assistant_text: str = ""
     streamed_assistant_text_observed_at: Optional[float] = None
     text_output_flush_observed: bool = False
@@ -1007,9 +1002,6 @@ class MetricsCollector:
                     speech_id,
                 )
                 return
-            state = self._get_or_create_state(speech_id)
-            if state.first_audio_monotonic is None:
-                state.first_audio_monotonic = monotonic()
             self._mark_assistant_response_started(
                 speech_id,
                 observed_at=collected_metrics.timestamp,
@@ -1038,7 +1030,6 @@ class MetricsCollector:
                 fallback_duration=collected_metrics.audio_duration,
                 ttfb=collected_metrics.ttfb,
                 speech_id=speech_id,
-                observed_total_latency=self._observed_total_latency(speech_id),
                 metric_attributes=_tts_metric_attributes(collected_metrics),
             )
             await self._tracer.mark_first_audio_started(
@@ -1067,8 +1058,6 @@ class MetricsCollector:
                     speech_id
                 )
                 state = self._get_or_create_state(speech_id)
-                if state.speech_end_monotonic is None:
-                    state.speech_end_monotonic = monotonic()
                 state.eou_delay = collected_metrics.end_of_utterance_delay
                 state.stt_finalization_delay = collected_metrics.transcription_delay
                 state.eou_metrics = EOUMetrics(
@@ -1127,7 +1116,6 @@ class MetricsCollector:
                 diagnostic=not bool(speech_id and turn_metrics),
                 eou_delay=self._turns[speech_id].eou_delay if speech_id and speech_id in self._turns else 0.0,
                 stt_finalization_delay=self._turns[speech_id].stt_finalization_delay if speech_id and speech_id in self._turns else 0.0,
-                observed_total_latency=self._observed_total_latency(speech_id) if speech_id else None,
             )
             logger.debug("VAD metrics collected: speech_id=%s, idle_time=%.3fs", speech_id or "n/a", collected_metrics.idle_time)
 
@@ -1537,7 +1525,6 @@ class MetricsCollector:
             turn_metrics=turn_metrics,
             eou_delay=state.eou_delay if state else 0.0,
             stt_finalization_delay=state.stt_finalization_delay if state else 0.0,
-            observed_total_latency=self._observed_total_latency(speech_id or ""),
         )
 
     async def _publish_partial_turn_pipeline_summary(
@@ -1567,26 +1554,12 @@ class MetricsCollector:
         state = self._turns.get(speech_id)
         eou_delay = state.eou_delay if state else 0.0
         stt_finalization_delay = state.stt_finalization_delay if state else 0.0
-        observed = self._observed_total_latency(speech_id)
         turn_metrics.compute_latencies(
             eou_delay,
             stt_finalization_delay=stt_finalization_delay,
-            observed_total_latency=observed,
         )
         await self._publisher.publish_conversation_turn(turn_metrics)
         self._turns.pop(speech_id, None)
-
-    def _observed_total_latency(self, speech_id: str) -> Optional[float]:
-        state = self._turns.get(speech_id)
-        if not state:
-            return None
-        start = state.speech_end_monotonic
-        end = state.first_audio_monotonic
-        if start is None or end is None:
-            return None
-        if end <= start:
-            return None
-        return end - start
 
     def _is_superseded_speech_id(self, speech_id: Optional[str]) -> bool:
         normalized = _normalize(speech_id)
